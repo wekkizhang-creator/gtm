@@ -1,6 +1,7 @@
 // Real HTTP client. Every call hits a real backend route. On failure it throws —
 // the UI surfaces the error instead of showing fabricated data.
 import type { List, Task, SmartCounts, Priority, FocusSession, FocusStats, Habit, Countdown, Settings, SettingsPatch } from '../types';
+import { localApi } from './local';
 
 const BASE = '/api';
 
@@ -59,7 +60,7 @@ export interface CreateFocusInput {
   note?: string | null;
 }
 
-export const api = {
+const httpApi = {
   // lists
   listLists: () => req<{ lists: List[] }>('/lists').then((r) => r.lists),
   createList: (name: string) =>
@@ -137,5 +138,9 @@ export const api = {
       (r) => r.settings,
     ),
   aiTest: () => req<{ ok: boolean; message: string }>('/settings/ai/test', { method: 'POST' }),
+  exportData: () => req<Record<string, unknown>>('/settings/export'),
 };
+
+// http for local dev (proxied to Express); local (browser storage) for the static GitHub Pages build
+export const api = (import.meta.env.VITE_API === 'local' ? localApi : httpApi) as typeof httpApi;
 

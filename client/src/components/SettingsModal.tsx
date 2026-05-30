@@ -84,8 +84,8 @@ export default function SettingsModal({ open, onClose }: { open: boolean; onClos
   const dt = settings.datetime;
 
   async function downloadExport() {
-    const res = await fetch('/api/settings/export');
-    const blob = await res.blob();
+    const data = await api.exportData();
+    const blob = new Blob([JSON.stringify(data, null, 2)], { type: 'application/json' });
     const url = URL.createObjectURL(blob);
     const link = document.createElement('a');
     link.href = url;
