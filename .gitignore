@@ -1,0 +1,8 @@
+node_modules/
+dist/
+*.log
+
+# real SQLite database files (do not commit user data)
+server/data/*.db
+server/data/*.db-shm
+server/data/*.db-wal
