@@ -1,4 +1,5 @@
 import { useState } from 'react';
+import { useSettings } from '../settings';
 import type { List, SmartCounts, Selection, SmartKey } from '../types';
 
 interface Props {
@@ -21,6 +22,8 @@ function isActiveSmart(sel: Selection, key: SmartKey) {
 }
 
 export default function Sidebar({ lists, counts, selection, onSelect, onAddList, onDeleteList }: Props) {
+  const { settings } = useSettings();
+  const hidden = settings.smartLists.hidden;
   const [adding, setAdding] = useState(false);
   const [name, setName] = useState('');
 
@@ -38,7 +41,7 @@ export default function Sidebar({ lists, counts, selection, onSelect, onAddList,
       <div className="brand">效率清单</div>
 
       <nav className="nav-group">
-        {SMART_ITEMS.map((it) => (
+        {SMART_ITEMS.filter((it) => !hidden.includes(it.key)).map((it) => (
           <button
             key={it.key}
             className={`nav-item${isActiveSmart(selection, it.key) ? ' active' : ''}`}
@@ -98,22 +101,26 @@ export default function Sidebar({ lists, counts, selection, onSelect, onAddList,
       </nav>
 
       <div className="nav-group nav-bottom">
-        <button
-          className={`nav-item${isActiveSmart(selection, 'completed') ? ' active' : ''}`}
-          onClick={() => onSelect({ kind: 'smart', key: 'completed' })}
-        >
-          <span className="nav-icon">✓</span>
-          <span className="nav-label">已完成</span>
-          <span className="nav-badge">{counts.completed || ''}</span>
-        </button>
-        <button
-          className={`nav-item${isActiveSmart(selection, 'trash') ? ' active' : ''}`}
-          onClick={() => onSelect({ kind: 'smart', key: 'trash' })}
-        >
-          <span className="nav-icon">🗑️</span>
-          <span className="nav-label">垃圾桶</span>
-          <span className="nav-badge">{counts.trash || ''}</span>
-        </button>
+        {!hidden.includes('completed') && (
+          <button
+            className={`nav-item${isActiveSmart(selection, 'completed') ? ' active' : ''}`}
+            onClick={() => onSelect({ kind: 'smart', key: 'completed' })}
+          >
+            <span className="nav-icon">✓</span>
+            <span className="nav-label">已完成</span>
+            <span className="nav-badge">{counts.completed || ''}</span>
+          </button>
+        )}
+        {!hidden.includes('trash') && (
+          <button
+            className={`nav-item${isActiveSmart(selection, 'trash') ? ' active' : ''}`}
+            onClick={() => onSelect({ kind: 'smart', key: 'trash' })}
+          >
+            <span className="nav-icon">🗑️</span>
+            <span className="nav-label">垃圾桶</span>
+            <span className="nav-badge">{counts.trash || ''}</span>
+          </button>
+        )}
       </div>
     </aside>
   );

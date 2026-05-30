@@ -6,6 +6,7 @@ import tasksRouter from './routes/tasks';
 import focusRouter from './routes/focus';
 import habitsRouter from './routes/habits';
 import countdownsRouter from './routes/countdowns';
+import settingsRouter from './routes/settings';
 import * as repo from './repo';
 import { AppError } from './types';
 
@@ -26,6 +27,7 @@ app.use('/api/tasks', tasksRouter);
 app.use('/api/focus', focusRouter);
 app.use('/api/habits', habitsRouter);
 app.use('/api/countdowns', countdownsRouter);
+app.use('/api/settings', settingsRouter);
 
 // unknown API route
 app.use('/api', (_req, res) => {

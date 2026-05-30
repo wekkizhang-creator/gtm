@@ -3,6 +3,7 @@ import Sidebar from '../components/Sidebar';
 import TaskPanel from '../components/TaskPanel';
 import { api, type CreateTaskInput } from '../api/client';
 import { startOfTodayISO } from '../util';
+import { useSettings } from '../settings';
 import type { List, Task, SmartCounts, Selection, SmartKey, Priority } from '../types';
 
 const SMART_LABELS: Record<SmartKey, string> = {
@@ -16,6 +17,7 @@ const SMART_LABELS: Record<SmartKey, string> = {
 const EMPTY_COUNTS: SmartCounts = { today: 0, next7days: 0, inbox: 0, completed: 0, trash: 0 };
 
 export default function TaskModule() {
+  const { settings } = useSettings();
   const [lists, setLists] = useState<List[]>([]);
   const [counts, setCounts] = useState<SmartCounts>(EMPTY_COUNTS);
   const [selection, setSelection] = useState<Selection>({ kind: 'smart', key: 'today' });
@@ -73,7 +75,7 @@ export default function TaskModule() {
   );
 
   function buildCreateInput(title: string): CreateTaskInput {
-    const input: CreateTaskInput = { title };
+    const input: CreateTaskInput = { title, priority: settings.taskDefaults.priority };
     if (selection.kind === 'smart') {
       if (selection.key === 'today' || selection.key === 'next7days') {
         input.dueDate = startOfTodayISO();
@@ -82,6 +84,7 @@ export default function TaskModule() {
     } else {
       input.listId = selection.id;
     }
+    if (!input.listId && settings.taskDefaults.listId) input.listId = settings.taskDefaults.listId;
     return input;
   }
 

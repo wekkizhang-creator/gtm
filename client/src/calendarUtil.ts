@@ -21,12 +21,17 @@ export function ymd(d: Date): string {
 }
 
 /** Visible days + the UTC ISO [from,to] window for the range query. */
-export function rangeFor(view: CalView, anchor: Date): { days: Date[]; fromISO: string; toISO: string } {
+export function rangeFor(
+  view: CalView,
+  anchor: Date,
+  weekStart: 0 | 1 = 0,
+): { days: Date[]; fromISO: string; toISO: string } {
   let start = startOfDay(anchor);
   let count = 3;
   if (view === 'day') count = 1;
   else if (view === 'week') {
-    start = addDays(startOfDay(anchor), -anchor.getDay()); // Sunday-start week
+    const off = (anchor.getDay() - weekStart + 7) % 7;
+    start = addDays(startOfDay(anchor), -off);
     count = 7;
   }
   const days = Array.from({ length: count }, (_, i) => addDays(start, i));
@@ -61,8 +66,30 @@ export function durationMin(startIso: string, dueIso: string): number {
   return Math.max(15, (new Date(dueIso).getTime() - new Date(startIso).getTime()) / 60000);
 }
 
-/** "HH:MM" local. */
+// time-format preference, set by the settings provider
+let _timeFormat: 'system' | '12' | '24' = '24';
+export function setTimeFormat(f: 'system' | '12' | '24'): void {
+  _timeFormat = f;
+}
+function use12h(): boolean {
+  if (_timeFormat === '12') return true;
+  if (_timeFormat === '24') return false;
+  try {
+    return !!new Intl.DateTimeFormat(undefined, { hour: 'numeric' }).resolvedOptions().hour12;
+  } catch {
+    return false;
+  }
+}
+
+/** local time string, respecting the time-format setting. */
 export function hm(iso: string): string {
   const d = new Date(iso);
-  return `${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}`;
+  const h = d.getHours();
+  const mm = String(d.getMinutes()).padStart(2, '0');
+  if (use12h()) {
+    const ap = h < 12 ? 'AM' : 'PM';
+    const hh = h % 12 === 0 ? 12 : h % 12;
+    return `${hh}:${mm} ${ap}`;
+  }
+  return `${String(h).padStart(2, '0')}:${mm}`;
 }

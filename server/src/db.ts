@@ -94,6 +94,12 @@ db.exec(`
     created_at    TEXT NOT NULL,
     updated_at    TEXT NOT NULL
   );
+
+  CREATE TABLE IF NOT EXISTS settings (
+    key        TEXT PRIMARY KEY,
+    value      TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+  );
 `);
 
 // migration: add columns introduced after the first release (existing DBs)

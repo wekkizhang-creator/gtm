@@ -3,6 +3,8 @@ export type ModuleKey = 'tasks' | 'calendar' | 'matrix' | 'focus' | 'habits' | '
 interface Props {
   active: ModuleKey;
   onSelect: (m: ModuleKey) => void;
+  hidden: string[];
+  onOpenSettings: () => void;
 }
 
 const ITEMS: { key: ModuleKey; icon: string; label: string }[] = [
@@ -14,10 +16,10 @@ const ITEMS: { key: ModuleKey; icon: string; label: string }[] = [
   { key: 'countdown', icon: '⏳', label: '倒数日' },
 ];
 
-export default function ModuleRail({ active, onSelect }: Props) {
+export default function ModuleRail({ active, onSelect, hidden, onOpenSettings }: Props) {
   return (
     <div className="module-rail">
-      {ITEMS.map((it) => (
+      {ITEMS.filter((it) => it.key === 'tasks' || !hidden.includes(it.key)).map((it) => (
         <button
           key={it.key}
           className={`rail-item${active === it.key ? ' active' : ''}`}
@@ -28,6 +30,10 @@ export default function ModuleRail({ active, onSelect }: Props) {
           <span className="rail-label">{it.label}</span>
         </button>
       ))}
+      <button className="rail-item rail-settings" title="设置" onClick={onOpenSettings}>
+        <span className="rail-icon">⚙</span>
+        <span className="rail-label">设置</span>
+      </button>
     </div>
   );
 }

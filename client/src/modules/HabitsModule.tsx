@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import { api } from '../api/client';
+import { useSettings } from '../settings';
 import { startOfDay, addDays, ymd, WEEKDAYS } from '../calendarUtil';
 import type { Habit } from '../types';
 
@@ -13,11 +14,14 @@ export default function HabitsModule() {
   const [name, setName] = useState('');
   const [icon, setIcon] = useState('🌙');
   const [days, setDays] = useState<number[]>([0, 1, 2, 3, 4, 5, 6]);
+  const { settings } = useSettings();
+  const weekStart = settings.datetime.weekStart;
 
   const weekDays = useMemo(() => {
-    const start = addDays(startOfDay(anchor), -anchor.getDay()); // Sunday-start week
+    const off = (anchor.getDay() - weekStart + 7) % 7;
+    const start = addDays(startOfDay(anchor), -off);
     return Array.from({ length: 7 }, (_, i) => addDays(start, i));
-  }, [anchor]);
+  }, [anchor, weekStart]);
 
   const fromStr = ymd(weekDays[0]);
   const toStr = ymd(weekDays[6]);

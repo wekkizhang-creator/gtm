@@ -1,6 +1,6 @@
 // Real HTTP client. Every call hits a real backend route. On failure it throws —
 // the UI surfaces the error instead of showing fabricated data.
-import type { List, Task, SmartCounts, Priority, FocusSession, FocusStats, Habit, Countdown } from '../types';
+import type { List, Task, SmartCounts, Priority, FocusSession, FocusStats, Habit, Countdown, Settings, SettingsPatch } from '../types';
 
 const BASE = '/api';
 
@@ -127,4 +127,15 @@ export const api = {
     patch: Partial<{ title: string; targetDate: string; icon: string | null; repeatYearly: boolean; pinned: boolean; note: string | null; sortOrder: number }>,
   ) => req<{ countdown: Countdown }>(`/countdowns/${id}`, { method: 'PATCH', body: JSON.stringify(patch) }).then((r) => r.countdown),
   deleteCountdown: (id: string) => req<void>(`/countdowns/${id}`, { method: 'DELETE' }),
+
+  // settings
+  getSettings: () => req<{ settings: Settings }>('/settings').then((r) => r.settings),
+  patchSettings: (patch: SettingsPatch) =>
+    req<{ settings: Settings }>('/settings', { method: 'PATCH', body: JSON.stringify(patch) }).then((r) => r.settings),
+  resetSettings: (group: string) =>
+    req<{ settings: Settings }>('/settings/reset', { method: 'POST', body: JSON.stringify({ group }) }).then(
+      (r) => r.settings,
+    ),
+  aiTest: () => req<{ ok: boolean; message: string }>('/settings/ai/test', { method: 'POST' }),
 };
+

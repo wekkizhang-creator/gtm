@@ -2,6 +2,7 @@ import { useCallback, useEffect, useMemo, useState } from 'react';
 import CalendarGrid from '../components/calendar/CalendarGrid';
 import SchedulePanel from '../components/calendar/SchedulePanel';
 import { api } from '../api/client';
+import { useSettings } from '../settings';
 import { rangeFor, addDays, dayAtMinutes, hm, type CalView } from '../calendarUtil';
 import type { Task } from '../types';
 
@@ -14,8 +15,10 @@ export default function CalendarModule() {
   const [undated, setUndated] = useState<Task[]>([]);
   const [error, setError] = useState<string | null>(null);
   const [popover, setPopover] = useState<{ task: Task; x: number; y: number } | null>(null);
+  const { settings } = useSettings();
+  const weekStart = settings.datetime.weekStart;
 
-  const { days, fromISO, toISO } = useMemo(() => rangeFor(view, anchor), [view, anchor]);
+  const { days, fromISO, toISO } = useMemo(() => rangeFor(view, anchor, weekStart), [view, anchor, weekStart]);
 
   const reload = useCallback(async () => {
     try {

@@ -93,3 +93,27 @@ export interface Countdown {
   createdAt: string;
   updatedAt: string;
 }
+
+export interface Settings {
+  appearance: {
+    themeMode: 'light' | 'dark' | 'system';
+    accent: string;
+    fontSize: 'small' | 'normal' | 'large' | 'xlarge';
+    density: 'compact' | 'standard' | 'loose';
+    animations: boolean;
+  };
+  datetime: { weekStart: 0 | 1; timeFormat: 'system' | '12' | '24' };
+  modules: { hidden: string[]; defaultLaunch: string };
+  smartLists: { hidden: string[] };
+  taskDefaults: { priority: 0 | 1 | 2 | 3; listId: string | null };
+  ai: { enabled: boolean; provider: string; baseUrl: string; model: string; hasApiKey: boolean; apiKeyMasked: string };
+}
+
+export type SettingsPatch = {
+  appearance?: Partial<Settings['appearance']>;
+  datetime?: Partial<Settings['datetime']>;
+  modules?: Partial<Settings['modules']>;
+  smartLists?: Partial<Settings['smartLists']>;
+  taskDefaults?: Partial<Settings['taskDefaults']>;
+  ai?: Partial<Settings['ai']> & { apiKey?: string };
+};

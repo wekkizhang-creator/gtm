@@ -207,7 +207,7 @@ body {
 .quick-add-input {
   width: 100%;
   border: 1px solid var(--border);
-  background: #fff;
+  background: var(--surface);
   border-radius: 10px;
   padding: 12px 14px;
   font-size: 14px;
@@ -216,7 +216,7 @@ body {
 
 .quick-add-input:focus {
   border-color: var(--teal);
-  background: #fff;
+  background: var(--surface);
 }
 
 .banner {
@@ -256,7 +256,7 @@ body {
 }
 
 .task-item:hover {
-  background: #f4f1ea;
+  background: var(--hover);
 }
 
 .task-check {
@@ -265,7 +265,7 @@ body {
   flex-shrink: 0;
   border: 2px solid #c5c9d1;
   border-radius: 50%;
-  background: #fff;
+  background: var(--surface);
   cursor: pointer;
   font-size: 12px;
   line-height: 1;
@@ -324,7 +324,7 @@ body {
   border-radius: 6px;
   padding: 4px 6px;
   font-size: 12px;
-  background: #fff;
+  background: var(--surface);
   cursor: pointer;
 }
 
@@ -346,7 +346,7 @@ body {
 
 .task-restore:hover {
   color: var(--teal);
-  background: #e7f6f5;
+  background: var(--accent-soft);
 }
 
 /* ---------------- Module rail ---------------- */
@@ -423,7 +423,7 @@ body {
 
 .cal-view-btn {
   border: none;
-  background: #fff;
+  background: var(--surface);
   padding: 6px 14px;
   font-size: 13px;
   cursor: pointer;
@@ -442,7 +442,7 @@ body {
 
 .cal-nav button {
   border: 1px solid var(--border);
-  background: #fff;
+  background: var(--surface);
   border-radius: 8px;
   padding: 6px 12px;
   cursor: pointer;
@@ -558,7 +558,7 @@ body {
 }
 
 .cal-cell {
-  border-bottom: 1px solid #f3f5f6;
+  border-bottom: 1px solid var(--border);
   box-sizing: border-box;
 }
 
@@ -636,7 +636,7 @@ body {
   display: flex;
   align-items: center;
   gap: 8px;
-  background: #fff;
+  background: var(--surface);
   border: 1px solid var(--border);
   border-radius: 8px;
   padding: 9px 10px;
@@ -664,7 +664,7 @@ body {
 
 .schedule-add {
   border: none;
-  background: #e7f6f5;
+  background: var(--accent-soft);
   color: var(--teal-dark);
   border-radius: 6px;
   padding: 3px 8px;
@@ -695,7 +695,7 @@ body {
   position: fixed;
   z-index: 41;
   width: 240px;
-  background: #fff;
+  background: var(--surface);
   border: 1px solid var(--border);
   border-radius: 10px;
   box-shadow: 0 8px 30px rgba(0, 0, 0, 0.15);
@@ -726,7 +726,7 @@ body {
 .popover-actions button {
   flex: 1;
   border: 1px solid var(--border);
-  background: #fff;
+  background: var(--surface);
   border-radius: 6px;
   padding: 6px;
   font-size: 13px;
@@ -766,7 +766,7 @@ body {
 
 .focus-mode-btn {
   border: none;
-  background: #fff;
+  background: var(--surface);
   padding: 8px 22px;
   font-size: 14px;
   cursor: pointer;
@@ -804,7 +804,7 @@ body {
   width: 280px;
   height: 280px;
   border-radius: 50%;
-  background: conic-gradient(var(--teal) calc(var(--p) * 360deg), #e9eef0 0);
+  background: conic-gradient(var(--teal) calc(var(--p) * 360deg), var(--border) 0);
   display: flex;
   align-items: center;
   justify-content: center;
@@ -814,7 +814,7 @@ body {
   width: 248px;
   height: 248px;
   border-radius: 50%;
-  background: #fff;
+  background: var(--surface);
   display: flex;
   flex-direction: column;
   align-items: center;
@@ -839,7 +839,7 @@ body {
   width: 34px;
   height: 28px;
   border: 1px solid var(--border);
-  background: #fff;
+  background: var(--surface);
   border-radius: 6px;
   cursor: pointer;
   font-size: 13px;
@@ -849,7 +849,7 @@ body {
 .focus-preset.active {
   border-color: var(--teal);
   color: var(--teal);
-  background: #e7f6f5;
+  background: var(--accent-soft);
 }
 
 .focus-controls {
@@ -873,7 +873,7 @@ body {
 
 .focus-stop {
   border: 1px solid var(--border);
-  background: #fff;
+  background: var(--surface);
   color: var(--muted);
   border-radius: 24px;
   padding: 12px 28px;
@@ -910,7 +910,7 @@ body {
 }
 
 .ov-card {
-  background: #fff;
+  background: var(--surface);
   border: 1px solid var(--border);
   border-radius: 10px;
   padding: 12px 14px;
@@ -996,7 +996,7 @@ body {
 }
 
 .rec-item:hover {
-  background: #fff;
+  background: var(--surface);
 }
 
 .rec-icon {
@@ -1136,7 +1136,7 @@ body {
 }
 
 .quad-task:hover {
-  background: #f4f1ea;
+  background: var(--hover);
 }
 
 .quad-task.done .quad-task-title {
@@ -1150,7 +1150,7 @@ body {
   flex-shrink: 0;
   border: 2px solid #c5c9d1;
   border-radius: 50%;
-  background: #fff;
+  background: var(--surface);
   cursor: pointer;
   font-size: 11px;
   line-height: 1;
@@ -1256,7 +1256,7 @@ body {
   width: 34px;
   height: 34px;
   border: 1px solid var(--border);
-  background: #fff;
+  background: var(--surface);
   border-radius: 8px;
   cursor: pointer;
   font-size: 18px;
@@ -1264,7 +1264,7 @@ body {
 
 .habit-emoji.active {
   border-color: var(--teal);
-  background: #e7f6f5;
+  background: var(--accent-soft);
 }
 
 .habit-days-row {
@@ -1284,7 +1284,7 @@ body {
   width: 30px;
   height: 28px;
   border: 1px solid var(--border);
-  background: #fff;
+  background: var(--surface);
   border-radius: 6px;
   cursor: pointer;
   font-size: 12px;
@@ -1294,7 +1294,7 @@ body {
 .habit-day-pick.active {
   border-color: var(--teal);
   color: var(--teal);
-  background: #e7f6f5;
+  background: var(--accent-soft);
 }
 
 .habit-add-actions {
@@ -1316,7 +1316,7 @@ body {
 }
 
 .habit-add-actions button[type='button'] {
-  background: #eef1f2;
+  background: var(--cream-2);
   color: var(--text);
 }
 
@@ -1390,7 +1390,7 @@ body {
   display: flex;
   align-items: center;
   justify-content: center;
-  background: #f2f5f6;
+  background: var(--cream-2);
   border-radius: 10px;
   flex-shrink: 0;
 }
@@ -1449,8 +1449,8 @@ body {
   width: 30px;
   height: 30px;
   border-radius: 50%;
-  border: 2px solid #d4d8dd;
-  background: #fff;
+  border: 2px solid var(--border);
+  background: var(--surface);
   cursor: pointer;
   color: #fff;
   font-size: 14px;
@@ -1521,7 +1521,7 @@ body {
   padding: 14px;
   border: 1px solid var(--border);
   border-radius: 10px;
-  background: #fff;
+  background: var(--surface);
 }
 
 .cd-title-input {
@@ -1566,7 +1566,7 @@ body {
   width: 34px;
   height: 34px;
   border: 1px solid var(--border);
-  background: #fff;
+  background: var(--surface);
   border-radius: 8px;
   cursor: pointer;
   font-size: 18px;
@@ -1596,7 +1596,7 @@ body {
 }
 
 .cd-form-actions button[type='button'] {
-  background: #ece8de;
+  background: var(--cream-2);
   color: var(--text);
 }
 
@@ -1609,7 +1609,7 @@ body {
 
 .cd-card {
   position: relative;
-  background: #fff;
+  background: var(--surface);
   border: 1px solid var(--border);
   border-radius: 14px;
   padding: 16px;
@@ -1710,4 +1710,339 @@ body {
 
 .cd-del:hover {
   color: var(--red);
+}
+
+/* ---------------- Theme tokens: surface/hover + dark mode ---------------- */
+:root {
+  --surface: #ffffff;
+  --hover: #f4f1ea;
+}
+
+[data-theme='dark'] {
+  --bg: #1f1e1c;
+  --cream: #2a2825;
+  --cream-2: #262421;
+  --surface: #2d2b27;
+  --hover: #34322e;
+  --text: #ece9e3;
+  --muted: #9c958a;
+  --border: #3a3631;
+}
+
+/* ---------------- Appearance: font size / density / animations ---------------- */
+html[data-font-size='small'] .app {
+  zoom: 0.92;
+}
+html[data-font-size='large'] .app {
+  zoom: 1.1;
+}
+html[data-font-size='xlarge'] .app {
+  zoom: 1.22;
+}
+html[data-density='compact'] .task-item {
+  padding-top: 6px;
+  padding-bottom: 6px;
+}
+html[data-density='loose'] .task-item {
+  padding-top: 16px;
+  padding-bottom: 16px;
+}
+html[data-animations='off'] * {
+  transition: none !important;
+  animation: none !important;
+}
+
+/* ---------------- Module rail settings button ---------------- */
+.rail-settings {
+  margin-top: auto;
+  margin-bottom: 10px;
+}
+
+/* ---------------- Settings modal ---------------- */
+.settings-overlay {
+  position: fixed;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.42);
+  z-index: 50;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.settings-modal {
+  width: min(880px, 92vw);
+  height: min(620px, 88vh);
+  background: var(--surface);
+  border-radius: 16px;
+  overflow: hidden;
+  display: flex;
+  box-shadow: 0 20px 60px rgba(0, 0, 0, 0.3);
+}
+
+.settings-nav {
+  width: 200px;
+  flex-shrink: 0;
+  background: var(--cream);
+  border-right: 1px solid var(--border);
+  padding: 16px 10px;
+  overflow-y: auto;
+}
+
+.settings-nav-title {
+  font-family: var(--serif);
+  font-size: 18px;
+  font-weight: 600;
+  padding: 6px 10px 14px;
+}
+
+.settings-nav-item {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  border: none;
+  background: transparent;
+  color: var(--text);
+  padding: 8px 10px;
+  border-radius: 8px;
+  font-size: 13px;
+  cursor: pointer;
+  text-align: left;
+}
+
+.settings-nav-item:hover {
+  background: rgba(0, 0, 0, 0.05);
+}
+
+.settings-nav-item.active {
+  background: var(--accent-soft);
+  color: var(--accent);
+  font-weight: 600;
+}
+
+.settings-nav-icon {
+  width: 18px;
+  text-align: center;
+}
+
+.settings-content {
+  flex: 1;
+  position: relative;
+  overflow-y: auto;
+  padding: 24px 28px;
+}
+
+.settings-close {
+  position: absolute;
+  top: 16px;
+  right: 18px;
+  border: none;
+  background: transparent;
+  color: var(--muted);
+  font-size: 16px;
+  cursor: pointer;
+}
+
+.settings-close:hover {
+  color: var(--text);
+}
+
+.settings-section h2 {
+  font-family: var(--serif);
+  font-size: 19px;
+  margin: 0 0 18px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+
+.set-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  padding: 12px 0;
+  border-bottom: 1px solid var(--border);
+}
+
+.set-row.disabled {
+  opacity: 0.6;
+}
+
+.set-label {
+  font-size: 14px;
+}
+
+.set-hint {
+  font-size: 12px;
+  color: var(--muted);
+  margin-top: 3px;
+}
+
+.set-control {
+  flex-shrink: 0;
+}
+
+.set-note {
+  font-size: 12px;
+  color: var(--muted);
+  margin: 4px 0 14px;
+  line-height: 1.6;
+}
+
+.seg {
+  display: inline-flex;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  overflow: hidden;
+}
+
+.seg-btn {
+  border: none;
+  background: var(--surface);
+  color: var(--text);
+  padding: 6px 12px;
+  font-size: 13px;
+  cursor: pointer;
+}
+
+.seg-btn:not(:last-child) {
+  border-right: 1px solid var(--border);
+}
+
+.seg-btn.active {
+  background: var(--accent);
+  color: #fff;
+}
+
+.switch {
+  width: 40px;
+  height: 22px;
+  border-radius: 12px;
+  border: none;
+  background: var(--border);
+  position: relative;
+  cursor: pointer;
+  transition: background 0.15s;
+}
+
+.switch.on {
+  background: var(--accent);
+}
+
+.switch-knob {
+  position: absolute;
+  top: 2px;
+  left: 2px;
+  width: 18px;
+  height: 18px;
+  border-radius: 50%;
+  background: #fff;
+  transition: left 0.15s;
+}
+
+.switch.on .switch-knob {
+  left: 20px;
+}
+
+.accent-swatches {
+  display: flex;
+  gap: 8px;
+}
+
+.accent-swatch {
+  width: 24px;
+  height: 24px;
+  border-radius: 50%;
+  border: 2px solid transparent;
+  cursor: pointer;
+}
+
+.accent-swatch.active {
+  border-color: var(--text);
+}
+
+.settings-content input,
+.settings-content select {
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 7px 10px;
+  font-size: 13px;
+  background: var(--surface);
+  color: var(--text);
+  min-width: 210px;
+}
+
+.set-actions {
+  display: flex;
+  gap: 8px;
+  margin-top: 16px;
+}
+
+.set-actions button,
+.set-reset {
+  border: 1px solid var(--border);
+  background: var(--surface);
+  color: var(--text);
+  border-radius: 8px;
+  padding: 6px 14px;
+  font-size: 13px;
+  cursor: pointer;
+}
+
+.btn-primary {
+  background: var(--accent) !important;
+  color: #fff !important;
+  border-color: var(--accent) !important;
+}
+
+.btn-danger:hover {
+  color: var(--red);
+  border-color: var(--red);
+}
+
+.set-reset {
+  font-size: 12px;
+  padding: 4px 10px;
+}
+
+.ai-result {
+  margin-top: 12px;
+  font-size: 13px;
+  color: var(--muted);
+  background: var(--cream);
+  padding: 8px 12px;
+  border-radius: 8px;
+}
+
+.set-link {
+  color: var(--accent);
+}
+
+.set-static {
+  color: var(--muted);
+  font-size: 13px;
+}
+
+.set-badge {
+  font-size: 12px;
+  color: var(--muted);
+  background: var(--cream-2);
+  padding: 3px 8px;
+  border-radius: 6px;
+}
+
+.set-placeholder {
+  text-align: center;
+  padding: 30px 0;
+  color: var(--muted);
+}
+
+.set-placeholder-icon {
+  font-size: 40px;
+  margin-bottom: 10px;
+}
+
+.set-placeholder p {
+  margin: 6px 0;
 }
