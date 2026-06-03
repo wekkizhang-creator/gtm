@@ -3492,6 +3492,92 @@ html[data-animations='off'] * {
   box-sizing: border-box;
 }
 
+.td-note-toolbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  margin: 2px 0 8px;
+}
+
+.td-note-tabs {
+  display: inline-flex;
+  gap: 4px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 3px;
+  background: var(--surface);
+}
+
+.td-note-tabs button {
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--muted);
+  padding: 4px 9px;
+  font-size: 12px;
+  cursor: pointer;
+}
+
+.td-note-tabs button.active {
+  background: var(--accent-soft);
+  color: var(--accent);
+  font-weight: 700;
+}
+
+.td-note-preview {
+  min-height: 60px;
+  margin-bottom: 18px;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  padding: 10px 12px;
+  background: var(--surface);
+  color: var(--text);
+  font-size: 13px;
+  line-height: 1.58;
+  word-break: break-word;
+}
+
+.td-note-preview-empty {
+  color: var(--muted);
+}
+
+.td-note-preview h4,
+.td-note-preview h5,
+.td-note-preview h6,
+.td-note-preview p,
+.td-note-preview ul,
+.td-note-preview ol {
+  margin: 0 0 8px;
+}
+
+.td-note-preview h4,
+.td-note-preview h5,
+.td-note-preview h6 {
+  font-size: 13px;
+}
+
+.td-note-preview ul,
+.td-note-preview ol {
+  padding-left: 20px;
+}
+
+.td-note-preview code {
+  border-radius: 5px;
+  padding: 1px 4px;
+  background: var(--cream-2);
+  font-size: 12px;
+}
+
+.td-note-preview a {
+  color: var(--accent);
+  text-decoration: none;
+}
+
+.td-note-preview a:hover {
+  text-decoration: underline;
+}
+
 .td-note-actions {
   display: flex;
   align-items: center;

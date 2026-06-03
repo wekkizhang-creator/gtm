@@ -3,6 +3,7 @@ import { api } from '../api/client';
 import { aiConfigurationIssue } from '../aiGuide';
 import { ensureNotificationPermission } from '../notificationPermission';
 import { useSettings } from '../settings';
+import { TaskNoteMarkdown } from '../taskNoteMarkdown';
 import { playTaskCompletionSound } from '../taskCompletionSound';
 import { PRIORITY_COLORS, PRIORITY_LABELS, isoToDateInput, dateInputToISO } from '../util';
 import type { AIBreakdownSuggestion, AIQuadrantSuggestionResult, Task, TaskActivity, TaskChecklistItem, Priority, Tag } from '../types';
@@ -46,6 +47,7 @@ export default function TaskDetailModal({
   const [activity, setActivity] = useState<TaskActivity[]>([]);
   const [title, setTitle] = useState(initial.title);
   const [note, setNote] = useState(initial.note ?? '');
+  const [noteMode, setNoteMode] = useState<'edit' | 'preview'>('edit');
   const [estimate, setEstimate] = useState(initial.estimatedMinutes ? String(initial.estimatedMinutes) : '');
   const [manualProgress, setManualProgress] = useState(initial.manualProgress == null ? '' : String(initial.manualProgress));
   const [tags, setTags] = useState<Tag[]>([]);
@@ -79,6 +81,7 @@ export default function TaskDetailModal({
       setChecklist(items);
       setActivity(activityItems);
       setTags(allTags);
+      setNote(t.note ?? '');
       setManualProgress(t.manualProgress == null ? '' : String(t.manualProgress));
       setError(null);
     } catch (e) {
@@ -622,13 +625,26 @@ export default function TaskDetailModal({
           </label>
         </div>
 
+        <div className="td-note-toolbar">
+          <span className="td-section-title">备注</span>
+          <div className="td-note-tabs" role="tablist" aria-label="备注模式">
+            <button type="button" className={noteMode === 'edit' ? 'active' : ''} onClick={() => setNoteMode('edit')}>
+              编辑
+            </button>
+            <button type="button" className={noteMode === 'preview' ? 'active' : ''} onClick={() => setNoteMode('preview')}>
+              预览
+            </button>
+          </div>
+        </div>
         <textarea
+          hidden={noteMode !== 'edit'}
           className="td-note"
           placeholder="备注…"
           value={note}
           onChange={(e) => setNote(e.target.value)}
           onBlur={() => note !== (task.note ?? '') && void patch({ note: note || null })}
         />
+        {noteMode === 'preview' && <TaskNoteMarkdown markdown={note} />}
         <div className="td-note-actions">
           <button type="button" onClick={() => void openAsStickyNote()}>
             打开为便签

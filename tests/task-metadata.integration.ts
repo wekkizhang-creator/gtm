@@ -166,6 +166,7 @@ async function main() {
     const recurrenceDueAt = '2026-06-01T10:00:00.000Z';
     const nextRecurrenceStartAt = '2026-06-08T09:00:00.000Z';
     const nextRecurrenceDueAt = '2026-06-08T10:00:00.000Z';
+    const markdownNote = '# Launch notes\n- Review [brief](https://example.com/brief)\n- Keep `source` real';
     const created = await req(base, '/api/tasks', {
       method: 'POST',
       cookie: userACookie,
@@ -179,6 +180,7 @@ async function main() {
         recurrenceRule: 'FREQ=WEEKLY',
         manualProgress: 40,
         pinned: true,
+        note: markdownNote,
       }),
     });
     assert(created.res.status === 201, `create task failed: ${created.res.status} ${JSON.stringify(created.body)}`);
@@ -187,6 +189,7 @@ async function main() {
     assert(created.body.task.recurrenceRule === 'FREQ=WEEKLY', 'task recurrence did not round-trip');
     assert(created.body.task.manualProgress === 40, 'manual progress did not round-trip');
     assert(created.body.task.pinned === true, 'pinned did not round-trip');
+    assert(created.body.task.note === markdownNote, 'markdown task note did not round-trip');
 
     const tagRes = await req(base, '/api/tags', {
       method: 'POST',
@@ -456,7 +459,8 @@ async function main() {
 
     const db = new DatabaseSync(dbPath);
     try {
-      const taskRow = db.prepare('SELECT recurrence_rule, manual_progress, pinned, status, completed FROM tasks WHERE id = ?').get(taskId) as {
+      const taskRow = db.prepare('SELECT note, recurrence_rule, manual_progress, pinned, status, completed FROM tasks WHERE id = ?').get(taskId) as {
+        note: string;
         recurrence_rule: string;
         manual_progress: number;
         pinned: number;
@@ -503,6 +507,7 @@ async function main() {
         .get(existingTask.body.task.id) as { c: number };
       const childTagRow = db.prepare('SELECT parent_id FROM tags WHERE id = ?').get(childTag.body.tag.id) as { parent_id: string | null };
       assert(taskRow.recurrence_rule === 'FREQ=WEEKLY', 'DB recurrence_rule mismatch');
+      assert(taskRow.note === markdownNote, 'DB markdown note mismatch');
       assert(taskRow.manual_progress === 40, 'DB manual_progress mismatch');
       assert(taskRow.pinned === 1, 'DB pinned mismatch');
       assert(taskRow.status === 'done' && taskRow.completed === 1, 'DB status/completed mismatch');

@@ -2464,3 +2464,15 @@ The sidebar create-list form exposes `任务清单` / `笔记清单`. Existing c
 ### Verification
 
 `npm run test:list-batch` creates a note list through HTTP, verifies the returned type, creates a record in that list, verifies direct completion and batch completion both fail with `note_list_no_completion`, and checks SQLite for `lists.type = "note"` plus an incomplete task row. Client/server typecheck and `npm run build -w client` verify the DTO, sidebar, API client, and note-list row rendering compile.
+
+## Slice 91: Task Note Markdown Preview
+
+T-15 now has a real Markdown note surface instead of a plain text-only field. The persisted data model is unchanged: `tasks.note` stores the Markdown source text. The existing `POST /api/tasks` and `PATCH /api/tasks/:id` paths remain authoritative for writing notes, so rich note content still travels through real HTTP and SQLite.
+
+### Client Contract
+
+`TaskDetailModal` exposes Edit / Preview modes for task notes. Edit mode keeps the existing textarea and saves through `PATCH /api/tasks/:id`. Preview mode renders headings, paragraphs, unordered lists, ordered lists, inline code, emphasis, strong text, and links. Link rendering is safe-by-default: only `http:`, `https:`, and `mailto:` URLs become anchors; unsafe or relative Markdown links are shown as text and never injected as HTML.
+
+### Verification
+
+`npm run test:task-note-markdown-client` verifies Markdown block parsing, list parsing, inline code, emphasis, safe link rendering, and unsafe-link rejection. `npm run test:metadata` now creates a task with Markdown note text through HTTP and checks the same source text in both the task DTO and SQLite `tasks.note`. Client/server typecheck and `npm run build -w client` verify the task detail UI compiles.
