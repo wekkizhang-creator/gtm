@@ -225,7 +225,16 @@ export interface DesktopTodayTasksWidgetDataDTO {
   allowComplete: boolean;
 }
 
-export type DesktopWidgetDataDTO = DesktopTodayTasksWidgetDataDTO;
+export interface DesktopInboxQuickAddWidgetDataDTO {
+  type: 'inbox-quick-add';
+  widget: DesktopWidgetDTO;
+  generatedAt: string;
+  tasks: TaskDTO[];
+  counts: { shown: number; total: number };
+  quickAdd: boolean;
+}
+
+export type DesktopWidgetDataDTO = DesktopTodayTasksWidgetDataDTO | DesktopInboxQuickAddWidgetDataDTO;
 
 export interface DesktopWidgetActionResultDTO {
   widget: DesktopWidgetDTO;

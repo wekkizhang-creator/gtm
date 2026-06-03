@@ -1,5 +1,5 @@
 import { randomBytes, randomUUID, scryptSync, timingSafeEqual } from 'node:crypto';
-import { db, nowISO } from './db';
+import { db, getInboxId, nowISO } from './db';
 import {
   AppError,
   type DesktopWidgetActionResultDTO,
@@ -384,10 +384,28 @@ function todayTasksWidgetData(userId: string, widget: DesktopWidgetDTO): Desktop
   };
 }
 
+function inboxQuickAddWidgetData(userId: string, widget: DesktopWidgetDTO): DesktopWidgetDataDTO {
+  const allTasks = taskRepo.getTasks(userId, { view: 'inbox' });
+  const limit = Number(widget.config.limit);
+  const tasks = allTasks.slice(0, Number.isInteger(limit) && limit > 0 ? limit : 6);
+  return {
+    type: 'inbox-quick-add',
+    widget,
+    generatedAt: nowISO(),
+    tasks,
+    counts: {
+      shown: tasks.length,
+      total: allTasks.length,
+    },
+    quickAdd: widget.config.quickAdd === true,
+  };
+}
+
 export function getWidgetData(userId: string, id: string): DesktopWidgetDataDTO {
   const widget = requireWidget(userId, id);
   if (!widget.enabled) throw new AppError(409, 'desktop_widget_disabled', 'widget is disabled');
   if (widget.type === 'today-tasks') return todayTasksWidgetData(userId, widget);
+  if (widget.type === 'inbox-quick-add') return inboxQuickAddWidgetData(userId, widget);
   throw new AppError(501, 'desktop_widget_data_not_implemented', `${widget.type} widget data is not implemented`);
 }
 
@@ -395,6 +413,23 @@ export function runWidgetAction(userId: string, id: string, input: unknown): Des
   if (!isRecord(input)) throw new AppError(400, 'invalid_desktop_widget_action', 'body must be an object');
   const widget = requireWidget(userId, id);
   if (!widget.enabled) throw new AppError(409, 'desktop_widget_disabled', 'widget is disabled');
+  if (widget.type === 'inbox-quick-add') {
+    if (input.action !== 'quick_add_task') {
+      throw new AppError(400, 'invalid_desktop_widget_action', 'action must be quick_add_task');
+    }
+    if (widget.config.quickAdd !== true) {
+      throw new AppError(409, 'desktop_widget_action_disabled', 'quick add is disabled for this widget');
+    }
+    if (typeof input.text !== 'string' || !input.text.trim()) {
+      throw new AppError(400, 'invalid_desktop_widget_action', 'text is required');
+    }
+    const task = taskRepo.createTask(userId, {
+      title: input.text.trim(),
+      listId: getInboxId(userId),
+      source: 'desktop_widget',
+    });
+    return { widget, task, data: inboxQuickAddWidgetData(userId, widget) };
+  }
   if (widget.type !== 'today-tasks') {
     throw new AppError(501, 'desktop_widget_action_not_implemented', `${widget.type} widget actions are not implemented`);
   }

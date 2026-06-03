@@ -275,7 +275,16 @@ export interface DesktopTodayTasksWidgetData {
   allowComplete: boolean;
 }
 
-export type DesktopWidgetData = DesktopTodayTasksWidgetData;
+export interface DesktopInboxQuickAddWidgetData {
+  type: 'inbox-quick-add';
+  widget: DesktopWidget;
+  generatedAt: string;
+  tasks: Task[];
+  counts: { shown: number; total: number };
+  quickAdd: boolean;
+}
+
+export type DesktopWidgetData = DesktopTodayTasksWidgetData | DesktopInboxQuickAddWidgetData;
 
 export interface DesktopWidgetActionResult {
   widget: DesktopWidget;

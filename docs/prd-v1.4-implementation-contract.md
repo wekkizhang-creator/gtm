@@ -2494,3 +2494,11 @@ WID-01 now has a real widget-host contract instead of only a stored template. Ex
 ### Verification
 
 `npm run test:desktop` now creates overdue/today/future/completed tasks through HTTP, creates a `today-tasks` widget, verifies the widget data contains only real today-visible open tasks, completes one task through the widget action, verifies the refreshed data excludes it, rejects invalid actions and disabled completion, returns `501` for unimplemented widget types, and checks SQLite for both the widget config and the task `completed` write.
+
+## Slice 93: Inbox Quick Add Desktop Widget
+
+WID-02 now uses the same widget-host data/action boundary as WID-01. `GET /api/desktop/widgets/:id/data` supports `type:"inbox-quick-add"` and returns the saved widget config, generated timestamp, recent real inbox tasks, and counts `{ shown, total }`.
+
+`POST /api/desktop/widgets/:id/actions` supports `{ action:"quick_add_task", text }` for `inbox-quick-add`. The route respects `config.quickAdd`, validates non-empty text, creates a real task in the account inbox through `repo.createTask`, marks `source:"desktop_widget"`, and returns refreshed widget data. Invalid actions return `400`; disabled quick add returns `409 desktop_widget_action_disabled`.
+
+`npm run test:desktop` now creates an `inbox-quick-add` widget, verifies widget data reads real inbox tasks, creates a task through the widget action, verifies the new task appears in refreshed data, rejects wrong actions and disabled quick-add config, exports the widget row, and checks SQLite for the widget config plus a task row whose `source` is `desktop_widget` and whose `list_id` is the account inbox.

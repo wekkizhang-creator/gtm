@@ -320,8 +320,54 @@ async function main() {
     const unsupportedWidgetData = await req(base, `/api/desktop/widgets/${countdownWidget.body.widget.id}/data`, { cookie });
     assert(unsupportedWidgetData.res.status === 501, `unsupported widget data should be 501, got ${unsupportedWidgetData.res.status}`);
 
+    const inboxWidget = await req(base, '/api/desktop/widgets', {
+      method: 'POST',
+      cookie,
+      body: JSON.stringify({
+        type: 'inbox-quick-add',
+        title: 'Inbox capture',
+        config: { quickAdd: true, limit: 6 },
+      }),
+    });
+    assert(inboxWidget.res.status === 201, `inbox widget create failed: ${inboxWidget.res.status}`);
+    const inboxDataBefore = await req(base, `/api/desktop/widgets/${inboxWidget.body.widget.id}/data`, { cookie });
+    assert(inboxDataBefore.res.status === 200, `inbox widget data failed: ${inboxDataBefore.res.status}`);
+    assert(inboxDataBefore.body.data.type === 'inbox-quick-add', 'inbox widget data type mismatch');
+    assert(inboxDataBefore.body.data.quickAdd === true, 'inbox widget quickAdd flag should come from config');
+    assert(inboxDataBefore.body.data.counts.total >= 2, 'inbox widget should read real inbox tasks');
+
+    const inboxQuickAdd = await req(base, `/api/desktop/widgets/${inboxWidget.body.widget.id}/actions`, {
+      method: 'POST',
+      cookie,
+      body: JSON.stringify({ action: 'quick_add_task', text: 'Widget inbox capture' }),
+    });
+    assert(inboxQuickAdd.res.status === 200, `inbox widget quick-add failed: ${inboxQuickAdd.res.status}`);
+    assert(inboxQuickAdd.body.task.title === 'Widget inbox capture', 'inbox widget quick-add task title mismatch');
+    assert(inboxQuickAdd.body.task.source === 'desktop_widget', 'inbox widget quick-add should mark source=desktop_widget');
+    assert(inboxQuickAdd.body.data.tasks.some((task: any) => task.id === inboxQuickAdd.body.task.id), 'new inbox task should appear in refreshed widget data');
+
+    const invalidInboxAction = await req(base, `/api/desktop/widgets/${inboxWidget.body.widget.id}/actions`, {
+      method: 'POST',
+      cookie,
+      body: JSON.stringify({ action: 'complete_task', taskId: todayTask.body.task.id }),
+    });
+    assert(invalidInboxAction.res.status === 400, `invalid inbox widget action should be 400, got ${invalidInboxAction.res.status}`);
+
+    const inboxWidgetDisabledQuickAdd = await req(base, `/api/desktop/widgets/${inboxWidget.body.widget.id}`, {
+      method: 'PATCH',
+      cookie,
+      body: JSON.stringify({ config: { quickAdd: false } }),
+    });
+    assert(inboxWidgetDisabledQuickAdd.body.widget.config.quickAdd === false, 'inbox quickAdd config patch did not persist');
+    const disabledInboxQuickAdd = await req(base, `/api/desktop/widgets/${inboxWidget.body.widget.id}/actions`, {
+      method: 'POST',
+      cookie,
+      body: JSON.stringify({ action: 'quick_add_task', text: 'Should not create' }),
+    });
+    assert(disabledInboxQuickAdd.res.status === 409, `disabled inbox quick-add should be 409, got ${disabledInboxQuickAdd.res.status}`);
+
     const widgetList = await req(base, '/api/desktop/widgets', { cookie });
-    assert(widgetList.body.widgets.length === 2, `expected two widgets, got ${widgetList.body.widgets.length}`);
+    assert(widgetList.body.widgets.length === 3, `expected three widgets, got ${widgetList.body.widgets.length}`);
 
     const disableComplete = await req(base, `/api/desktop/widgets/${widget.body.widget.id}`, {
       method: 'PATCH',
@@ -489,7 +535,7 @@ async function main() {
     assert(unlock.body.status.state.locked === false, 'desktop unlock state did not persist');
 
     const exported = await req(base, '/api/settings/export', { cookie });
-    assert(exported.body.desktopWidgets.length === 2, 'export should include desktop widgets');
+    assert(exported.body.desktopWidgets.length === 3, 'export should include desktop widgets');
     assert(exported.body.desktopShortcuts.length === 7, 'export should include reset default desktop shortcuts');
     assert(exported.body.desktopShellState.length >= 4, 'export should include desktop shell state rows');
     assert(!('desktopAppLockCredentials' in exported.body), 'export must not include app-lock password credentials');
@@ -500,6 +546,9 @@ async function main() {
       const widgetRow = db
         .prepare("SELECT config_json, enabled FROM desktop_widgets WHERE type = 'today-tasks'")
         .get() as { config_json: string; enabled: number };
+      const inboxWidgetRow = db
+        .prepare("SELECT config_json FROM desktop_widgets WHERE type = 'inbox-quick-add'")
+        .get() as { config_json: string };
       const countdownRow = db
         .prepare("SELECT config_json FROM desktop_widgets WHERE type = 'countdowns'")
         .get() as { config_json: string };
@@ -522,12 +571,16 @@ async function main() {
         .get() as { value_json: string };
       const credentialCount = db.prepare('SELECT COUNT(*) count FROM desktop_app_lock_credentials').get() as { count: number };
       const completedFromWidget = db.prepare('SELECT completed FROM tasks WHERE id = ?').get(overdueTask.body.task.id) as { completed: number };
-      assert(widgetCount.count === 2, 'widget templates were not written to SQLite');
+      const inboxTaskRow = db.prepare('SELECT source, list_id FROM tasks WHERE id = ?').get(inboxQuickAdd.body.task.id) as { source: string; list_id: string };
+      const inboxListRow = db.prepare("SELECT id FROM lists WHERE user_id IS NOT NULL AND is_inbox = 1").get() as { id: string };
+      assert(widgetCount.count === 3, 'widget templates were not written to SQLite');
       assert(JSON.parse(widgetRow.config_json).range === 'today', 'widget config was not written to SQLite');
       assert(JSON.parse(widgetRow.config_json).allowComplete === false, 'widget allowComplete patch was not written to SQLite');
+      assert(JSON.parse(inboxWidgetRow.config_json).quickAdd === false, 'inbox widget quickAdd patch was not written to SQLite');
       assert(JSON.parse(countdownRow.config_json).limit === 3, 'countdown widget config was not written to SQLite');
       assert(widgetRow.enabled === 0, 'widget enabled patch was not written to SQLite');
       assert(completedFromWidget.completed === 1, 'desktop widget completion was not written to SQLite');
+      assert(inboxTaskRow.source === 'desktop_widget' && inboxTaskRow.list_id === inboxListRow.id, 'inbox widget quick-add task was not written to inbox in SQLite');
       assert(shortcutCount.count === 7, 'default shortcuts were not written to SQLite');
       assert(shortcutRow.accelerator === 'CommandOrControl+N', 'default quick-add accelerator was not written to SQLite');
       assert(!!shortcutRow.registered_at, 'shortcut registration request was not written to SQLite');
