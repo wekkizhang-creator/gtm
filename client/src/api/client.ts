@@ -22,6 +22,8 @@ import type {
   DesktopShortcutTemplate,
   DesktopStatus,
   DesktopWidget,
+  DesktopWidgetActionResult,
+  DesktopWidgetData,
   DesktopWidgetTemplate,
   DiagnosticLogUpload,
   ExternalCalendarEvent,
@@ -495,6 +497,9 @@ export const api = {
     id: string,
     patch: Partial<Pick<DesktopWidget, 'type' | 'title' | 'config' | 'position' | 'enabled'>>,
   ) => req<{ widget: DesktopWidget }>(`/desktop/widgets/${id}`, { method: 'PATCH', body: JSON.stringify(patch) }).then((r) => r.widget),
+  getDesktopWidgetData: (id: string) => req<{ data: DesktopWidgetData }>(`/desktop/widgets/${id}/data`).then((r) => r.data),
+  runDesktopWidgetAction: (id: string, input: { action: 'complete_task'; taskId: string }) =>
+    req<DesktopWidgetActionResult>(`/desktop/widgets/${id}/actions`, { method: 'POST', body: JSON.stringify(input) }),
   deleteDesktopWidget: (id: string) => req<void>(`/desktop/widgets/${id}`, { method: 'DELETE' }),
   listDesktopShortcuts: () => req<{ shortcuts: DesktopShortcut[] }>('/desktop/shortcuts').then((r) => r.shortcuts),
   listDesktopShortcutTemplates: () =>

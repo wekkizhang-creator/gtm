@@ -2476,3 +2476,21 @@ T-15 now has a real Markdown note surface instead of a plain text-only field. Th
 ### Verification
 
 `npm run test:task-note-markdown-client` verifies Markdown block parsing, list parsing, inline code, emphasis, safe link rendering, and unsafe-link rejection. `npm run test:metadata` now creates a task with Markdown note text through HTTP and checks the same source text in both the task DTO and SQLite `tasks.note`. Client/server typecheck and `npm run build -w client` verify the task detail UI compiles.
+
+## Slice 92: Today Tasks Desktop Widget Data
+
+WID-01 now has a real widget-host contract instead of only a stored template. Existing `desktop_widgets` rows remain the configuration source of truth.
+
+### API Contract
+
+- `GET /api/desktop/widgets/:id/data`
+  - For `type:"today-tasks"` returns `{ data }` with the saved widget config, `generatedAt`, real `TaskDTO[]`, and counts `{ shown, total, overdue }`.
+  - Disabled widgets return `409 desktop_widget_disabled`.
+  - Widget types without data implementation return `501 desktop_widget_data_not_implemented`.
+- `POST /api/desktop/widgets/:id/actions`
+  - For `type:"today-tasks"` accepts `{ action:"complete_task", taskId }`.
+  - The route verifies the task is currently part of that widget's real today data, respects `config.allowComplete`, calls the shared `repo.updateTask` path, and returns the completed task plus refreshed widget data.
+
+### Verification
+
+`npm run test:desktop` now creates overdue/today/future/completed tasks through HTTP, creates a `today-tasks` widget, verifies the widget data contains only real today-visible open tasks, completes one task through the widget action, verifies the refreshed data excludes it, rejects invalid actions and disabled completion, returns `501` for unimplemented widget types, and checks SQLite for both the widget config and the task `completed` write.

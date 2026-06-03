@@ -216,6 +216,23 @@ export interface DesktopWidgetTemplateDTO {
   defaultPosition: DesktopWidgetDTO['position'];
 }
 
+export interface DesktopTodayTasksWidgetDataDTO {
+  type: 'today-tasks';
+  widget: DesktopWidgetDTO;
+  generatedAt: string;
+  tasks: TaskDTO[];
+  counts: { shown: number; total: number; overdue: number };
+  allowComplete: boolean;
+}
+
+export type DesktopWidgetDataDTO = DesktopTodayTasksWidgetDataDTO;
+
+export interface DesktopWidgetActionResultDTO {
+  widget: DesktopWidgetDTO;
+  data: DesktopWidgetDataDTO;
+  task?: TaskDTO;
+}
+
 export interface DesktopShortcutDTO {
   id: string;
   action: string;

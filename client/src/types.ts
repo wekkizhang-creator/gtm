@@ -266,6 +266,23 @@ export interface DesktopWidgetTemplate {
   defaultPosition: DesktopWidget['position'];
 }
 
+export interface DesktopTodayTasksWidgetData {
+  type: 'today-tasks';
+  widget: DesktopWidget;
+  generatedAt: string;
+  tasks: Task[];
+  counts: { shown: number; total: number; overdue: number };
+  allowComplete: boolean;
+}
+
+export type DesktopWidgetData = DesktopTodayTasksWidgetData;
+
+export interface DesktopWidgetActionResult {
+  widget: DesktopWidget;
+  data: DesktopWidgetData;
+  task?: Task;
+}
+
 export interface DesktopShortcut {
   id: string;
   action: string;

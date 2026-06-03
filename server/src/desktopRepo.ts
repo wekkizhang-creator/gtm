@@ -2,6 +2,8 @@ import { randomBytes, randomUUID, scryptSync, timingSafeEqual } from 'node:crypt
 import { db, nowISO } from './db';
 import {
   AppError,
+  type DesktopWidgetActionResultDTO,
+  type DesktopWidgetDataDTO,
   type DesktopShellStateDTO,
   type DesktopShortcutDTO,
   type DesktopShortcutTemplateDTO,
@@ -9,6 +11,7 @@ import {
   type DesktopWidgetDTO,
   type DesktopWidgetTemplateDTO,
 } from './types';
+import * as taskRepo from './repo';
 
 type WidgetRow = {
   id: string;
@@ -348,6 +351,67 @@ function mapWidget(row: WidgetRow): DesktopWidgetDTO {
     createdAt: row.created_at,
     updatedAt: row.updated_at,
   };
+}
+
+function requireWidget(userId: string, id: string): DesktopWidgetDTO {
+  const widget = getWidget(userId, id);
+  if (!widget) throw new AppError(404, 'not_found', 'widget not found');
+  return widget;
+}
+
+function localTodayStartMs(): number {
+  const d = new Date();
+  d.setHours(0, 0, 0, 0);
+  return d.getTime();
+}
+
+function todayTasksWidgetData(userId: string, widget: DesktopWidgetDTO): DesktopWidgetDataDTO {
+  const allTasks = taskRepo.getTasks(userId, { view: 'today' });
+  const limit = Number(widget.config.limit);
+  const tasks = allTasks.slice(0, Number.isInteger(limit) && limit > 0 ? limit : 8);
+  const todayStart = localTodayStartMs();
+  return {
+    type: 'today-tasks',
+    widget,
+    generatedAt: nowISO(),
+    tasks,
+    counts: {
+      shown: tasks.length,
+      total: allTasks.length,
+      overdue: allTasks.filter((task) => task.dueDate && Date.parse(task.dueDate) < todayStart).length,
+    },
+    allowComplete: widget.config.allowComplete === true,
+  };
+}
+
+export function getWidgetData(userId: string, id: string): DesktopWidgetDataDTO {
+  const widget = requireWidget(userId, id);
+  if (!widget.enabled) throw new AppError(409, 'desktop_widget_disabled', 'widget is disabled');
+  if (widget.type === 'today-tasks') return todayTasksWidgetData(userId, widget);
+  throw new AppError(501, 'desktop_widget_data_not_implemented', `${widget.type} widget data is not implemented`);
+}
+
+export function runWidgetAction(userId: string, id: string, input: unknown): DesktopWidgetActionResultDTO {
+  if (!isRecord(input)) throw new AppError(400, 'invalid_desktop_widget_action', 'body must be an object');
+  const widget = requireWidget(userId, id);
+  if (!widget.enabled) throw new AppError(409, 'desktop_widget_disabled', 'widget is disabled');
+  if (widget.type !== 'today-tasks') {
+    throw new AppError(501, 'desktop_widget_action_not_implemented', `${widget.type} widget actions are not implemented`);
+  }
+  if (input.action !== 'complete_task') {
+    throw new AppError(400, 'invalid_desktop_widget_action', 'action must be complete_task');
+  }
+  if (widget.config.allowComplete !== true) {
+    throw new AppError(409, 'desktop_widget_action_disabled', 'task completion is disabled for this widget');
+  }
+  if (typeof input.taskId !== 'string' || !input.taskId.trim()) {
+    throw new AppError(400, 'invalid_desktop_widget_action', 'taskId is required');
+  }
+  const todayIds = new Set(taskRepo.getTasks(userId, { view: 'today' }).map((task) => task.id));
+  if (!todayIds.has(input.taskId)) throw new AppError(404, 'not_found', 'task not found in widget data');
+  const task = taskRepo.updateTask(userId, input.taskId, { completed: true });
+  if (!task) throw new AppError(404, 'not_found', 'task not found');
+  return { widget, task, data: todayTasksWidgetData(userId, widget) };
 }
 
 function mapShortcut(row: ShortcutRow): DesktopShortcutDTO {

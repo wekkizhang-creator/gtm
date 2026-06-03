@@ -31,6 +31,14 @@ router.post('/widgets', (req, res) => {
   res.status(201).json({ widget: desktop.createWidget(requireUserId(req), body) });
 });
 
+router.get('/widgets/:id/data', (req, res) => {
+  res.json({ data: desktop.getWidgetData(requireUserId(req), req.params.id) });
+});
+
+router.post('/widgets/:id/actions', (req, res) => {
+  res.json(desktop.runWidgetAction(requireUserId(req), req.params.id, req.body ?? {}));
+});
+
 router.patch('/widgets/:id', (req, res) => {
   const body = req.body ?? {};
   if (typeof body !== 'object' || Array.isArray(body)) throw new AppError(400, 'invalid_desktop_widget', 'body must be an object');

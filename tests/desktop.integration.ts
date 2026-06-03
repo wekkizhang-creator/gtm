@@ -248,6 +248,64 @@ async function main() {
     assert(widget.body.widget.config.range === 'today', 'widget config did not round-trip');
     assert(widget.body.widget.position.width === 360, 'widget position did not round-trip');
 
+    const atLocalHour = (offsetDays: number, hour: number) => {
+      const d = new Date();
+      d.setDate(d.getDate() + offsetDays);
+      d.setHours(hour, 0, 0, 0);
+      return d.toISOString();
+    };
+    const overdueTask = await req(base, '/api/tasks', {
+      method: 'POST',
+      cookie,
+      body: JSON.stringify({ title: 'Widget overdue task', dueDate: atLocalHour(-1, 9), isAllDay: true }),
+    });
+    const todayTask = await req(base, '/api/tasks', {
+      method: 'POST',
+      cookie,
+      body: JSON.stringify({ title: 'Widget today task', dueDate: atLocalHour(0, 12), isAllDay: false }),
+    });
+    const futureTask = await req(base, '/api/tasks', {
+      method: 'POST',
+      cookie,
+      body: JSON.stringify({ title: 'Widget future task', dueDate: atLocalHour(1, 12), isAllDay: false }),
+    });
+    const completedTask = await req(base, '/api/tasks', {
+      method: 'POST',
+      cookie,
+      body: JSON.stringify({ title: 'Widget completed task', dueDate: atLocalHour(0, 13), isAllDay: false, status: 'done' }),
+    });
+    assert(futureTask.res.status === 201 && completedTask.res.status === 201, 'widget fixture tasks should be created');
+
+    const widgetData = await req(base, `/api/desktop/widgets/${widget.body.widget.id}/data`, { cookie });
+    assert(widgetData.res.status === 200, `today widget data failed: ${widgetData.res.status}`);
+    const widgetTaskIds = widgetData.body.data.tasks.map((task: any) => task.id);
+    assert(widgetData.body.data.type === 'today-tasks', 'today widget data type mismatch');
+    assert(widgetData.body.data.allowComplete === true, 'today widget should allow completion from config');
+    assert(widgetData.body.data.counts.total === 2, `today widget total count mismatch: ${widgetData.body.data.counts.total}`);
+    assert(widgetData.body.data.counts.shown === 2, `today widget shown count mismatch: ${widgetData.body.data.counts.shown}`);
+    assert(widgetData.body.data.counts.overdue === 1, `today widget overdue count mismatch: ${widgetData.body.data.counts.overdue}`);
+    assert(widgetTaskIds.includes(overdueTask.body.task.id), 'today widget should include overdue task');
+    assert(widgetTaskIds.includes(todayTask.body.task.id), 'today widget should include today task');
+    assert(!widgetTaskIds.includes(futureTask.body.task.id), 'today widget must not include future tasks');
+    assert(!widgetTaskIds.includes(completedTask.body.task.id), 'today widget must not include completed tasks');
+
+    const widgetComplete = await req(base, `/api/desktop/widgets/${widget.body.widget.id}/actions`, {
+      method: 'POST',
+      cookie,
+      body: JSON.stringify({ action: 'complete_task', taskId: overdueTask.body.task.id }),
+    });
+    assert(widgetComplete.res.status === 200, `today widget completion failed: ${widgetComplete.res.status}`);
+    assert(widgetComplete.body.task.completed === true, 'widget completion should complete the task');
+    assert(!widgetComplete.body.data.tasks.some((task: any) => task.id === overdueTask.body.task.id), 'completed task should leave widget data');
+    assert(widgetComplete.body.data.counts.total === 1, 'today widget total should refresh after completion');
+
+    const invalidWidgetAction = await req(base, `/api/desktop/widgets/${widget.body.widget.id}/actions`, {
+      method: 'POST',
+      cookie,
+      body: JSON.stringify({ action: 'delete_task', taskId: todayTask.body.task.id }),
+    });
+    assert(invalidWidgetAction.res.status === 400, `invalid widget action should be 400, got ${invalidWidgetAction.res.status}`);
+
     const countdownWidget = await req(base, '/api/desktop/widgets', {
       method: 'POST',
       cookie,
@@ -259,9 +317,24 @@ async function main() {
     });
     assert(countdownWidget.res.status === 201, `countdown widget create failed: ${countdownWidget.res.status}`);
     assert(countdownWidget.body.widget.config.limit === 3, 'countdown widget config did not round-trip');
+    const unsupportedWidgetData = await req(base, `/api/desktop/widgets/${countdownWidget.body.widget.id}/data`, { cookie });
+    assert(unsupportedWidgetData.res.status === 501, `unsupported widget data should be 501, got ${unsupportedWidgetData.res.status}`);
 
     const widgetList = await req(base, '/api/desktop/widgets', { cookie });
     assert(widgetList.body.widgets.length === 2, `expected two widgets, got ${widgetList.body.widgets.length}`);
+
+    const disableComplete = await req(base, `/api/desktop/widgets/${widget.body.widget.id}`, {
+      method: 'PATCH',
+      cookie,
+      body: JSON.stringify({ config: { allowComplete: false } }),
+    });
+    assert(disableComplete.body.widget.config.allowComplete === false, 'widget allowComplete patch did not persist');
+    const disabledCompleteAction = await req(base, `/api/desktop/widgets/${widget.body.widget.id}/actions`, {
+      method: 'POST',
+      cookie,
+      body: JSON.stringify({ action: 'complete_task', taskId: todayTask.body.task.id }),
+    });
+    assert(disabledCompleteAction.res.status === 409, `disabled widget completion should be 409, got ${disabledCompleteAction.res.status}`);
 
     const widgetPatch = await req(base, `/api/desktop/widgets/${widget.body.widget.id}`, {
       method: 'PATCH',
@@ -270,6 +343,8 @@ async function main() {
     });
     assert(widgetPatch.body.widget.enabled === false, 'widget enabled patch did not persist');
     assert(widgetPatch.body.widget.title === 'Pinned agenda', 'widget title patch did not persist');
+    const disabledWidgetData = await req(base, `/api/desktop/widgets/${widget.body.widget.id}/data`, { cookie });
+    assert(disabledWidgetData.res.status === 409, `disabled widget data should be 409, got ${disabledWidgetData.res.status}`);
 
     const shortcut = await req(base, '/api/desktop/shortcuts', {
       method: 'POST',
@@ -446,10 +521,13 @@ async function main() {
         .prepare("SELECT value_json FROM desktop_shell_state WHERE key = 'lastActiveAt'")
         .get() as { value_json: string };
       const credentialCount = db.prepare('SELECT COUNT(*) count FROM desktop_app_lock_credentials').get() as { count: number };
+      const completedFromWidget = db.prepare('SELECT completed FROM tasks WHERE id = ?').get(overdueTask.body.task.id) as { completed: number };
       assert(widgetCount.count === 2, 'widget templates were not written to SQLite');
       assert(JSON.parse(widgetRow.config_json).range === 'today', 'widget config was not written to SQLite');
+      assert(JSON.parse(widgetRow.config_json).allowComplete === false, 'widget allowComplete patch was not written to SQLite');
       assert(JSON.parse(countdownRow.config_json).limit === 3, 'countdown widget config was not written to SQLite');
       assert(widgetRow.enabled === 0, 'widget enabled patch was not written to SQLite');
+      assert(completedFromWidget.completed === 1, 'desktop widget completion was not written to SQLite');
       assert(shortcutCount.count === 7, 'default shortcuts were not written to SQLite');
       assert(shortcutRow.accelerator === 'CommandOrControl+N', 'default quick-add accelerator was not written to SQLite');
       assert(!!shortcutRow.registered_at, 'shortcut registration request was not written to SQLite');
