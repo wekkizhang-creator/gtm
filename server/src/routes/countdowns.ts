@@ -1,13 +1,14 @@
 import { Router } from 'express';
 import * as cd from '../countdownsRepo';
 import { AppError } from '../types';
+import { requireUserId } from '../authMiddleware';
 
 const router = Router();
 const DATE_RE = /^\d{4}-\d{2}-\d{2}$/;
 
 // GET /api/countdowns
-router.get('/', (_req, res) => {
-  res.json({ countdowns: cd.listCountdowns() });
+router.get('/', (req, res) => {
+  res.json({ countdowns: cd.listCountdowns(requireUserId(req)) });
 });
 
 // POST /api/countdowns
@@ -19,7 +20,7 @@ router.post('/', (req, res) => {
   if (typeof b.targetDate !== 'string' || !DATE_RE.test(b.targetDate)) {
     throw new AppError(400, 'invalid', 'targetDate must be YYYY-MM-DD');
   }
-  const countdown = cd.createCountdown({
+  const countdown = cd.createCountdown(requireUserId(req), {
     title: b.title.trim(),
     targetDate: b.targetDate,
     icon: b.icon ?? null,
@@ -36,14 +37,14 @@ router.patch('/:id', (req, res) => {
   if (typeof req.body?.targetDate === 'string' && !DATE_RE.test(req.body.targetDate)) {
     throw new AppError(400, 'invalid', 'targetDate must be YYYY-MM-DD');
   }
-  const countdown = cd.updateCountdown(req.params.id, req.body ?? {});
+  const countdown = cd.updateCountdown(requireUserId(req), req.params.id, req.body ?? {});
   if (!countdown) throw new AppError(404, 'not_found', 'countdown not found');
   res.json({ countdown });
 });
 
 // DELETE /api/countdowns/:id
 router.delete('/:id', (req, res) => {
-  if (!cd.deleteCountdown(req.params.id)) throw new AppError(404, 'not_found', 'countdown not found');
+  if (!cd.deleteCountdown(requireUserId(req), req.params.id)) throw new AppError(404, 'not_found', 'countdown not found');
   res.status(204).end();
 });
 

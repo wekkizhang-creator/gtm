@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import { api } from '../api/client';
+import { ensureNotificationPermission } from '../notificationPermission';
 import { useSettings } from '../settings';
 import { startOfDay, addDays, ymd, WEEKDAYS } from '../calendarUtil';
 import type { Habit } from '../types';
@@ -14,6 +15,7 @@ export default function HabitsModule() {
   const [name, setName] = useState('');
   const [icon, setIcon] = useState('🌙');
   const [days, setDays] = useState<number[]>([0, 1, 2, 3, 4, 5, 6]);
+  const [reminderTime, setReminderTime] = useState('');
   const { settings } = useSettings();
   const weekStart = settings.datetime.weekStart;
 
@@ -64,10 +66,15 @@ export default function HabitsModule() {
     const v = name.trim();
     if (!v) return;
     const picked = days.length ? days : [0, 1, 2, 3, 4, 5, 6];
-    void mutate(() => api.createHabit({ name: v, icon, daysOfWeek: picked }));
+    const time = reminderTime || null;
+    void mutate(async () => {
+      if (time) await ensureNotificationPermission('habit_reminder');
+      await api.createHabit({ name: v, icon, daysOfWeek: picked, reminderTime: time });
+    });
     setName('');
     setIcon('🌙');
     setDays([0, 1, 2, 3, 4, 5, 6]);
+    setReminderTime('');
     setShowAdd(false);
   }
 
@@ -120,6 +127,10 @@ export default function HabitsModule() {
               </button>
             ))}
           </div>
+          <label className="habit-reminder-row">
+            <span>提醒</span>
+            <input type="time" value={reminderTime} onChange={(e) => setReminderTime(e.target.value)} />
+          </label>
           <div className="habit-add-actions">
             <button type="submit">创建</button>
             <button type="button" onClick={() => setShowAdd(false)}>

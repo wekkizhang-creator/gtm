@@ -1,5 +1,7 @@
 import { useCallback, useEffect, useState } from 'react';
 import { api } from '../api/client';
+import { useSettings } from '../settings';
+import { playTaskCompletionSound } from '../taskCompletionSound';
 import { PRIORITY_COLORS } from '../util';
 import type { Task } from '../types';
 
@@ -19,6 +21,7 @@ const QUADRANTS: QuadDef[] = [
 ];
 
 export default function MatrixModule() {
+  const { settings } = useSettings();
   const [matrix, setMatrix] = useState<Task[]>([]);
   const [unclassified, setUnclassified] = useState<Task[]>([]);
   const [error, setError] = useState<string | null>(null);
@@ -54,7 +57,11 @@ export default function MatrixModule() {
     void mutate(() => api.updateTask(id, { isImportant: important, isUrgent: urgent }));
   const unclassify = (id: string) =>
     void mutate(() => api.updateTask(id, { isImportant: null, isUrgent: null }));
-  const toggle = (t: Task) => void mutate(() => api.updateTask(t.id, { completed: !t.completed }));
+  const toggle = (t: Task) =>
+    void mutate(async () => {
+      const updated = await api.updateTask(t.id, { completed: !t.completed });
+      await playTaskCompletionSound(settings, t.completed, updated.completed);
+    });
   const quickAdd = (q: QuadDef, title: string) =>
     void mutate(() => api.createTask({ title, isImportant: q.important, isUrgent: q.urgent }));
 

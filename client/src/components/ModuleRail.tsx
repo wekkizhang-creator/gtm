@@ -1,25 +1,33 @@
-export type ModuleKey = 'tasks' | 'calendar' | 'matrix' | 'focus' | 'habits' | 'countdown';
+import { normalizeModuleOrder, type ModuleKey } from '../moduleOrder';
+
+export type { ModuleKey };
 
 interface Props {
   active: ModuleKey;
   onSelect: (m: ModuleKey) => void;
   hidden: string[];
+  order: string[];
   onOpenSettings: () => void;
 }
 
 const ITEMS: { key: ModuleKey; icon: string; label: string }[] = [
+  { key: 'goals', icon: '◎', label: '目标' },
   { key: 'tasks', icon: '✓', label: '任务' },
   { key: 'calendar', icon: '📅', label: '日历' },
   { key: 'matrix', icon: '⊞', label: '四象限' },
   { key: 'focus', icon: '🍅', label: '番茄' },
   { key: 'habits', icon: '🔁', label: '习惯' },
   { key: 'countdown', icon: '⏳', label: '倒数日' },
+  { key: 'notes', icon: '▣', label: '便签' },
 ];
 
-export default function ModuleRail({ active, onSelect, hidden, onOpenSettings }: Props) {
+export default function ModuleRail({ active, onSelect, hidden, order, onOpenSettings }: Props) {
   return (
     <div className="module-rail">
-      {ITEMS.filter((it) => it.key === 'tasks' || !hidden.includes(it.key)).map((it) => (
+      {normalizeModuleOrder(order)
+        .map((key) => ITEMS.find((it) => it.key === key)!)
+        .filter((it) => it.key === 'tasks' || !hidden.includes(it.key))
+        .map((it) => (
         <button
           key={it.key}
           className={`rail-item${active === it.key ? ' active' : ''}`}

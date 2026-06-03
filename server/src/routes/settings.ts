@@ -1,30 +1,32 @@
 import { Router } from 'express';
 import * as settings from '../settingsRepo';
 import { AppError } from '../types';
+import { requireUserId } from '../authMiddleware';
 
 const router = Router();
 
 // GET /api/settings
-router.get('/', (_req, res) => {
-  res.json({ settings: settings.getSettings() });
+router.get('/', (req, res) => {
+  res.json({ settings: settings.getSettings(requireUserId(req)) });
 });
 
 // PATCH /api/settings  (deep-merge partial settings; ai.apiKey:'' deletes the key)
 router.patch('/', (req, res) => {
-  res.json({ settings: settings.patchSettings(req.body ?? {}) });
+  res.json({ settings: settings.patchSettings(requireUserId(req), req.body ?? {}) });
 });
 
 // POST /api/settings/reset  { group }
 router.post('/reset', (req, res) => {
   const group = req.body?.group;
   if (typeof group !== 'string') throw new AppError(400, 'invalid', 'group is required');
-  res.json({ settings: settings.resetGroup(group) });
+  res.json({ settings: settings.resetGroup(requireUserId(req), group) });
 });
 
 // POST /api/settings/ai/test — real connectivity check against the stored AI config
-router.post('/ai/test', async (_req, res) => {
-  const cfg = settings.getSettings().ai;
-  const key = settings.getRawApiKey();
+router.post('/ai/test', async (req, res) => {
+  const userId = requireUserId(req);
+  const cfg = settings.getSettings(userId).ai;
+  const key = settings.getRawApiKey(userId);
   if (!cfg.baseUrl) {
     res.json({ ok: false, message: '未配置 Base URL' });
     return;
@@ -49,7 +51,8 @@ router.post('/ai/test', async (_req, res) => {
 // GET /api/settings/export — download all data as JSON
 router.get('/export', (_req, res) => {
   res.setHeader('Content-Disposition', 'attachment; filename="efficiency-list-export.json"');
-  res.json(settings.exportAll());
+  const req = _req;
+  res.json(settings.exportAll(requireUserId(req)));
 });
 
 export default router;

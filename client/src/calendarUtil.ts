@@ -1,5 +1,5 @@
 export const HOUR_PX = 44; // pixel height of one hour on the time axis
-export type CalView = 'day' | '3day' | 'week';
+export type CalView = 'day' | '3day' | 'week' | 'month';
 
 export const WEEKDAYS = ['周日', '周一', '周二', '周三', '周四', '周五', '周六'];
 
@@ -29,7 +29,12 @@ export function rangeFor(
   let start = startOfDay(anchor);
   let count = 3;
   if (view === 'day') count = 1;
-  else if (view === 'week') {
+  else if (view === 'month') {
+    const first = startOfDay(new Date(anchor.getFullYear(), anchor.getMonth(), 1));
+    const off = (first.getDay() - weekStart + 7) % 7;
+    start = addDays(first, -off);
+    count = 42;
+  } else if (view === 'week') {
     const off = (anchor.getDay() - weekStart + 7) % 7;
     start = addDays(startOfDay(anchor), -off);
     count = 7;
@@ -68,28 +73,44 @@ export function durationMin(startIso: string, dueIso: string): number {
 
 // time-format preference, set by the settings provider
 let _timeFormat: 'system' | '12' | '24' = '24';
+let _locale = 'zh-CN';
+let _timeZoneMode: 'system' | 'manual' = 'system';
+let _timeZone: string | null = null;
 export function setTimeFormat(f: 'system' | '12' | '24'): void {
   _timeFormat = f;
+}
+export function setLocale(locale: string): void {
+  _locale = locale;
+}
+export function setTimeZone(mode: 'system' | 'manual', timeZone: string | null): void {
+  _timeZoneMode = mode;
+  _timeZone = timeZone;
+}
+function activeTimeZone(): string | undefined {
+  return _timeZoneMode === 'manual' && _timeZone ? _timeZone : undefined;
 }
 function use12h(): boolean {
   if (_timeFormat === '12') return true;
   if (_timeFormat === '24') return false;
   try {
-    return !!new Intl.DateTimeFormat(undefined, { hour: 'numeric' }).resolvedOptions().hour12;
+    return !!new Intl.DateTimeFormat(_locale, { hour: 'numeric', timeZone: activeTimeZone() }).resolvedOptions().hour12;
   } catch {
     return false;
   }
 }
 
+export function localDateLabel(iso: string | Date, options: Intl.DateTimeFormatOptions = { month: 'short', day: 'numeric' }): string {
+  const d = typeof iso === 'string' ? new Date(iso) : iso;
+  return new Intl.DateTimeFormat(_locale, { ...options, timeZone: activeTimeZone() }).format(d);
+}
+
 /** local time string, respecting the time-format setting. */
 export function hm(iso: string): string {
   const d = new Date(iso);
-  const h = d.getHours();
-  const mm = String(d.getMinutes()).padStart(2, '0');
-  if (use12h()) {
-    const ap = h < 12 ? 'AM' : 'PM';
-    const hh = h % 12 === 0 ? 12 : h % 12;
-    return `${hh}:${mm} ${ap}`;
-  }
-  return `${String(h).padStart(2, '0')}:${mm}`;
+  return new Intl.DateTimeFormat(_locale, {
+    hour: use12h() ? 'numeric' : '2-digit',
+    minute: '2-digit',
+    hour12: use12h(),
+    timeZone: activeTimeZone(),
+  }).format(d);
 }

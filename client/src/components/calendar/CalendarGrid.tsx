@@ -1,12 +1,18 @@
 import { useRef, useState } from 'react';
-import type { Task } from '../../types';
-import { HOUR_PX, minutesOfDay, sameLocalDay, snap, dayAtMinutes, durationMin, WEEKDAYS, hm } from '../../calendarUtil';
+import type { CalendarDayInfo, Task } from '../../types';
+import { HOUR_PX, minutesOfDay, sameLocalDay, snap, dayAtMinutes, durationMin, WEEKDAYS, hm, ymd } from '../../calendarUtil';
 import { PRIORITY_COLORS } from '../../util';
+import { taskSegmentsForDay, type CalendarBlockSegment } from './eventLayout';
+import { calendarTaskParentHint, calendarTaskPathLabel } from './taskHierarchy';
+import { buildBlankTimeSelection, createDraftFromBlankSelection, minutesFromTimelineOffset } from './timeSelection';
 
 interface Props {
   days: Date[];
   tasks: Task[];
-  onCreateAt: (day: Date, minutes: number) => void;
+  dayInfos: CalendarDayInfo[];
+  showLunar: boolean;
+  showHolidayAdjustments: boolean;
+  onCreateAt: (day: Date, minutes: number, durationMinutes?: number) => void;
   onDropSchedule: (taskId: string, day: Date, minutes: number) => void;
   onMove: (task: Task, start: Date, due: Date) => void;
   onResize: (task: Task, due: Date) => void;
@@ -23,13 +29,32 @@ type Drag = {
   day: Date;
 } | null;
 
+type BlankSelection = {
+  dayKey: string;
+  startMin: number;
+  currentMin: number;
+} | null;
+
 const hours = Array.from({ length: 24 }, (_, h) => h);
 
-export default function CalendarGrid({ days, tasks, onCreateAt, onDropSchedule, onMove, onResize, onOpenBlock }: Props) {
+export default function CalendarGrid({
+  days,
+  tasks,
+  dayInfos,
+  showLunar,
+  showHolidayAdjustments,
+  onCreateAt,
+  onDropSchedule,
+  onMove,
+  onResize,
+  onOpenBlock,
+}: Props) {
   const [drag, setDrag] = useState<Drag>(null);
+  const [blankSelection, setBlankSelection] = useState<BlankSelection>(null);
 
   const timed = tasks.filter((t) => !t.isAllDay && t.startDate && t.dueDate);
   const allday = tasks.filter((t) => t.isAllDay && t.dueDate);
+  const infoByDate = new Map(dayInfos.map((info) => [info.date, info]));
 
   function onBlockPointerDown(e: React.PointerEvent, task: Task, day: Date, mode: 'move' | 'resize') {
     e.stopPropagation();
@@ -69,16 +94,42 @@ export default function CalendarGrid({ days, tasks, onCreateAt, onDropSchedule, 
     });
   }
 
+  function onBlankPointerDown(day: Date, minutes: number) {
+    setBlankSelection({ dayKey: ymd(day), startMin: minutes, currentMin: minutes });
+  }
+
+  function onBlankPointerMove(day: Date, minutes: number) {
+    setBlankSelection((selection) => {
+      if (!selection || selection.dayKey !== ymd(day)) return selection;
+      return { ...selection, currentMin: minutes };
+    });
+  }
+
+  function onBlankPointerUp(day: Date, minutes: number) {
+    setBlankSelection((selection) => {
+      if (!selection || selection.dayKey !== ymd(day)) return null;
+      const draft = createDraftFromBlankSelection(selection.startMin, minutes);
+      onCreateAt(day, draft.startMinutes, draft.durationMinutes);
+      return null;
+    });
+  }
+
   return (
     <div className="cal-grid">
       <div className="cal-head">
         <div className="cal-gutter-head" />
         {days.map((d) => {
           const isToday = sameLocalDay(new Date().toISOString(), d);
+          const info = infoByDate.get(ymd(d));
           return (
-            <div key={d.toISOString()} className={`cal-day-head${isToday ? ' today' : ''}`}>
+            <div
+              key={d.toISOString()}
+              className={`cal-day-head${isToday ? ' today' : ''}${showHolidayAdjustments && info?.isOffDay ? ' offday' : ''}${showHolidayAdjustments && info?.isAdjustedWorkday ? ' adjusted-workday' : ''}`}
+            >
               <span className="cal-dow">{WEEKDAYS[d.getDay()]}</span>
               <span className="cal-dom">{d.getDate()}</span>
+              {showLunar && info?.lunarLabel && <span className="cal-lunar">{info.lunarLabel}</span>}
+              {showHolidayAdjustments && info?.holidayName && <span className="cal-holiday">{info.holidayName}</span>}
             </div>
           );
         })}
@@ -116,9 +167,12 @@ export default function CalendarGrid({ days, tasks, onCreateAt, onDropSchedule, 
           <DayColumn
             key={d.toISOString()}
             day={d}
-            blocks={timed.filter((t) => sameLocalDay(t.startDate!, d))}
+            segments={taskSegmentsForDay(timed, d)}
             drag={drag}
-            onCreateAt={onCreateAt}
+            blankSelection={blankSelection?.dayKey === ymd(d) ? blankSelection : null}
+            onBlankPointerDown={onBlankPointerDown}
+            onBlankPointerMove={onBlankPointerMove}
+            onBlankPointerUp={onBlankPointerUp}
             onDropSchedule={onDropSchedule}
             onOpenBlock={onOpenBlock}
             onBlockPointerDown={onBlockPointerDown}
@@ -133,9 +187,12 @@ export default function CalendarGrid({ days, tasks, onCreateAt, onDropSchedule, 
 
 function DayColumn({
   day,
-  blocks,
+  segments,
   drag,
-  onCreateAt,
+  blankSelection,
+  onBlankPointerDown,
+  onBlankPointerMove,
+  onBlankPointerUp,
   onDropSchedule,
   onOpenBlock,
   onBlockPointerDown,
@@ -143,9 +200,12 @@ function DayColumn({
   onBlockPointerUp,
 }: {
   day: Date;
-  blocks: Task[];
+  segments: CalendarBlockSegment[];
   drag: Drag;
-  onCreateAt: (day: Date, minutes: number) => void;
+  blankSelection: Exclude<BlankSelection, null> | null;
+  onBlankPointerDown: (day: Date, minutes: number) => void;
+  onBlankPointerMove: (day: Date, minutes: number) => void;
+  onBlankPointerUp: (day: Date, minutes: number) => void;
   onDropSchedule: (taskId: string, day: Date, minutes: number) => void;
   onOpenBlock: (task: Task, x: number, y: number) => void;
   onBlockPointerDown: (e: React.PointerEvent, task: Task, day: Date, mode: 'move' | 'resize') => void;
@@ -156,14 +216,21 @@ function DayColumn({
 
   function minutesAt(clientY: number): number {
     const rect = colRef.current!.getBoundingClientRect();
-    return Math.max(0, Math.min(24 * 60 - 15, snap(((clientY - rect.top) / HOUR_PX) * 60)));
+    return minutesFromTimelineOffset(clientY - rect.top, HOUR_PX);
   }
+
+  const selectionRange = blankSelection ? buildBlankTimeSelection(blankSelection.startMin, blankSelection.currentMin) : null;
 
   return (
     <div
       className="cal-col"
       ref={colRef}
-      onClick={(e) => onCreateAt(day, minutesAt(e.clientY))}
+      onPointerDown={(e) => {
+        e.currentTarget.setPointerCapture(e.pointerId);
+        onBlankPointerDown(day, minutesAt(e.clientY));
+      }}
+      onPointerMove={(e) => onBlankPointerMove(day, minutesAt(e.clientY))}
+      onPointerUp={(e) => onBlankPointerUp(day, minutesAt(e.clientY))}
       onDragOver={(e) => e.preventDefault()}
       onDrop={(e) => {
         e.preventDefault();
@@ -175,21 +242,42 @@ function DayColumn({
         <div key={h} className="cal-cell" style={{ height: HOUR_PX }} />
       ))}
 
-      {blocks.map((t) => {
-        let topMin = minutesOfDay(t.startDate!);
-        let durMin = durationMin(t.startDate!, t.dueDate!);
-        if (drag && drag.id === t.id) {
+      {selectionRange && (
+        <div
+          className="cal-selection"
+          style={{
+            top: (selectionRange.startMinutes / 60) * HOUR_PX,
+            height: (selectionRange.durationMinutes / 60) * HOUR_PX,
+          }}
+        >
+          {hm(dayAtMinutes(day, selectionRange.startMinutes).toISOString())} - {hm(dayAtMinutes(day, selectionRange.endMinutes).toISOString())}
+        </div>
+      )}
+
+      {segments.map((segment) => {
+        const t = segment.task;
+        let topMin = segment.startMinutes;
+        let durMin = segment.durationMinutes;
+        if (drag && drag.id === t.id && sameLocalDay(t.startDate!, day)) {
           if (drag.mode === 'move') topMin = Math.max(0, Math.min(24 * 60 - durMin, drag.origStartMin + drag.deltaMin));
           else durMin = Math.max(15, drag.origDurMin + drag.deltaMin);
         }
         const color = PRIORITY_COLORS[t.priority];
+        const parentHint = calendarTaskParentHint(t);
+        const pathLabel = calendarTaskPathLabel(t);
+        const laneGap = 4;
+        const laneWidth = `calc(${100 / segment.laneCount}% - ${((segment.laneCount - 1) * laneGap) / segment.laneCount}px)`;
+        const laneLeft = `calc(3px + ${(segment.lane * 100) / segment.laneCount}% + ${(segment.lane * laneGap) / segment.laneCount}px)`;
         return (
           <div
-            key={t.id}
-            className="cal-block"
+            key={segment.key}
+            className={`cal-block${segment.startsBeforeDay ? ' continues-before' : ''}${segment.endsAfterDay ? ' continues-after' : ''}`}
             style={{
               top: (topMin / 60) * HOUR_PX,
               height: (durMin / 60) * HOUR_PX,
+              left: laneLeft,
+              right: 'auto',
+              width: laneWidth,
               borderLeftColor: color,
               background: color + '22',
             }}
@@ -200,11 +288,11 @@ function DayColumn({
             onPointerDown={(e) => onBlockPointerDown(e, t, day, 'move')}
             onPointerMove={onBlockPointerMove}
             onPointerUp={(e) => onBlockPointerUp(e, t)}
+            title={segment.startsBeforeDay || segment.endsAfterDay ? `${pathLabel} · 跨天任务` : pathLabel}
           >
+            {parentHint && <div className="cal-block-parent">{parentHint}</div>}
             <div className="cal-block-title">{t.title}</div>
-            <div className="cal-block-time">
-              {hm(t.startDate!)}–{hm(t.dueDate!)}
-            </div>
+            <div className="cal-block-time">{segment.startsBeforeDay ? '前日 ' : ''}{hm(t.startDate!)}-{hm(t.dueDate!)}{segment.endsAfterDay ? ' 次日' : ''}</div>
             <div
               className="cal-block-resize"
               onPointerDown={(e) => onBlockPointerDown(e, t, day, 'resize')}

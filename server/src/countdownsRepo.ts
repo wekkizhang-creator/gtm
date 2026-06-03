@@ -53,8 +53,8 @@ function mapCountdown(r: any): CountdownDTO {
   };
 }
 
-export function listCountdowns(): CountdownDTO[] {
-  const rows = db.prepare('SELECT * FROM countdowns').all() as any[];
+export function listCountdowns(userId: string): CountdownDTO[] {
+  const rows = db.prepare('SELECT * FROM countdowns WHERE user_id = ?').all(userId) as any[];
   const list = rows.map(mapCountdown);
   list.sort((a, b) => {
     if (a.pinned !== b.pinned) return a.pinned ? -1 : 1; // pinned first
@@ -67,7 +67,7 @@ export function listCountdowns(): CountdownDTO[] {
   return list;
 }
 
-export function createCountdown(input: {
+export function createCountdown(userId: string, input: {
   title: string;
   targetDate: string;
   icon: string | null;
@@ -78,12 +78,13 @@ export function createCountdown(input: {
 }): CountdownDTO {
   const id = randomUUID();
   const ts = nowISO();
-  const max = db.prepare('SELECT COALESCE(MAX(sort_order), 0) AS m FROM countdowns').get() as { m: number };
+  const max = db.prepare('SELECT COALESCE(MAX(sort_order), 0) AS m FROM countdowns WHERE user_id = ?').get(userId) as { m: number };
   db.prepare(
-    `INSERT INTO countdowns (id, title, target_date, icon, color, repeat_yearly, pinned, note, sort_order, created_at, updated_at)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+    `INSERT INTO countdowns (id, user_id, title, target_date, icon, color, repeat_yearly, pinned, note, sort_order, created_at, updated_at)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
   ).run(
     id,
+    userId,
     input.title,
     input.targetDate,
     input.icon,
@@ -95,10 +96,10 @@ export function createCountdown(input: {
     ts,
     ts,
   );
-  return mapCountdown(db.prepare('SELECT * FROM countdowns WHERE id = ?').get(id));
+  return mapCountdown(db.prepare('SELECT * FROM countdowns WHERE user_id = ? AND id = ?').get(userId, id));
 }
 
-export function updateCountdown(id: string, patch: Record<string, unknown>): CountdownDTO | null {
+export function updateCountdown(userId: string, id: string, patch: Record<string, unknown>): CountdownDTO | null {
   const map: Record<string, string> = {
     title: 'title',
     targetDate: 'target_date',
@@ -121,12 +122,13 @@ export function updateCountdown(id: string, patch: Record<string, unknown>): Cou
   }
   cols.push('updated_at = ?');
   vals.push(nowISO());
+  vals.push(userId);
   vals.push(id);
-  const info = db.prepare(`UPDATE countdowns SET ${cols.join(', ')} WHERE id = ?`).run(...(vals as any[]));
+  const info = db.prepare(`UPDATE countdowns SET ${cols.join(', ')} WHERE user_id = ? AND id = ?`).run(...(vals as any[]));
   if (info.changes === 0) return null;
-  return mapCountdown(db.prepare('SELECT * FROM countdowns WHERE id = ?').get(id));
+  return mapCountdown(db.prepare('SELECT * FROM countdowns WHERE user_id = ? AND id = ?').get(userId, id));
 }
 
-export function deleteCountdown(id: string): boolean {
-  return db.prepare('DELETE FROM countdowns WHERE id = ?').run(id).changes > 0;
+export function deleteCountdown(userId: string, id: string): boolean {
+  return db.prepare('DELETE FROM countdowns WHERE user_id = ? AND id = ?').run(userId, id).changes > 0;
 }

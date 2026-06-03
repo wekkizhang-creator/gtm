@@ -1,7 +1,7 @@
 // Habits + daily check-ins, with streak computation over scheduled weekdays.
 import { randomUUID } from 'node:crypto';
 import { db, nowISO } from './db';
-import { AppError, type HabitDTO } from './types';
+import { AppError, type HabitDTO, type HabitStatsDTO } from './types';
 
 // ---------- local-date string helpers (YYYY-MM-DD) ----------
 function pad(n: number): string {
@@ -73,14 +73,21 @@ function computeStreaks(checked: Set<string>, days: number[]): { current: number
   return { current, best };
 }
 
-function allCheckins(habitId: string): string[] {
-  return (db.prepare('SELECT date FROM habit_checkins WHERE habit_id = ? ORDER BY date').all(habitId) as { date: string }[]).map(
+function allCheckins(userId: string, habitId: string): string[] {
+  return (db.prepare('SELECT date FROM habit_checkins WHERE user_id = ? AND habit_id = ? ORDER BY date').all(userId, habitId) as { date: string }[]).map(
     (r) => r.date,
   );
 }
 
-function mapHabit(r: any, from?: string, to?: string): HabitDTO {
-  const checks = allCheckins(r.id);
+function allCheckinDetails(userId: string, habitId: string): { date: string; value: number | null; note: string | null }[] {
+  return db
+    .prepare('SELECT date, value, note FROM habit_checkins WHERE user_id = ? AND habit_id = ? ORDER BY date')
+    .all(userId, habitId) as { date: string; value: number | null; note: string | null }[];
+}
+
+function mapHabit(userId: string, r: any, from?: string, to?: string): HabitDTO {
+  const checks = allCheckins(userId, r.id);
+  const details = allCheckinDetails(userId, r.id).filter((d) => (!from || d.date >= from) && (!to || d.date <= to));
   const checkedSet = new Set(checks);
   const { current, best } = computeStreaks(checkedSet, parseDays(r.days_of_week));
   const inRange = checks.filter((d) => (!from || d >= from) && (!to || d <= to));
@@ -90,10 +97,17 @@ function mapHabit(r: any, from?: string, to?: string): HabitDTO {
     icon: r.icon ?? null,
     color: r.color ?? null,
     daysOfWeek: parseDays(r.days_of_week),
+    targetType: r.target_type ?? 'check',
+    targetValue: r.target_value ?? null,
+    targetUnit: r.target_unit ?? null,
+    startDate: r.start_date ?? null,
+    groupName: r.group_name ?? null,
+    reminderTime: r.reminder_time ?? null,
     note: r.note ?? null,
     sortOrder: r.sort_order,
     archived: !!r.archived,
     checkins: inRange,
+    checkinDetails: details,
     currentStreak: current,
     bestStreak: best,
     createdAt: r.created_at,
@@ -102,37 +116,72 @@ function mapHabit(r: any, from?: string, to?: string): HabitDTO {
 }
 
 // ---------- CRUD ----------
-export function listHabits(from?: string, to?: string): HabitDTO[] {
+export function listHabits(userId: string, from?: string, to?: string): HabitDTO[] {
   const rows = db
-    .prepare('SELECT * FROM habits WHERE archived = 0 ORDER BY sort_order ASC, created_at ASC')
-    .all() as any[];
-  return rows.map((r) => mapHabit(r, from, to));
+    .prepare('SELECT * FROM habits WHERE user_id = ? AND archived = 0 ORDER BY sort_order ASC, created_at ASC')
+    .all(userId) as any[];
+  return rows.map((r) => mapHabit(userId, r, from, to));
 }
 
-export function createHabit(input: {
+export function getHabit(userId: string, id: string, from?: string, to?: string): HabitDTO | null {
+  const row = db.prepare('SELECT * FROM habits WHERE user_id = ? AND id = ?').get(userId, id);
+  return row ? mapHabit(userId, row, from, to) : null;
+}
+
+export function createHabit(userId: string, input: {
   name: string;
   icon: string | null;
   color: string | null;
   daysOfWeek: number[] | null;
+  targetType?: 'check' | 'count' | 'timer';
+  targetValue?: number | null;
+  targetUnit?: string | null;
+  startDate?: string | null;
+  groupName?: string | null;
+  reminderTime?: string | null;
   note: string | null;
 }): HabitDTO {
   const id = randomUUID();
   const ts = nowISO();
   const days = input.daysOfWeek && input.daysOfWeek.length ? input.daysOfWeek : [0, 1, 2, 3, 4, 5, 6];
-  const max = db.prepare('SELECT COALESCE(MAX(sort_order), 0) AS m FROM habits').get() as { m: number };
+  const max = db.prepare('SELECT COALESCE(MAX(sort_order), 0) AS m FROM habits WHERE user_id = ?').get(userId) as { m: number };
   db.prepare(
-    `INSERT INTO habits (id, name, icon, color, days_of_week, note, sort_order, archived, created_at, updated_at)
-     VALUES (?, ?, ?, ?, ?, ?, ?, 0, ?, ?)`,
-  ).run(id, input.name, input.icon, input.color, days.join(','), input.note, (max.m ?? 0) + 1, ts, ts);
-  return mapHabit(db.prepare('SELECT * FROM habits WHERE id = ?').get(id));
+    `INSERT INTO habits
+       (id, user_id, name, icon, color, days_of_week, target_type, target_value, target_unit, start_date, group_name, reminder_time, note, sort_order, archived, created_at, updated_at)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?, ?)`,
+  ).run(
+    id,
+    userId,
+    input.name,
+    input.icon,
+    input.color,
+    days.join(','),
+    input.targetType ?? 'check',
+    input.targetValue ?? null,
+    input.targetUnit ?? null,
+    input.startDate ?? null,
+    input.groupName ?? null,
+    input.reminderTime ?? null,
+    input.note,
+    (max.m ?? 0) + 1,
+    ts,
+    ts,
+  );
+  return mapHabit(userId, db.prepare('SELECT * FROM habits WHERE user_id = ? AND id = ?').get(userId, id));
 }
 
-export function updateHabit(id: string, patch: Record<string, unknown>): HabitDTO | null {
+export function updateHabit(userId: string, id: string, patch: Record<string, unknown>): HabitDTO | null {
   const map: Record<string, string> = {
     name: 'name',
     icon: 'icon',
     color: 'color',
     note: 'note',
+    targetType: 'target_type',
+    targetValue: 'target_value',
+    targetUnit: 'target_unit',
+    startDate: 'start_date',
+    groupName: 'group_name',
+    reminderTime: 'reminder_time',
     sortOrder: 'sort_order',
     archived: 'archived',
   };
@@ -152,40 +201,85 @@ export function updateHabit(id: string, patch: Record<string, unknown>): HabitDT
   }
   cols.push('updated_at = ?');
   vals.push(nowISO());
+  vals.push(userId);
   vals.push(id);
-  const info = db.prepare(`UPDATE habits SET ${cols.join(', ')} WHERE id = ?`).run(...(vals as any[]));
+  const info = db.prepare(`UPDATE habits SET ${cols.join(', ')} WHERE user_id = ? AND id = ?`).run(...(vals as any[]));
   if (info.changes === 0) return null;
-  return mapHabit(db.prepare('SELECT * FROM habits WHERE id = ?').get(id));
+  return mapHabit(userId, db.prepare('SELECT * FROM habits WHERE user_id = ? AND id = ?').get(userId, id));
 }
 
-export function deleteHabit(id: string): boolean {
+export function deleteHabit(userId: string, id: string): boolean {
   // remove check-ins explicitly (CASCADE also covers this when FK is on)
-  db.prepare('DELETE FROM habit_checkins WHERE habit_id = ?').run(id);
-  return db.prepare('DELETE FROM habits WHERE id = ?').run(id).changes > 0;
+  db.prepare('DELETE FROM habit_checkins WHERE user_id = ? AND habit_id = ?').run(userId, id);
+  return db.prepare('DELETE FROM habits WHERE user_id = ? AND id = ?').run(userId, id).changes > 0;
 }
 
-export function toggleCheckin(id: string, date: string): { checked: boolean; currentStreak: number; bestStreak: number } {
+export function archiveHabit(userId: string, id: string): HabitDTO | null {
+  const info = db.prepare('UPDATE habits SET archived = 1, updated_at = ? WHERE user_id = ? AND id = ?').run(nowISO(), userId, id);
+  if (info.changes === 0) return null;
+  return getHabit(userId, id);
+}
+
+export function habitStats(userId: string, id: string, from: string, to: string): HabitStatsDTO {
+  if (!DATE_RE.test(from) || !DATE_RE.test(to) || from > to) throw new AppError(400, 'invalid', 'from/to must be YYYY-MM-DD range');
+  const habit = db.prepare('SELECT * FROM habits WHERE user_id = ? AND id = ?').get(userId, id) as any;
+  if (!habit) throw new AppError(404, 'not_found', 'habit not found');
+  const days = parseDays(habit.days_of_week);
+  let scheduledDays = 0;
+  let d = from;
+  for (let guard = 0; d <= to && guard < 5000; guard++) {
+    if (days.includes(dowOf(d))) scheduledDays++;
+    d = addDaysStr(d, 1);
+  }
+  const rows = db
+    .prepare('SELECT date, value FROM habit_checkins WHERE user_id = ? AND habit_id = ? AND date >= ? AND date <= ?')
+    .all(userId, id, from, to) as { date: string; value: number | null }[];
+  const checked = new Set(rows.map((r) => r.date));
+  const { current, best } = computeStreaks(new Set(allCheckins(userId, id)), days);
+  return {
+    habitId: id,
+    from,
+    to,
+    scheduledDays,
+    completedDays: checked.size,
+    completionRate: scheduledDays ? checked.size / scheduledDays : 0,
+    totalValue: rows.reduce((sum, r) => sum + (r.value ?? 1), 0),
+    currentStreak: current,
+    bestStreak: best,
+  };
+}
+
+export function toggleCheckin(
+  userId: string,
+  id: string,
+  date: string,
+  value: number | null = null,
+  note: string | null = null,
+): { checked: boolean; currentStreak: number; bestStreak: number } {
   if (!DATE_RE.test(date)) throw new AppError(400, 'invalid', 'date must be YYYY-MM-DD');
   if (date > todayStr()) throw new AppError(400, 'invalid', 'cannot check in for a future date');
-  const habit = db.prepare('SELECT * FROM habits WHERE id = ?').get(id) as any;
+  const habit = db.prepare('SELECT * FROM habits WHERE user_id = ? AND id = ?').get(userId, id) as any;
   if (!habit) throw new AppError(404, 'not_found', 'habit not found');
 
-  const existing = db.prepare('SELECT id FROM habit_checkins WHERE habit_id = ? AND date = ?').get(id, date) as
+  const existing = db.prepare('SELECT id FROM habit_checkins WHERE user_id = ? AND habit_id = ? AND date = ?').get(userId, id, date) as
     | { id: string }
     | undefined;
   let checked: boolean;
   if (existing) {
-    db.prepare('DELETE FROM habit_checkins WHERE id = ?').run(existing.id);
+    db.prepare('DELETE FROM habit_checkins WHERE user_id = ? AND id = ?').run(userId, existing.id);
     checked = false;
   } else {
-    db.prepare('INSERT INTO habit_checkins (id, habit_id, date, created_at) VALUES (?, ?, ?, ?)').run(
+    db.prepare('INSERT INTO habit_checkins (id, user_id, habit_id, date, value, note, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)').run(
       randomUUID(),
+      userId,
       id,
       date,
+      value,
+      note,
       nowISO(),
     );
     checked = true;
   }
-  const { current, best } = computeStreaks(new Set(allCheckins(id)), parseDays(habit.days_of_week));
+  const { current, best } = computeStreaks(new Set(allCheckins(userId, id)), parseDays(habit.days_of_week));
   return { checked, currentStreak: current, bestStreak: best };
 }
