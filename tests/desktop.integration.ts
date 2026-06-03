@@ -327,6 +327,69 @@ async function main() {
     const unsupportedWidgetData = await req(base, `/api/desktop/widgets/${countdownWidget.body.widget.id}/data`, { cookie });
     assert(unsupportedWidgetData.res.status === 501, `unsupported widget data should be 501, got ${unsupportedWidgetData.res.status}`);
 
+    const focusWidget = await req(base, '/api/desktop/widgets', {
+      method: 'POST',
+      cookie,
+      body: JSON.stringify({
+        type: 'focus-timer',
+        title: 'Focus timer',
+        config: { defaultMinutes: 25, allowStartPause: true },
+      }),
+    });
+    assert(focusWidget.res.status === 201, `focus widget create failed: ${focusWidget.res.status}`);
+
+    const focusDataBefore = await req(base, `/api/desktop/widgets/${focusWidget.body.widget.id}/data`, { cookie });
+    assert(focusDataBefore.res.status === 200, `focus widget data failed: ${focusDataBefore.res.status}`);
+    assert(focusDataBefore.body.data.type === 'focus-timer', 'focus widget data type mismatch');
+    assert(focusDataBefore.body.data.timer.status === 'idle', 'focus widget should start idle');
+    assert(focusDataBefore.body.data.timer.targetDurationSec === 1500, 'focus widget target duration should come from config');
+    assert(focusDataBefore.body.data.stats.todayCount === 0, 'focus widget should include real focus stats');
+
+    const pauseBeforeStart = await req(base, `/api/desktop/widgets/${focusWidget.body.widget.id}/actions`, {
+      method: 'POST',
+      cookie,
+      body: JSON.stringify({ action: 'pause_focus' }),
+    });
+    assert(pauseBeforeStart.res.status === 409, `pause before focus start should be 409, got ${pauseBeforeStart.res.status}`);
+
+    const focusStart = await req(base, `/api/desktop/widgets/${focusWidget.body.widget.id}/actions`, {
+      method: 'POST',
+      cookie,
+      body: JSON.stringify({ action: 'start_focus' }),
+    });
+    assert(focusStart.res.status === 200, `focus widget start failed: ${focusStart.res.status}`);
+    assert(focusStart.body.data.timer.status === 'running', 'focus widget start should persist running status');
+    assert(focusStart.body.data.timer.startedAt, 'focus widget start should persist startedAt');
+
+    const invalidFocusAction = await req(base, `/api/desktop/widgets/${focusWidget.body.widget.id}/actions`, {
+      method: 'POST',
+      cookie,
+      body: JSON.stringify({ action: 'complete_focus' }),
+    });
+    assert(invalidFocusAction.res.status === 400, `invalid focus widget action should be 400, got ${invalidFocusAction.res.status}`);
+
+    const focusPause = await req(base, `/api/desktop/widgets/${focusWidget.body.widget.id}/actions`, {
+      method: 'POST',
+      cookie,
+      body: JSON.stringify({ action: 'pause_focus' }),
+    });
+    assert(focusPause.res.status === 200, `focus widget pause failed: ${focusPause.res.status}`);
+    assert(focusPause.body.data.timer.status === 'paused', 'focus widget pause should persist paused status');
+    assert(focusPause.body.data.timer.pausedAt, 'focus widget pause should persist pausedAt');
+
+    const focusWidgetDisabledStartPause = await req(base, `/api/desktop/widgets/${focusWidget.body.widget.id}`, {
+      method: 'PATCH',
+      cookie,
+      body: JSON.stringify({ config: { allowStartPause: false } }),
+    });
+    assert(focusWidgetDisabledStartPause.body.widget.config.allowStartPause === false, 'focus allowStartPause config patch did not persist');
+    const disabledFocusStart = await req(base, `/api/desktop/widgets/${focusWidget.body.widget.id}/actions`, {
+      method: 'POST',
+      cookie,
+      body: JSON.stringify({ action: 'start_focus' }),
+    });
+    assert(disabledFocusStart.res.status === 409, `disabled focus start should be 409, got ${disabledFocusStart.res.status}`);
+
     const inboxWidget = await req(base, '/api/desktop/widgets', {
       method: 'POST',
       cookie,
@@ -443,7 +506,7 @@ async function main() {
     assert(disabledHabitCheckin.res.status === 409, `disabled habit check-in should be 409, got ${disabledHabitCheckin.res.status}`);
 
     const widgetList = await req(base, '/api/desktop/widgets', { cookie });
-    assert(widgetList.body.widgets.length === 4, `expected four widgets, got ${widgetList.body.widgets.length}`);
+    assert(widgetList.body.widgets.length === 5, `expected five widgets, got ${widgetList.body.widgets.length}`);
 
     const disableComplete = await req(base, `/api/desktop/widgets/${widget.body.widget.id}`, {
       method: 'PATCH',
@@ -611,7 +674,7 @@ async function main() {
     assert(unlock.body.status.state.locked === false, 'desktop unlock state did not persist');
 
     const exported = await req(base, '/api/settings/export', { cookie });
-    assert(exported.body.desktopWidgets.length === 4, 'export should include desktop widgets');
+    assert(exported.body.desktopWidgets.length === 5, 'export should include desktop widgets');
     assert(exported.body.desktopShortcuts.length === 7, 'export should include reset default desktop shortcuts');
     assert(exported.body.desktopShellState.length >= 4, 'export should include desktop shell state rows');
     assert(!('desktopAppLockCredentials' in exported.body), 'export must not include app-lock password credentials');
@@ -628,9 +691,15 @@ async function main() {
       const habitWidgetRow = db
         .prepare("SELECT config_json FROM desktop_widgets WHERE type = 'habit-checkin'")
         .get() as { config_json: string };
+      const focusWidgetRow = db
+        .prepare("SELECT config_json FROM desktop_widgets WHERE type = 'focus-timer'")
+        .get() as { config_json: string };
       const countdownRow = db
         .prepare("SELECT config_json FROM desktop_widgets WHERE type = 'countdowns'")
         .get() as { config_json: string };
+      const focusTimerRow = db
+        .prepare('SELECT status, target_duration_sec, paused_at FROM desktop_focus_timers WHERE widget_id = ?')
+        .get(focusWidget.body.widget.id) as { status: string; target_duration_sec: number; paused_at: string | null };
       const widgetCount = db.prepare('SELECT COUNT(*) count FROM desktop_widgets').get() as { count: number };
       const shortcutRow = db
         .prepare("SELECT registered_at, accelerator FROM desktop_shortcuts WHERE action = 'task.quickAdd'")
@@ -655,12 +724,17 @@ async function main() {
       const habitCheckinRow = db
         .prepare('SELECT date, note FROM habit_checkins WHERE habit_id = ?')
         .get(habit.body.habit.id) as { date: string; note: string | null };
-      assert(widgetCount.count === 4, 'widget templates were not written to SQLite');
+      assert(widgetCount.count === 5, 'widget templates were not written to SQLite');
       assert(JSON.parse(widgetRow.config_json).range === 'today', 'widget config was not written to SQLite');
       assert(JSON.parse(widgetRow.config_json).allowComplete === false, 'widget allowComplete patch was not written to SQLite');
       assert(JSON.parse(inboxWidgetRow.config_json).quickAdd === false, 'inbox widget quickAdd patch was not written to SQLite');
       assert(JSON.parse(habitWidgetRow.config_json).allowCheckin === false, 'habit widget allowCheckin patch was not written to SQLite');
+      assert(JSON.parse(focusWidgetRow.config_json).allowStartPause === false, 'focus widget allowStartPause patch was not written to SQLite');
       assert(JSON.parse(countdownRow.config_json).limit === 3, 'countdown widget config was not written to SQLite');
+      assert(
+        focusTimerRow.status === 'paused' && focusTimerRow.target_duration_sec === 1500 && !!focusTimerRow.paused_at,
+        'focus widget timer state was not written to SQLite',
+      );
       assert(widgetRow.enabled === 0, 'widget enabled patch was not written to SQLite');
       assert(completedFromWidget.completed === 1, 'desktop widget completion was not written to SQLite');
       assert(inboxTaskRow.source === 'desktop_widget' && inboxTaskRow.list_id === inboxListRow.id, 'inbox widget quick-add task was not written to inbox in SQLite');

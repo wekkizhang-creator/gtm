@@ -244,10 +244,31 @@ export interface DesktopHabitCheckinWidgetDataDTO {
   allowCheckin: boolean;
 }
 
+export interface DesktopFocusTimerStateDTO {
+  status: 'idle' | 'running' | 'paused';
+  mode: 'pomodoro';
+  targetDurationSec: number;
+  elapsedSec: number;
+  remainingSec: number;
+  startedAt: string | null;
+  pausedAt: string | null;
+  updatedAt: string | null;
+}
+
+export interface DesktopFocusTimerWidgetDataDTO {
+  type: 'focus-timer';
+  widget: DesktopWidgetDTO;
+  generatedAt: string;
+  timer: DesktopFocusTimerStateDTO;
+  stats: FocusStats;
+  allowStartPause: boolean;
+}
+
 export type DesktopWidgetDataDTO =
   | DesktopTodayTasksWidgetDataDTO
   | DesktopInboxQuickAddWidgetDataDTO
-  | DesktopHabitCheckinWidgetDataDTO;
+  | DesktopHabitCheckinWidgetDataDTO
+  | DesktopFocusTimerWidgetDataDTO;
 
 export interface DesktopWidgetActionResultDTO {
   widget: DesktopWidgetDTO;

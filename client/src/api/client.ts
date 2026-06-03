@@ -503,7 +503,9 @@ export const api = {
     input:
       | { action: 'complete_task'; taskId: string }
       | { action: 'quick_add_task'; text: string }
-      | { action: 'toggle_habit'; habitId: string; value?: number | null; note?: string | null },
+      | { action: 'toggle_habit'; habitId: string; value?: number | null; note?: string | null }
+      | { action: 'start_focus' }
+      | { action: 'pause_focus' },
   ) =>
     req<DesktopWidgetActionResult>(`/desktop/widgets/${id}/actions`, { method: 'POST', body: JSON.stringify(input) }),
   deleteDesktopWidget: (id: string) => req<void>(`/desktop/widgets/${id}`, { method: 'DELETE' }),

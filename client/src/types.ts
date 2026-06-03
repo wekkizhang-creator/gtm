@@ -294,7 +294,31 @@ export interface DesktopHabitCheckinWidgetData {
   allowCheckin: boolean;
 }
 
-export type DesktopWidgetData = DesktopTodayTasksWidgetData | DesktopInboxQuickAddWidgetData | DesktopHabitCheckinWidgetData;
+export interface DesktopFocusTimerState {
+  status: 'idle' | 'running' | 'paused';
+  mode: 'pomodoro';
+  targetDurationSec: number;
+  elapsedSec: number;
+  remainingSec: number;
+  startedAt: string | null;
+  pausedAt: string | null;
+  updatedAt: string | null;
+}
+
+export interface DesktopFocusTimerWidgetData {
+  type: 'focus-timer';
+  widget: DesktopWidget;
+  generatedAt: string;
+  timer: DesktopFocusTimerState;
+  stats: FocusStats;
+  allowStartPause: boolean;
+}
+
+export type DesktopWidgetData =
+  | DesktopTodayTasksWidgetData
+  | DesktopInboxQuickAddWidgetData
+  | DesktopHabitCheckinWidgetData
+  | DesktopFocusTimerWidgetData;
 
 export interface DesktopWidgetActionResult {
   widget: DesktopWidget;

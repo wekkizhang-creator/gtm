@@ -13,6 +13,7 @@ import {
 } from './types';
 import * as taskRepo from './repo';
 import * as habitsRepo from './habitsRepo';
+import * as focusRepo from './focusRepo';
 
 type WidgetRow = {
   id: string;
@@ -32,6 +33,18 @@ type ShortcutRow = {
   enabled: number;
   registered_at: string | null;
   created_at: string;
+  updated_at: string;
+};
+
+type FocusTimerRow = {
+  user_id: string;
+  widget_id: string;
+  status: 'idle' | 'running' | 'paused';
+  mode: 'pomodoro';
+  target_duration_sec: number;
+  accumulated_elapsed_sec: number;
+  started_at: string | null;
+  paused_at: string | null;
   updated_at: string;
 };
 
@@ -437,12 +450,88 @@ function habitCheckinWidgetData(userId: string, widget: DesktopWidgetDTO): Deskt
   };
 }
 
+function focusTimerTargetSec(widget: DesktopWidgetDTO): number {
+  const minutes = Number(widget.config.defaultMinutes);
+  return (Number.isInteger(minutes) && minutes > 0 ? minutes : 25) * 60;
+}
+
+function getFocusTimerRow(userId: string, widgetId: string): FocusTimerRow | null {
+  const row = db
+    .prepare('SELECT * FROM desktop_focus_timers WHERE user_id = ? AND widget_id = ?')
+    .get(userId, widgetId) as FocusTimerRow | undefined;
+  return row ?? null;
+}
+
+function secondsBetween(start: string | null, end: string): number {
+  if (!start) return 0;
+  const delta = Date.parse(end) - Date.parse(start);
+  return Number.isFinite(delta) && delta > 0 ? Math.floor(delta / 1000) : 0;
+}
+
+function focusTimerState(widget: DesktopWidgetDTO, row: FocusTimerRow | null, generatedAt: string) {
+  const targetDurationSec = row?.target_duration_sec ?? focusTimerTargetSec(widget);
+  const runningElapsed = row?.status === 'running' ? secondsBetween(row.started_at, generatedAt) : 0;
+  const elapsedSec = Math.min(targetDurationSec, Math.max(0, (row?.accumulated_elapsed_sec ?? 0) + runningElapsed));
+  return {
+    status: row?.status ?? 'idle',
+    mode: 'pomodoro' as const,
+    targetDurationSec,
+    elapsedSec,
+    remainingSec: Math.max(0, targetDurationSec - elapsedSec),
+    startedAt: row?.started_at ?? null,
+    pausedAt: row?.paused_at ?? null,
+    updatedAt: row?.updated_at ?? null,
+  };
+}
+
+function focusTimerWidgetData(userId: string, widget: DesktopWidgetDTO): DesktopWidgetDataDTO {
+  const generatedAt = nowISO();
+  return {
+    type: 'focus-timer',
+    widget,
+    generatedAt,
+    timer: focusTimerState(widget, getFocusTimerRow(userId, widget.id), generatedAt),
+    stats: focusRepo.stats(userId),
+    allowStartPause: widget.config.allowStartPause === true,
+  };
+}
+
+function writeFocusTimer(
+  userId: string,
+  widgetId: string,
+  input: Pick<FocusTimerRow, 'status' | 'target_duration_sec' | 'accumulated_elapsed_sec' | 'started_at' | 'paused_at' | 'updated_at'>,
+): void {
+  db.prepare(
+    `INSERT INTO desktop_focus_timers
+       (user_id, widget_id, status, mode, target_duration_sec, accumulated_elapsed_sec, started_at, paused_at, updated_at)
+     VALUES (?, ?, ?, 'pomodoro', ?, ?, ?, ?, ?)
+     ON CONFLICT(user_id, widget_id) DO UPDATE SET
+       status = excluded.status,
+       mode = excluded.mode,
+       target_duration_sec = excluded.target_duration_sec,
+       accumulated_elapsed_sec = excluded.accumulated_elapsed_sec,
+       started_at = excluded.started_at,
+       paused_at = excluded.paused_at,
+       updated_at = excluded.updated_at`,
+  ).run(
+    userId,
+    widgetId,
+    input.status,
+    input.target_duration_sec,
+    input.accumulated_elapsed_sec,
+    input.started_at,
+    input.paused_at,
+    input.updated_at,
+  );
+}
+
 export function getWidgetData(userId: string, id: string): DesktopWidgetDataDTO {
   const widget = requireWidget(userId, id);
   if (!widget.enabled) throw new AppError(409, 'desktop_widget_disabled', 'widget is disabled');
   if (widget.type === 'today-tasks') return todayTasksWidgetData(userId, widget);
   if (widget.type === 'inbox-quick-add') return inboxQuickAddWidgetData(userId, widget);
   if (widget.type === 'habit-checkin') return habitCheckinWidgetData(userId, widget);
+  if (widget.type === 'focus-timer') return focusTimerWidgetData(userId, widget);
   throw new AppError(501, 'desktop_widget_data_not_implemented', `${widget.type} widget data is not implemented`);
 }
 
@@ -494,6 +583,42 @@ export function runWidgetAction(userId: string, id: string, input: unknown): Des
     const habit = habitsRepo.getHabit(userId, input.habitId, date, date);
     if (!habit) throw new AppError(404, 'not_found', 'habit not found');
     return { widget, habit, checkin, data: habitCheckinWidgetData(userId, widget) };
+  }
+  if (widget.type === 'focus-timer') {
+    if (input.action !== 'start_focus' && input.action !== 'pause_focus') {
+      throw new AppError(400, 'invalid_desktop_widget_action', 'action must be start_focus or pause_focus');
+    }
+    if (widget.config.allowStartPause !== true) {
+      throw new AppError(409, 'desktop_widget_action_disabled', 'focus start/pause is disabled for this widget');
+    }
+    const ts = nowISO();
+    const row = getFocusTimerRow(userId, widget.id);
+    const current = focusTimerState(widget, row, ts);
+    if (input.action === 'start_focus') {
+      if (current.status !== 'running') {
+        writeFocusTimer(userId, widget.id, {
+          status: 'running',
+          target_duration_sec: current.targetDurationSec,
+          accumulated_elapsed_sec: current.status === 'paused' ? current.elapsedSec : 0,
+          started_at: ts,
+          paused_at: null,
+          updated_at: ts,
+        });
+      }
+      return { widget, data: focusTimerWidgetData(userId, widget) };
+    }
+    if (current.status !== 'running') {
+      throw new AppError(409, 'desktop_focus_timer_not_running', 'focus timer is not running');
+    }
+    writeFocusTimer(userId, widget.id, {
+      status: 'paused',
+      target_duration_sec: current.targetDurationSec,
+      accumulated_elapsed_sec: current.elapsedSec,
+      started_at: null,
+      paused_at: ts,
+      updated_at: ts,
+    });
+    return { widget, data: focusTimerWidgetData(userId, widget) };
   }
   if (widget.type !== 'today-tasks') {
     throw new AppError(501, 'desktop_widget_action_not_implemented', `${widget.type} widget actions are not implemented`);

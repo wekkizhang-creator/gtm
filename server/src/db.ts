@@ -376,6 +376,19 @@ db.exec(`
     updated_at    TEXT NOT NULL
   );
 
+  CREATE TABLE IF NOT EXISTS desktop_focus_timers (
+    user_id                 TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    widget_id               TEXT NOT NULL REFERENCES desktop_widgets(id) ON DELETE CASCADE,
+    status                  TEXT NOT NULL CHECK(status IN ('idle','running','paused')),
+    mode                    TEXT NOT NULL DEFAULT 'pomodoro',
+    target_duration_sec     INTEGER NOT NULL,
+    accumulated_elapsed_sec INTEGER NOT NULL DEFAULT 0,
+    started_at              TEXT,
+    paused_at               TEXT,
+    updated_at              TEXT NOT NULL,
+    PRIMARY KEY(user_id, widget_id)
+  );
+
   CREATE TABLE IF NOT EXISTS ai_generation_logs (
     id            TEXT PRIMARY KEY,
     user_id       TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
@@ -685,6 +698,7 @@ db.exec(`
   CREATE INDEX IF NOT EXISTS idx_saved_filters_user_sort ON saved_filters(user_id, sort_order, created_at);
   CREATE INDEX IF NOT EXISTS idx_desktop_widgets_user ON desktop_widgets(user_id, enabled, updated_at);
   CREATE INDEX IF NOT EXISTS idx_desktop_shortcuts_user ON desktop_shortcuts(user_id, enabled, updated_at);
+  CREATE INDEX IF NOT EXISTS idx_desktop_focus_timers_user ON desktop_focus_timers(user_id, updated_at);
   CREATE INDEX IF NOT EXISTS idx_ai_generation_logs_user ON ai_generation_logs(user_id, scenario, created_at);
   CREATE INDEX IF NOT EXISTS idx_sticky_notes_user ON sticky_notes(user_id, deleted_at, updated_at);
   CREATE INDEX IF NOT EXISTS idx_sticky_notes_task ON sticky_notes(user_id, task_id);
