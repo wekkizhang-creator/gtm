@@ -34,11 +34,11 @@ router.delete('/folders/:id', (req, res) => {
 
 // POST /api/lists
 router.post('/', (req, res) => {
-  const { name, color, icon, folderId } = req.body ?? {};
+  const { name, color, icon, folderId, type } = req.body ?? {};
   if (typeof name !== 'string' || !name.trim()) {
     throw new AppError(400, 'invalid', 'name is required');
   }
-  res.status(201).json({ list: repo.createList(requireUserId(req), name.trim(), color ?? null, icon ?? null, folderId ?? null) });
+  res.status(201).json({ list: repo.createList(requireUserId(req), name.trim(), color ?? null, icon ?? null, folderId ?? null, type) });
 });
 
 // PATCH /api/lists/:id

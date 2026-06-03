@@ -13,8 +13,8 @@ const LOW_PRIORITY_LABEL = '\u4f4e\u4f18\u5148\u7ea7';
 const UNTAGGED_LABEL = '\u672a\u6253\u6807\u7b7e';
 
 const lists: List[] = [
-  { id: 'work', folderId: null, name: 'Work', color: null, icon: null, sortOrder: 2, isInbox: false, taskCount: 0 },
-  { id: 'home', folderId: null, name: 'Home', color: null, icon: null, sortOrder: 1, isInbox: false, taskCount: 0 },
+  { id: 'work', folderId: null, name: 'Work', color: null, icon: null, type: 'task', sortOrder: 2, isInbox: false, taskCount: 0 },
+  { id: 'home', folderId: null, name: 'Home', color: null, icon: null, type: 'task', sortOrder: 1, isInbox: false, taskCount: 0 },
 ];
 
 const tags: Tag[] = [

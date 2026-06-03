@@ -372,7 +372,17 @@ a.auth-link {
   text-align: right;
 }
 
-.nav-folder-select {
+.nav-type-badge {
+  flex-shrink: 0;
+  font-size: 10px;
+  color: var(--muted);
+  border: 1px solid var(--border);
+  border-radius: 5px;
+  padding: 1px 4px;
+}
+
+.nav-folder-select,
+.nav-type-select {
   max-width: 72px;
   border: 1px solid var(--border);
   border-radius: 6px;
@@ -380,6 +390,10 @@ a.auth-link {
   color: var(--muted);
   font-size: 11px;
   padding: 3px 5px;
+}
+
+.nav-type-select {
+  max-width: 58px;
 }
 
 .nav-order-actions {
@@ -605,7 +619,7 @@ a.auth-link {
 
 .quick-add-row {
   display: grid;
-  grid-template-columns: minmax(0, 1fr) auto;
+  grid-template-columns: minmax(0, 1fr) auto auto;
   gap: 8px;
 }
 
@@ -625,6 +639,7 @@ a.auth-link {
 }
 
 .quick-add-parse,
+.quick-add-voice,
 .quick-add-preview button {
   border: 1px solid var(--border);
   border-radius: 8px;
@@ -635,7 +650,8 @@ a.auth-link {
   cursor: pointer;
 }
 
-.quick-add-parse:disabled {
+.quick-add-parse:disabled,
+.quick-add-voice:disabled {
   cursor: default;
   opacity: 0.55;
 }
@@ -958,6 +974,20 @@ a.auth-link {
 .task-check:disabled {
   cursor: default;
   opacity: 0.5;
+}
+
+.task-note-marker {
+  width: 20px;
+  height: 20px;
+  flex-shrink: 0;
+  border: 2px solid #c5c9d1;
+  border-radius: 6px;
+  background: var(--surface);
+  font-size: 18px;
+  line-height: 1;
+  display: flex;
+  align-items: center;
+  justify-content: center;
 }
 
 .task-main {

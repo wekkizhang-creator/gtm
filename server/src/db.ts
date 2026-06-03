@@ -157,6 +157,7 @@ db.exec(`
     name       TEXT NOT NULL,
     color      TEXT,
     icon       TEXT,
+    type       TEXT NOT NULL DEFAULT 'task' CHECK(type IN ('task','note')),
     sort_order INTEGER NOT NULL DEFAULT 0,
     is_inbox   INTEGER NOT NULL DEFAULT 0,
     created_at TEXT NOT NULL,
@@ -587,6 +588,7 @@ db.exec(`
   }
 
   addCol('lists', 'folder_id', 'folder_id TEXT');
+  addCol('lists', 'type', "type TEXT NOT NULL DEFAULT 'task'");
   addCol('tags', 'parent_id', 'parent_id TEXT');
   addCol('tasks', 'start_date', 'start_date TEXT');
   addCol('tasks', 'is_important', 'is_important INTEGER');

@@ -10,6 +10,7 @@ interface Props {
   task: Task;
   inTrash: boolean;
   batchSelected: boolean;
+  isNoteList?: boolean;
   onBatchSelect: (checked: boolean) => void;
   orderControls?: { canMoveUp: boolean; canMoveDown: boolean; canPinTop: boolean };
   onMoveTask?: (action: TaskManualOrderAction) => void;
@@ -27,6 +28,7 @@ export default function TaskItem({
   task,
   inTrash,
   batchSelected,
+  isNoteList = false,
   onBatchSelect,
   orderControls,
   onMoveTask,
@@ -79,15 +81,21 @@ export default function TaskItem({
           onChange={(e) => onBatchSelect(e.target.checked)}
           onClick={(e) => e.stopPropagation()}
         />
-        <button
-          className="task-check"
-          style={{ borderColor: ringColor, color: ringColor }}
-          aria-label={task.completed ? '标记为未完成' : '标记为完成'}
-          disabled={inTrash}
-          onClick={() => onToggle(task)}
-        >
-          {task.completed ? '✓' : ''}
-        </button>
+        {isNoteList ? (
+          <span className="task-note-marker" title="笔记清单记录" style={{ borderColor: ringColor, color: ringColor }}>
+            •
+          </span>
+        ) : (
+          <button
+            className="task-check"
+            style={{ borderColor: ringColor, color: ringColor }}
+            aria-label={task.completed ? '标记为未完成' : '标记为完成'}
+            disabled={inTrash}
+            onClick={() => onToggle(task)}
+          >
+            {task.completed ? '✓' : ''}
+          </button>
+        )}
 
         <div className="task-main" onClick={() => !inTrash && onOpenDetail(task)}>
           <div className="task-title">{task.title}</div>

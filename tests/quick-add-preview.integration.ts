@@ -189,6 +189,37 @@ async function main() {
     });
     assert(rawTask.res.status === 201, `raw task create failed: ${rawTask.res.status}`);
 
+    const sharedUrl = 'https://example.test/shared';
+    const quickCapture = await req(base, '/api/tasks/quick-capture', {
+      method: 'POST',
+      cookie,
+      body: JSON.stringify({ source: 'system_share', text: rawText, url: sharedUrl, parse: true }),
+    });
+    assert(quickCapture.res.status === 201, `quick capture failed: ${quickCapture.res.status}`);
+    assert(quickCapture.body.task.source === 'system_share', 'quick capture source should persist');
+    assert(quickCapture.body.task.note?.includes(sharedUrl), 'quick capture should preserve shared URL in note');
+    assert(quickCapture.body.task.priority === 3, 'quick capture should apply parsed priority');
+    assert(quickCapture.body.task.tags.some((item: any) => item.name === preview.body.draft.tags[0]), 'quick capture should attach parsed tag');
+    assert(quickCapture.body.parsed?.tokens.some((token: any) => token.type === 'tag'), 'quick capture should return parsed tokens');
+
+    const voiceCapture = await req(base, '/api/tasks/quick-capture', {
+      method: 'POST',
+      cookie,
+      body: JSON.stringify({ source: 'voice', text: 'voice captured idea', parse: false }),
+    });
+    assert(voiceCapture.res.status === 201, `voice capture failed: ${voiceCapture.res.status}`);
+    assert(voiceCapture.body.task.title === 'voice captured idea', 'voice capture should create raw task when parse=false');
+    assert(voiceCapture.body.task.source === 'voice', 'voice source should persist');
+    assert(voiceCapture.body.parsed === null, 'voice capture parse=false should not parse');
+
+    const badCapture = await req(base, '/api/tasks/quick-capture', {
+      method: 'POST',
+      cookie,
+      body: JSON.stringify({ source: 'invalid_source', text: 'bad source' }),
+    });
+    assert(badCapture.res.status === 400, `invalid source should be rejected, got ${badCapture.res.status}`);
+    assert(badCapture.body.error?.code === 'invalid_capture_source', 'invalid source code mismatch');
+
     const db = new DatabaseSync(dbPath);
     try {
       const parsedRow = db.prepare('SELECT title, priority, start_date FROM tasks WHERE id = ?').get(parsedTask.body.task.id) as
@@ -197,12 +228,22 @@ async function main() {
       const rawRow = db.prepare('SELECT title, priority, start_date FROM tasks WHERE id = ?').get(rawTask.body.task.id) as
         | { title: string; priority: number; start_date: string | null }
         | undefined;
+      const captureRow = db.prepare('SELECT title, note, priority, source FROM tasks WHERE id = ?').get(quickCapture.body.task.id) as
+        | { title: string; note: string | null; priority: number; source: string }
+        | undefined;
+      const voiceRow = db.prepare('SELECT title, source FROM tasks WHERE id = ?').get(voiceCapture.body.task.id) as
+        | { title: string; source: string }
+        | undefined;
       assert(parsedRow?.title === '明天下午3点开会' && parsedRow.priority === 3 && parsedRow.start_date, 'parsed task DB row mismatch');
       assert(rawRow?.title === rawText && rawRow.priority === 0 && rawRow.start_date === null, 'dismissed parse should create original task text');
+      assert(captureRow?.source === 'system_share' && captureRow.priority === 3 && captureRow.note?.includes(sharedUrl), 'quick capture DB row mismatch');
+      assert(voiceRow?.source === 'voice' && voiceRow.title === 'voice captured idea', 'voice capture DB row mismatch');
       const parsedTags = db.prepare('SELECT COUNT(*) c FROM task_tags WHERE task_id = ?').get(parsedTask.body.task.id) as { c: number };
       const rawTags = db.prepare('SELECT COUNT(*) c FROM task_tags WHERE task_id = ?').get(rawTask.body.task.id) as { c: number };
+      const captureTags = db.prepare('SELECT COUNT(*) c FROM task_tags WHERE task_id = ?').get(quickCapture.body.task.id) as { c: number };
       assert(parsedTags.c === 1, 'parsed task should have one tag relation');
       assert(rawTags.c === 0, 'raw task should not get parsed tags');
+      assert(captureTags.c === 1, 'quick capture should have one tag relation');
     } finally {
       db.close();
     }

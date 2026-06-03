@@ -339,9 +339,79 @@ async function main() {
     assert(!activeAfterSkip.body.tasks.some((item: any) => item.id === skipTaskId), 'skipped task should be hidden from active view');
     assert(activeAfterSkip.body.tasks.some((item: any) => item.id === skipped.body.nextTask.id), 'skip-created next task should remain active');
 
+    const conversionParent = await req(base, '/api/tasks', {
+      method: 'POST',
+      cookie: userACookie,
+      body: JSON.stringify({ title: 'Conversion parent' }),
+    });
+    const existingTask = await req(base, '/api/tasks', {
+      method: 'POST',
+      cookie: userACookie,
+      body: JSON.stringify({ title: 'Existing task to attach' }),
+    });
+    const attachedExisting = await req(base, `/api/tasks/${existingTask.body.task.id}/reparent`, {
+      method: 'POST',
+      cookie: userACookie,
+      body: JSON.stringify({ parentId: conversionParent.body.task.id }),
+    });
+    assert(attachedExisting.res.status === 200, `attach existing task failed: ${attachedExisting.res.status} ${JSON.stringify(attachedExisting.body)}`);
+    assert(attachedExisting.body.task.parentId === conversionParent.body.task.id, 'existing task should become a subtask');
+    const conversionParentRead = await req(base, `/api/tasks/${conversionParent.body.task.id}`, { cookie: userACookie });
+    assert(conversionParentRead.body.task.subtaskTotal === 1, 'parent subtask count should include attached existing task');
+    const cycleAttempt = await req(base, `/api/tasks/${conversionParent.body.task.id}/reparent`, {
+      method: 'POST',
+      cookie: userACookie,
+      body: JSON.stringify({ parentId: existingTask.body.task.id }),
+    });
+    assert(cycleAttempt.res.status === 409, `moving a parent under its child should be rejected, got ${cycleAttempt.res.status}`);
+    const promotedExisting = await req(base, `/api/tasks/${existingTask.body.task.id}/reparent`, {
+      method: 'POST',
+      cookie: userACookie,
+      body: JSON.stringify({ parentId: null }),
+    });
+    assert(promotedExisting.body.task.parentId === null, 'subtask should promote back to an independent task');
+    const parentAfterPromotion = await req(base, `/api/tasks/${conversionParent.body.task.id}`, { cookie: userACookie });
+    assert(parentAfterPromotion.body.task.subtaskTotal === 0, 'parent subtask count should update after promotion');
+
+    const depthRoot = await req(base, '/api/tasks', { method: 'POST', cookie: userACookie, body: JSON.stringify({ title: 'Depth 1' }) });
+    const depth2 = await req(base, '/api/tasks', {
+      method: 'POST',
+      cookie: userACookie,
+      body: JSON.stringify({ title: 'Depth 2', parentId: depthRoot.body.task.id }),
+    });
+    const depth3 = await req(base, '/api/tasks', {
+      method: 'POST',
+      cookie: userACookie,
+      body: JSON.stringify({ title: 'Depth 3', parentId: depth2.body.task.id }),
+    });
+    const depth4 = await req(base, '/api/tasks', {
+      method: 'POST',
+      cookie: userACookie,
+      body: JSON.stringify({ title: 'Depth 4', parentId: depth3.body.task.id }),
+    });
+    const depth5 = await req(base, '/api/tasks', {
+      method: 'POST',
+      cookie: userACookie,
+      body: JSON.stringify({ title: 'Depth 5', parentId: depth4.body.task.id }),
+    });
+    const tooDeepTask = await req(base, '/api/tasks', { method: 'POST', cookie: userACookie, body: JSON.stringify({ title: 'Too deep child' }) });
+    const tooDeepMove = await req(base, `/api/tasks/${tooDeepTask.body.task.id}/reparent`, {
+      method: 'POST',
+      cookie: userACookie,
+      body: JSON.stringify({ parentId: depth5.body.task.id }),
+    });
+    assert(tooDeepMove.res.status === 400, `sixth-level reparent should be rejected, got ${tooDeepMove.res.status}`);
+    assert(tooDeepMove.body.error?.code === 'max_depth_exceeded', `expected max_depth_exceeded, got ${JSON.stringify(tooDeepMove.body)}`);
+
     const userBCookie = await login(base, 'metadata-bob@example.com', smtp.messages);
     const bobTags = await req(base, '/api/tags', { cookie: userBCookie });
     assert(bobTags.body.tags.length === 0, `expected Bob to see zero Alice tags, got ${bobTags.body.tags.length}`);
+    const bobReparent = await req(base, `/api/tasks/${existingTask.body.task.id}/reparent`, {
+      method: 'POST',
+      cookie: userBCookie,
+      body: JSON.stringify({ parentId: conversionParent.body.task.id }),
+    });
+    assert(bobReparent.res.status === 404, `expected Bob reparent attempt to be 404, got ${bobReparent.res.status}`);
     const bobReminderRead = await req(base, `/api/tasks/${taskId}/reminders`, { cookie: userBCookie });
     assert(bobReminderRead.res.status === 404, `expected Bob task reminder read to be 404, got ${bobReminderRead.res.status}`);
     const bobAttach = await req(base, `/api/tasks/${taskId}/tags/${tagId}`, { method: 'POST', cookie: userBCookie });
@@ -427,6 +497,10 @@ async function main() {
         skipTaskId,
         skipped.body.nextTask.id,
       ) as Array<{ task_id: string; remind_at: string; status: string }>;
+      const promotedExistingRow = db.prepare('SELECT parent_id FROM tasks WHERE id = ?').get(existingTask.body.task.id) as { parent_id: string | null };
+      const reparentActivity = db
+        .prepare("SELECT COUNT(*) c FROM task_activity_logs WHERE task_id = ? AND action = 'task_reparented'")
+        .get(existingTask.body.task.id) as { c: number };
       const childTagRow = db.prepare('SELECT parent_id FROM tags WHERE id = ?').get(childTag.body.tag.id) as { parent_id: string | null };
       assert(taskRow.recurrence_rule === 'FREQ=WEEKLY', 'DB recurrence_rule mismatch');
       assert(taskRow.manual_progress === 40, 'DB manual_progress mismatch');
@@ -453,6 +527,8 @@ async function main() {
         skipReminderRows.some((row) => row.task_id === skipped.body.nextTask.id && row.status === 'scheduled' && row.remind_at === '2026-06-05T07:45:00.000Z'),
         'DB skip next reminder mismatch',
       );
+      assert(promotedExistingRow.parent_id === null, 'DB promoted task parent_id should be null');
+      assert(reparentActivity.c === 2, `expected two reparent activity rows, got ${reparentActivity.c}`);
       assert(childTagRow.parent_id === tagId, 'DB child tag parent_id mismatch');
       assert(tagCount.c === 2, `expected 2 tags in DB, got ${tagCount.c}`);
       assert(taskTagCount.c === 3, `expected 3 task_tags rows in DB, got ${taskTagCount.c}`);

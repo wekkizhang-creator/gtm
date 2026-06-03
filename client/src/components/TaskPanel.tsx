@@ -1,6 +1,7 @@
 import { useEffect, useState, type ReactNode } from 'react';
 import type { QuickParseResult, Task, Priority, Selection, Tag, SavedFilter, List } from '../types';
 import TaskItem from './TaskItem';
+import type { QuickCaptureInput } from '../api/client';
 import {
   quickAddDraftSummary,
   quickAddSubmitOptions,
@@ -8,6 +9,7 @@ import {
   type QuickAddPreviewState,
   type QuickAddSubmitOptions,
 } from '../quickAddPreview';
+import { captureVoiceText } from '../voiceQuickCapture';
 import { taskManualOrderUpdates, type TaskManualOrderAction } from '../taskManualOrder';
 import { buildTaskListGroups, sortTaskList, type TaskGroupMode, type TaskSortMode } from '../taskListView';
 import type { TaskFilterPatch, TaskFilterState } from '../taskFilters';
@@ -35,6 +37,7 @@ interface Props {
   quickParseEnabled: boolean;
   onQuickAdd: (title: string, options?: QuickAddSubmitOptions) => void;
   onQuickParse: (title: string) => Promise<QuickParseResult>;
+  onQuickCapture: (input: QuickCaptureInput) => Promise<void>;
   onSortMode: (mode: TaskSortMode) => void;
   onGroupMode: (mode: TaskGroupMode) => void;
   onTaskFilters: (patch: TaskFilterPatch) => void;
@@ -66,6 +69,7 @@ export default function TaskPanel(props: Props) {
   const { selection, title, tags, tagFilter, savedFilters, savedFilterId, tasks, lists, loading, error, syncNotice, canQuickAdd } = props;
   const [draft, setDraft] = useState('');
   const [quickPreview, setQuickPreview] = useState<QuickAddPreviewState>({ status: 'idle' });
+  const [voiceBusy, setVoiceBusy] = useState(false);
   const [selected, setSelected] = useState<Set<string>>(new Set());
   const [batchDue, setBatchDue] = useState('');
   const [batchPriority, setBatchPriority] = useState('');
@@ -75,6 +79,8 @@ export default function TaskPanel(props: Props) {
   const showOverdueGroups = !inTrash && props.groupMode === 'none' && props.overduePosition === 'grouped';
   const showFirstTaskGuide = Boolean(props.firstTaskGuide);
   const sortedTasks = sortTaskList(tasks, props.sortMode, lists);
+  const listTypeById = new Map(lists.map((list) => [list.id, list.type]));
+  const isNoteListTask = (task: Task) => (task.listId ? listTypeById.get(task.listId) === 'note' : false);
   const overdueTasks = showOverdueGroups ? sortedTasks.filter((task) => formatDue(task.dueDate)?.overdue) : [];
   const currentTasks = showOverdueGroups ? sortedTasks.filter((task) => !formatDue(task.dueDate)?.overdue) : sortedTasks;
   const groupedTasks = props.groupMode === 'none' ? [] : buildTaskListGroups(tasks, props.groupMode, props.sortMode, lists, tags);
@@ -117,6 +123,22 @@ export default function TaskPanel(props: Props) {
     props.onQuickAdd(v, options ?? undefined);
     setDraft('');
     setQuickPreview({ status: 'idle' });
+  }
+
+  async function startVoiceCapture() {
+    if (voiceBusy) return;
+    setVoiceBusy(true);
+    setQuickPreview({ status: 'idle' });
+    try {
+      const text = await captureVoiceText();
+      await props.onQuickCapture({ source: 'voice', text, parse: props.quickParseEnabled });
+      setDraft('');
+      setQuickPreview({ status: 'idle' });
+    } catch (e) {
+      setQuickPreview({ status: 'error', text: draft.trim(), message: (e as Error).message });
+    } finally {
+      setVoiceBusy(false);
+    }
   }
 
   function toggleSelected(id: string, value: boolean) {
@@ -224,6 +246,9 @@ export default function TaskPanel(props: Props) {
               value={draft}
               onChange={(e) => setDraft(e.target.value)}
             />
+            <button type="button" className="quick-add-voice" disabled={voiceBusy} onClick={() => void startVoiceCapture()}>
+              {voiceBusy ? 'Listening' : 'Voice'}
+            </button>
             {props.quickParseEnabled && (
               <button type="button" className="quick-add-parse" disabled={!draft.trim() || quickPreview.status === 'loading'} onClick={() => void previewQuickAdd(draft.trim())}>
                 {quickPreview.status === 'loading' ? '解析中' : '解析'}
@@ -346,6 +371,7 @@ export default function TaskPanel(props: Props) {
                 task={t}
                 inTrash={inTrash}
                 batchSelected={selected.has(t.id)}
+                isNoteList={isNoteListTask(t)}
                 onBatchSelect={(checked) => toggleSelected(t.id, checked)}
                 onToggle={props.onToggle}
                 onDelete={props.onDelete}
@@ -369,6 +395,7 @@ export default function TaskPanel(props: Props) {
             task={t}
             inTrash={inTrash}
             batchSelected={selected.has(t.id)}
+            isNoteList={isNoteListTask(t)}
             onBatchSelect={(checked) => toggleSelected(t.id, checked)}
             orderControls={canManualOrder ? { canMoveUp: index > 0, canMoveDown: index < currentTasks.length - 1, canPinTop: index > 0 } : undefined}
             onMoveTask={(action) => moveTask(t.id, action)}
@@ -394,6 +421,7 @@ export default function TaskPanel(props: Props) {
                 task={t}
                 inTrash={inTrash}
                 batchSelected={selected.has(t.id)}
+                isNoteList={isNoteListTask(t)}
                 onBatchSelect={(checked) => toggleSelected(t.id, checked)}
                 onToggle={props.onToggle}
                 onDelete={props.onDelete}

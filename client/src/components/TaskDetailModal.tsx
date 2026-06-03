@@ -54,6 +54,9 @@ export default function TaskDetailModal({
   const [reminderDraft, setReminderDraft] = useState('');
   const [attachmentBusy, setAttachmentBusy] = useState(false);
   const [draft, setDraft] = useState('');
+  const [attachQuery, setAttachQuery] = useState('');
+  const [attachCandidates, setAttachCandidates] = useState<Task[]>([]);
+  const [attachBusy, setAttachBusy] = useState(false);
   const [checklistDraft, setChecklistDraft] = useState('');
   const [aiBusy, setAiBusy] = useState(false);
   const [aiSuggestions, setAiSuggestions] = useState<AIBreakdownSuggestion[]>([]);
@@ -136,6 +139,44 @@ export default function TaskDetailModal({
     try {
       for (const l of lines) await api.createTask({ title: l, parentId: task.id });
       setDraft('');
+      await reload();
+    } catch (e) {
+      setError((e as Error).message);
+    }
+  }
+
+  async function searchAttachCandidates() {
+    const q = attachQuery.trim();
+    if (!q) {
+      setAttachCandidates([]);
+      return;
+    }
+    setAttachBusy(true);
+    try {
+      const candidates = await api.getTasks(`view=active&q=${encodeURIComponent(q)}`);
+      setAttachCandidates(candidates.filter((item) => item.id !== task.id && item.parentId !== task.id));
+      setError(null);
+    } catch (e) {
+      setError((e as Error).message);
+    } finally {
+      setAttachBusy(false);
+    }
+  }
+
+  async function attachExistingTask(id: string) {
+    try {
+      await api.reparentTask(id, task.id);
+      setAttachQuery('');
+      setAttachCandidates([]);
+      await reload();
+    } catch (e) {
+      setError((e as Error).message);
+    }
+  }
+
+  async function promoteSubtask(id: string) {
+    try {
+      await api.reparentTask(id, null);
       await reload();
     } catch (e) {
       setError((e as Error).message);
@@ -705,6 +746,37 @@ export default function TaskDetailModal({
           </form>
         </div>
 
+        <form
+          className="td-add td-attach-existing"
+          onSubmit={(e) => {
+            e.preventDefault();
+            void searchAttachCandidates();
+          }}
+        >
+          <input
+            className="td-add-input"
+            placeholder="搜索现有任务并挂为子任务"
+            value={attachQuery}
+            onChange={(e) => setAttachQuery(e.target.value)}
+          />
+          <button type="submit" disabled={attachBusy || !attachQuery.trim()}>
+            {attachBusy ? '搜索中...' : '搜索'}
+          </button>
+        </form>
+
+        {attachCandidates.length > 0 && (
+          <ul className="td-sub-list td-attach-candidates">
+            {attachCandidates.map((candidate) => (
+              <li key={candidate.id} className="td-sub-item">
+                <span className="td-sub-title">{candidate.title}</span>
+                <button type="button" className="td-sub-promote" onClick={() => void attachExistingTask(candidate.id)}>
+                  挂为子任务
+                </button>
+              </li>
+            ))}
+          </ul>
+        )}
+
         <ul className="td-sub-list">
           {subs.map((s) => (
             <li key={s.id} className={`td-sub-item${s.completed ? ' is-completed' : ''}`}>
@@ -724,7 +796,7 @@ export default function TaskDetailModal({
                 }}
                 onKeyDown={(e) => e.key === 'Enter' && (e.target as HTMLInputElement).blur()}
               />
-              <button className="td-sub-promote" title="升级为独立任务" onClick={() => void api.updateTask(s.id, { parentId: null }).then(reload)}>
+              <button className="td-sub-promote" title="升级为独立任务" onClick={() => void promoteSubtask(s.id)}>
                 ↗
               </button>
               <button className="td-sub-del" title="删除" onClick={() => void api.deleteTask(s.id).then(reload)}>

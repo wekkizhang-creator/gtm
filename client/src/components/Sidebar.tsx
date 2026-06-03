@@ -10,9 +10,9 @@ interface Props {
   counts: SmartCounts;
   selection: Selection;
   onSelect: (s: Selection) => void;
-  onAddList: (name: string, folderId?: string | null) => void;
+  onAddList: (name: string, folderId?: string | null, type?: List['type']) => void;
   onDeleteList: (id: string) => void;
-  onUpdateList: (id: string, patch: Partial<Pick<List, 'folderId' | 'sortOrder'>>) => void;
+  onUpdateList: (id: string, patch: Partial<Pick<List, 'folderId' | 'sortOrder' | 'type'>>) => void;
   onReorderLists: (updates: Array<{ id: string; sortOrder: number }>) => void;
   onAddFolder: (name: string) => void;
   onUpdateFolder: (id: string, patch: Partial<Pick<ListFolder, 'collapsed' | 'name' | 'sortOrder'>>) => void;
@@ -62,6 +62,7 @@ export default function Sidebar({
   const [name, setName] = useState('');
   const [folderName, setFolderName] = useState('');
   const [folderId, setFolderId] = useState('');
+  const [listType, setListType] = useState<List['type']>('task');
   const [miniAnchor, setMiniAnchor] = useState(() => new Date());
   const [miniDayInfos, setMiniDayInfos] = useState<CalendarDayInfo[]>([]);
   const showMiniLunar = settings.miniCalendar.showLunar === 'on' || (settings.miniCalendar.showLunar === 'follow' && settings.datetime.showLunar);
@@ -88,8 +89,9 @@ export default function Sidebar({
     e.preventDefault();
     const v = name.trim();
     if (!v) return;
-    onAddList(v, folderId || null);
+    onAddList(v, folderId || null, listType);
     setName('');
+    setListType('task');
     setAdding(false);
   }
 
@@ -118,7 +120,18 @@ export default function Sidebar({
           ▤
         </span>
         <span className="nav-label">{l.name}</span>
+        {l.type === 'note' && <span className="nav-type-badge">Note</span>}
         <span className="nav-badge">{l.taskCount || ''}</span>
+        <select
+          className="nav-type-select"
+          title="清单类型"
+          value={l.type}
+          onClick={(e) => e.stopPropagation()}
+          onChange={(e) => onUpdateList(l.id, { type: e.target.value as List['type'] })}
+        >
+          <option value="task">任务</option>
+          <option value="note">笔记</option>
+        </select>
         <select
           className="nav-folder-select"
           title="移动到文件夹"
@@ -290,6 +303,10 @@ export default function Sidebar({
                 {folder.name}
               </option>
             ))}
+          </select>
+          <select value={listType} onChange={(e) => setListType(e.target.value as List['type'])}>
+            <option value="task">任务清单</option>
+            <option value="note">笔记清单</option>
           </select>
         </form>
       )}

@@ -7,6 +7,7 @@ export interface List {
   name: string;
   color: string | null;
   icon: string | null;
+  type: 'task' | 'note';
   sortOrder: number;
   isInbox: boolean;
   taskCount: number;
@@ -236,6 +237,13 @@ export interface QuickParseResult {
     note: string | null;
     tags: string[];
   };
+}
+
+export type QuickCaptureSource = 'voice' | 'system_share' | 'desktop_widget' | 'shortcut' | 'web';
+
+export interface QuickCaptureResult {
+  task: Task;
+  parsed: QuickParseResult | null;
 }
 
 export interface DesktopWidget {

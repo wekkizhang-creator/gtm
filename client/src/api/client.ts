@@ -47,6 +47,8 @@ import type {
   NotificationSound,
   OpenSourceLicenses,
   Priority,
+  QuickCaptureResult,
+  QuickCaptureSource,
   QuickParseResult,
   SearchResult,
   SavedFilter,
@@ -120,6 +122,19 @@ export interface CreateTaskInput {
   manualProgress?: number | null;
   pinned?: boolean;
   status?: TaskStatus;
+}
+
+export interface QuickCaptureInput {
+  source: QuickCaptureSource;
+  text?: string;
+  title?: string;
+  url?: string | null;
+  listId?: string | null;
+  priority?: Priority;
+  dueDate?: string | null;
+  startDate?: string | null;
+  isAllDay?: boolean;
+  parse?: boolean;
 }
 
 export type UpdateTaskInput = Partial<{
@@ -304,9 +319,9 @@ export const api = {
   updateFolder: (id: string, patch: Partial<Pick<ListFolder, 'name' | 'collapsed' | 'sortOrder'>>) =>
     req<{ folder: ListFolder }>(`/lists/folders/${id}`, { method: 'PATCH', body: JSON.stringify(patch) }).then((r) => r.folder),
   deleteFolder: (id: string) => req<void>(`/lists/folders/${id}`, { method: 'DELETE' }),
-  createList: (name: string, folderId?: string | null) =>
-    req<{ list: List }>('/lists', { method: 'POST', body: JSON.stringify({ name, folderId: folderId ?? null }) }).then((r) => r.list),
-  updateList: (id: string, patch: Partial<Pick<List, 'name' | 'color' | 'icon' | 'sortOrder' | 'folderId'>>) =>
+  createList: (name: string, folderId?: string | null, type: List['type'] = 'task') =>
+    req<{ list: List }>('/lists', { method: 'POST', body: JSON.stringify({ name, folderId: folderId ?? null, type }) }).then((r) => r.list),
+  updateList: (id: string, patch: Partial<Pick<List, 'name' | 'color' | 'icon' | 'type' | 'sortOrder' | 'folderId'>>) =>
     req<{ list: List }>(`/lists/${id}`, { method: 'PATCH', body: JSON.stringify(patch) }).then((r) => r.list),
   deleteList: (id: string) => req<void>(`/lists/${id}`, { method: 'DELETE' }),
 
@@ -343,6 +358,8 @@ export const api = {
     req<{ task: Task }>('/tasks', { method: 'POST', body: JSON.stringify(input) }).then((r) => r.task),
   updateTask: (id: string, patch: UpdateTaskInput) =>
     req<{ task: Task }>(`/tasks/${id}`, { method: 'PATCH', body: JSON.stringify(patch) }).then((r) => r.task),
+  reparentTask: (id: string, parentId: string | null) =>
+    req<{ task: Task }>(`/tasks/${id}/reparent`, { method: 'POST', body: JSON.stringify({ parentId }) }).then((r) => r.task),
   deferRecurringTask: (id: string) => req<{ task: Task }>(`/tasks/${id}/recurrence/defer`, { method: 'POST' }).then((r) => r.task),
   skipRecurringTask: (id: string) => req<{ task: Task; nextTask: Task | null }>(`/tasks/${id}/recurrence/skip`, { method: 'POST' }),
   deleteTask: (id: string) => req<void>(`/tasks/${id}`, { method: 'DELETE' }),
@@ -360,6 +377,8 @@ export const api = {
     text: string,
     options?: Partial<{ dateRecognition: boolean; removeDateText: boolean; tagRecognition: boolean; removeTagText: boolean; urlParsing: boolean }>,
   ) => req<QuickParseResult>('/tasks/quick-parse', { method: 'POST', body: JSON.stringify({ text, ...(options ? { options } : {}) }) }),
+  quickCaptureTask: (input: QuickCaptureInput) =>
+    req<QuickCaptureResult>('/tasks/quick-capture', { method: 'POST', body: JSON.stringify(input) }),
   addTaskTag: (taskId: string, tagId: string) =>
     req<{ task: Task }>(`/tasks/${taskId}/tags/${tagId}`, { method: 'POST' }).then((r) => r.task),
   removeTaskTag: (taskId: string, tagId: string) =>

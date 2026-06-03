@@ -8,6 +8,7 @@ export interface ListDTO {
   name: string;
   color: string | null;
   icon: string | null;
+  type: 'task' | 'note';
   sortOrder: number;
   isInbox: boolean;
   taskCount: number; // active (incomplete, not deleted) tasks in this list
@@ -186,6 +187,13 @@ export interface QuickParseResultDTO {
     note: string | null;
     tags: string[];
   };
+}
+
+export type QuickCaptureSource = 'voice' | 'system_share' | 'desktop_widget' | 'shortcut' | 'web';
+
+export interface QuickCaptureResultDTO {
+  task: TaskDTO;
+  parsed: QuickParseResultDTO | null;
 }
 
 export interface DesktopWidgetDTO {

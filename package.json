@@ -43,6 +43,7 @@
     "test:settings": "npm exec -w server -- tsx ../tests/settings.integration.ts",
     "test:quick-add-preview": "npm exec -w server -- tsx ../tests/quick-add-preview.integration.ts",
     "test:quick-add-preview-client": "npm exec -w server -- tsx ../tests/quick-add-preview-client.test.ts",
+    "test:voice-quick-capture-client": "npm exec -w server -- tsx ../tests/voice-quick-capture-client.test.ts",
     "test:task-filter-client": "npm exec -w server -- tsx ../tests/task-filter-client.test.ts",
     "test:task-filter-combo": "npm exec -w server -- tsx ../tests/task-filter-combo.integration.ts",
     "test:task-manual-order-client": "npm exec -w server -- tsx ../tests/task-manual-order-client.test.ts",

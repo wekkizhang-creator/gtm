@@ -43,10 +43,17 @@ function mapList(r: any): ListDTO {
     name: r.name,
     color: r.color ?? null,
     icon: r.icon ?? null,
+    type: r.type === 'note' ? 'note' : 'task',
     sortOrder: r.sort_order,
     isInbox: !!r.is_inbox,
     taskCount: r.task_count ?? 0,
   };
+}
+
+function normalizeListType(value: unknown): ListDTO['type'] {
+  if (value == null || value === '') return 'task';
+  if (value === 'task' || value === 'note') return value;
+  throw new AppError(400, 'invalid_list_type', 'list type must be task or note');
 }
 
 function mapListFolder(r: any): ListFolderDTO {
@@ -423,17 +430,18 @@ export function deleteFolder(userId: string, id: string): boolean {
   return info.changes > 0;
 }
 
-export function createList(userId: string, name: string, color: string | null, icon: string | null, folderId?: string | null): ListDTO {
+export function createList(userId: string, name: string, color: string | null, icon: string | null, folderId?: string | null, type?: unknown): ListDTO {
   const validFolderId = ensureFolder(userId, folderId);
+  const listType = normalizeListType(type);
   const id = randomUUID();
   const ts = nowISO();
   const max = db.prepare('SELECT COALESCE(MAX(sort_order), 0) AS m FROM lists WHERE user_id = ? AND is_inbox = 0').get(userId) as {
     m: number;
   };
   db.prepare(
-    `INSERT INTO lists (id, user_id, folder_id, name, color, icon, sort_order, is_inbox, created_at, updated_at)
-     VALUES (?, ?, ?, ?, ?, ?, ?, 0, ?, ?)`,
-  ).run(id, userId, validFolderId, name, color, icon, (max.m ?? 0) + 1, ts, ts);
+    `INSERT INTO lists (id, user_id, folder_id, name, color, icon, type, sort_order, is_inbox, created_at, updated_at)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, 0, ?, ?)`,
+  ).run(id, userId, validFolderId, name, color, icon, listType, (max.m ?? 0) + 1, ts, ts);
   return mapList(db.prepare(`${LIST_WITH_COUNT} WHERE l.user_id = ? AND l.id = ?`).get(userId, id));
 }
 
@@ -442,6 +450,7 @@ export function updateList(userId: string, id: string, patch: Record<string, unk
     name: 'name',
     color: 'color',
     icon: 'icon',
+    type: 'type',
     folderId: 'folder_id',
     sortOrder: 'sort_order',
   };
@@ -450,7 +459,13 @@ export function updateList(userId: string, id: string, patch: Record<string, unk
   for (const [k, col] of Object.entries(map)) {
     if (k in patch) {
       cols.push(`${col} = ?`);
-      vals.push(k === 'folderId' ? ensureFolder(userId, patch[k] as string | null | undefined) : patch[k] ?? null);
+      vals.push(
+        k === 'folderId'
+          ? ensureFolder(userId, patch[k] as string | null | undefined)
+          : k === 'type'
+            ? normalizeListType(patch[k])
+            : patch[k] ?? null,
+      );
     }
   }
   cols.push('updated_at = ?');
@@ -484,6 +499,73 @@ function descendantIds(userId: string, id: string): string[] {
     frontier = kids;
   }
   return out;
+}
+
+const MAX_TASK_TREE_DEPTH = 5;
+
+function taskDepthIncludingSelf(userId: string, id: string): number {
+  let depth = 0;
+  let current: string | null = id;
+  const seen = new Set<string>();
+  while (current) {
+    if (seen.has(current)) throw new AppError(409, 'hierarchy_cycle', 'task hierarchy contains a cycle');
+    seen.add(current);
+    depth++;
+    const row = db.prepare('SELECT parent_id FROM tasks WHERE user_id = ? AND id = ? AND deleted_at IS NULL').get(userId, current) as
+      | { parent_id: string | null }
+      | undefined;
+    if (!row) break;
+    current = row.parent_id ?? null;
+  }
+  return depth;
+}
+
+function taskSubtreeDepth(userId: string, id: string): number {
+  let maxDepth = 1;
+  let frontier: Array<{ id: string; depth: number }> = [{ id, depth: 1 }];
+  const seen = new Set<string>([id]);
+  while (frontier.length) {
+    const current = frontier;
+    frontier = [];
+    const ids = current.map((item) => item.id);
+    const ph = ids.map(() => '?').join(',');
+    const rows = db
+      .prepare(`SELECT id, parent_id FROM tasks WHERE user_id = ? AND parent_id IN (${ph}) AND deleted_at IS NULL`)
+      .all(userId, ...ids) as Array<{ id: string; parent_id: string }>;
+    const depthById = new Map(current.map((item) => [item.id, item.depth]));
+    for (const row of rows) {
+      if (seen.has(row.id)) throw new AppError(409, 'hierarchy_cycle', 'task hierarchy contains a cycle');
+      seen.add(row.id);
+      const depth = (depthById.get(row.parent_id) ?? 1) + 1;
+      maxDepth = Math.max(maxDepth, depth);
+      frontier.push({ id: row.id, depth });
+    }
+  }
+  return maxDepth;
+}
+
+function nextChildSortOrder(userId: string, parentId: string): number {
+  const row = db.prepare('SELECT COALESCE(MAX(sort_order), 0) AS value FROM tasks WHERE user_id = ? AND parent_id = ?').get(userId, parentId) as {
+    value: number;
+  };
+  return (row.value ?? 0) + 1;
+}
+
+function assertTaskCanMoveUnder(userId: string, taskId: string, parentId: string | null): void {
+  if (!parentId) return;
+  if (parentId === taskId) throw new AppError(400, 'invalid', 'task cannot be its own parent');
+  const parent = db.prepare('SELECT id, status FROM tasks WHERE user_id = ? AND id = ? AND deleted_at IS NULL').get(userId, parentId) as
+    | { id: string; status: TaskStatus }
+    | undefined;
+  if (!parent) throw new AppError(404, 'not_found', 'parent task not found');
+  if (parent.status === 'skipped') throw new AppError(400, 'invalid', 'skipped task cannot be a parent');
+  if (descendantIds(userId, taskId).includes(parentId)) {
+    throw new AppError(409, 'hierarchy_cycle', 'task cannot be moved under its descendant');
+  }
+  const nextDepth = taskDepthIncludingSelf(userId, parentId) + taskSubtreeDepth(userId, taskId);
+  if (nextDepth > MAX_TASK_TREE_DEPTH) {
+    throw new AppError(400, 'max_depth_exceeded', `task hierarchy can contain at most ${MAX_TASK_TREE_DEPTH} levels`);
+  }
 }
 
 function attachStats(userId: string, tasks: TaskDTO[]): TaskDTO[] {
@@ -911,16 +993,19 @@ export function createTask(
       | { list_id: string }
       | undefined;
     if (!p) throw new AppError(404, 'not_found', 'parent task not found');
+    if (taskDepthIncludingSelf(userId, parentId) + 1 > MAX_TASK_TREE_DEPTH) {
+      throw new AppError(400, 'max_depth_exceeded', `task hierarchy can contain at most ${MAX_TASK_TREE_DEPTH} levels`);
+    }
     if (!listId) listId = p.list_id ?? getInboxId(userId);
-    const m = db.prepare('SELECT COALESCE(MAX(sort_order), 0) AS m FROM tasks WHERE user_id = ? AND parent_id = ?').get(userId, parentId) as {
-      m: number;
-    };
-    sortOrder = (m.m ?? 0) + 1;
+    sortOrder = nextChildSortOrder(userId, parentId);
   }
   if (!listId) listId = getInboxId(userId);
   if (startDate && dueDate && startDate > dueDate) throw new AppError(400, 'invalid', 'startDate must be on or before dueDate');
   const list = db.prepare('SELECT id FROM lists WHERE user_id = ? AND id = ?').get(userId, listId);
   if (!list) throw new AppError(404, 'not_found', 'list not found');
+  if (listTypeFor(userId, listId) === 'note' && completed) {
+    throw new AppError(400, 'note_list_no_completion', 'note lists only store records and cannot contain completed tasks');
+  }
   if (!parentId) sortOrder = nextTopLevelSortOrder(userId, listId, defaults.addPosition);
   db.prepare(
     `INSERT INTO tasks
@@ -1043,7 +1128,18 @@ export function updateTask(userId: string, id: string, patch: Record<string, unk
   if ('completed' in patch && 'status' in patch && Boolean(patch.completed) !== (patch.status === 'done')) {
     throw new AppError(400, 'invalid', 'completed and status disagree');
   }
+  if ('parentId' in patch) {
+    const { parentId: rawParentId, ...rest } = patch;
+    const restKeys = Object.keys(rest);
+    if (restKeys.length) {
+      const updated = updateTask(userId, id, rest);
+      if (!updated) return null;
+    }
+    const parentId = rawParentId == null || rawParentId === '' ? null : String(rawParentId);
+    return reparentTask(userId, id, parentId);
+  }
   const before = db.prepare('SELECT * FROM tasks WHERE user_id = ? AND id = ?').get(userId, id) as any;
+  if (!before) return null;
 
   if ('startDate' in patch || 'dueDate' in patch) {
     const cur = getTask(userId, id);
@@ -1055,14 +1151,17 @@ export function updateTask(userId: string, id: string, patch: Record<string, unk
       }
     }
   }
-
-  if ('parentId' in patch && patch.parentId) {
-    const parent = db.prepare('SELECT id FROM tasks WHERE user_id = ? AND id = ?').get(userId, patch.parentId as string);
-    if (!parent) throw new AppError(404, 'not_found', 'parent task not found');
-  }
   if ('listId' in patch && patch.listId) {
     const list = db.prepare('SELECT id FROM lists WHERE user_id = ? AND id = ?').get(userId, patch.listId as string);
     if (!list) throw new AppError(404, 'not_found', 'list not found');
+  }
+  const finalListId = 'listId' in patch ? (patch.listId as string | null | undefined) : (before.list_id as string | null);
+  if (listTypeFor(userId, finalListId) === 'note') {
+    const finalCompleted =
+      'completed' in patch ? Boolean(patch.completed) : 'status' in patch ? patch.status === 'done' : Boolean(before.completed);
+    if (finalCompleted) {
+      throw new AppError(400, 'note_list_no_completion', 'note lists only store records and cannot contain completed tasks');
+    }
   }
 
   const map: Record<string, string> = {
@@ -1167,6 +1266,51 @@ export function updateTask(userId: string, id: string, patch: Record<string, unk
   if (updated && before && before.completed !== 1 && updated.completed && before.recurrence_rule) {
     createNextRecurringTaskInstance(userId, before, id);
   }
+  return updated;
+}
+
+export function reparentTask(userId: string, id: string, parentId: string | null): TaskDTO | null {
+  const task = db.prepare('SELECT * FROM tasks WHERE user_id = ? AND id = ? AND deleted_at IS NULL').get(userId, id) as any;
+  if (!task) return null;
+  const normalizedParentId = parentId?.trim() || null;
+  assertTaskCanMoveUnder(userId, id, normalizedParentId);
+  if ((task.parent_id ?? null) === normalizedParentId) return getTask(userId, id);
+
+  const oldParentId = task.parent_id as string | null;
+  let listId = task.list_id as string | null;
+  let sortOrder: number;
+  if (normalizedParentId) {
+    const parent = db.prepare('SELECT list_id FROM tasks WHERE user_id = ? AND id = ? AND deleted_at IS NULL').get(userId, normalizedParentId) as
+      | { list_id: string | null }
+      | undefined;
+    if (!parent) throw new AppError(404, 'not_found', 'parent task not found');
+    listId = parent.list_id ?? listId ?? getInboxId(userId);
+    sortOrder = nextChildSortOrder(userId, normalizedParentId);
+  } else {
+    listId = listId ?? getInboxId(userId);
+    sortOrder = nextTopLevelSortOrder(userId, listId, getSettings(userId).taskDefaults.addPosition);
+  }
+
+  const ts = nowISO();
+  const info = db
+    .prepare('UPDATE tasks SET parent_id = ?, list_id = ?, sort_order = ?, updated_at = ? WHERE user_id = ? AND id = ? AND deleted_at IS NULL')
+    .run(normalizedParentId, listId, sortOrder, ts, userId, id);
+  if (info.changes === 0) return null;
+  if (oldParentId) reconcileParent(userId, oldParentId);
+  if (normalizedParentId) reconcileParent(userId, normalizedParentId);
+  const updated = getTask(userId, id)!;
+  recordTaskActivity(
+    userId,
+    id,
+    'task_reparented',
+    normalizedParentId ? 'Moved task under parent task' : 'Promoted task to independent task',
+    compactDetails({
+      beforeParentId: oldParentId,
+      afterParentId: normalizedParentId,
+      listId,
+      sortOrder,
+    }),
+  );
   return updated;
 }
 
@@ -1574,6 +1718,13 @@ function ensureList(userId: string, listId: string | null | undefined): string |
   const row = db.prepare('SELECT id FROM lists WHERE user_id = ? AND id = ?').get(userId, listId);
   if (!row) throw new AppError(404, 'not_found', 'list not found');
   return listId;
+}
+
+function listTypeFor(userId: string, listId: string | null | undefined): ListDTO['type'] {
+  if (!listId) return 'task';
+  const row = db.prepare('SELECT type FROM lists WHERE user_id = ? AND id = ?').get(userId, listId) as { type: string } | undefined;
+  if (!row) throw new AppError(404, 'not_found', 'list not found');
+  return row.type === 'note' ? 'note' : 'task';
 }
 
 function ensureTag(userId: string, tagId: string): void {

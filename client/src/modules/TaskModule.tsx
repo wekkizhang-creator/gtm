@@ -2,7 +2,7 @@ import { useCallback, useEffect, useState, type FormEvent } from 'react';
 import Sidebar from '../components/Sidebar';
 import TaskPanel from '../components/TaskPanel';
 import TaskDetailModal from '../components/TaskDetailModal';
-import { api, isNetworkError, type CreateTaskInput } from '../api/client';
+import { api, isNetworkError, type CreateTaskInput, type QuickCaptureInput } from '../api/client';
 import { startOfTodayISO } from '../util';
 import { useSettings } from '../settings';
 import { useAuth } from '../auth';
@@ -242,6 +242,29 @@ export default function TaskModule() {
     for (const id of attachIds) await api.addTaskTag(task.id, id);
   }
 
+  async function quickCapture(input: QuickCaptureInput): Promise<void> {
+    const captureText = input.text?.trim() || input.title?.trim() || input.url?.trim() || '';
+    if (!captureText) throw new Error('quick_capture_text_required');
+    const contextual = buildCreateInput(captureText);
+    const request: QuickCaptureInput = { ...input };
+    if (request.listId == null && contextual.listId) request.listId = contextual.listId;
+    if (request.priority == null && contextual.priority != null) request.priority = contextual.priority;
+    if (request.dueDate == null && Object.prototype.hasOwnProperty.call(contextual, 'dueDate')) request.dueDate = contextual.dueDate ?? null;
+    if (request.startDate == null && Object.prototype.hasOwnProperty.call(contextual, 'startDate')) request.startDate = contextual.startDate ?? null;
+    if (request.isAllDay == null && Object.prototype.hasOwnProperty.call(contextual, 'isAllDay')) request.isAllDay = contextual.isAllDay;
+    try {
+      await api.quickCaptureTask(request);
+    } catch (e) {
+      if (isNetworkError(e)) {
+        const pending = enqueueTaskCreate(user.id, { ...contextual, source: input.source });
+        setPendingSync(pending);
+        setSyncNotice(`Offline: quick capture queued, ${pending} pending`);
+        throw new Error('Offline: quick capture queued and will sync automatically');
+      }
+      throw e;
+    }
+  }
+
   async function submitFirstTask(e: FormEvent) {
     e.preventDefault();
     const title = firstTaskTitle.trim();
@@ -340,9 +363,9 @@ export default function TaskModule() {
         counts={counts}
         selection={selection}
         onSelect={setSelection}
-        onAddList={(name, folderId) =>
+        onAddList={(name, folderId, type) =>
           void mutate(async () => {
-            const l = await api.createList(name, folderId);
+            const l = await api.createList(name, folderId, type);
             setSelection({ kind: 'list', id: l.id });
           })
         }
@@ -403,6 +426,7 @@ export default function TaskModule() {
         quickParseEnabled={settings.quickAdd.parseEnabled}
         onQuickParse={(text) => api.quickParseTask(text)}
         onQuickAdd={(t, options) => void mutate(() => quickAdd(t, options))}
+        onQuickCapture={(input) => mutate(() => quickCapture(input))}
         onToggle={(t) =>
           void mutate(async () => {
             const updated = await api.updateTask(t.id, { completed: !t.completed });

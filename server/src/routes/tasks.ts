@@ -1,11 +1,12 @@
 import { Router, type NextFunction, type Request, type Response } from 'express';
 import * as repo from '../repo';
-import { AppError } from '../types';
+import { AppError, type QuickCaptureSource } from '../types';
 import { requireUserId } from '../authMiddleware';
 import { quickParseTaskWithUrlTitle } from '../quickParse';
 import { getSettings } from '../settingsRepo';
 
 const router = Router();
+const QUICK_CAPTURE_SOURCES: QuickCaptureSource[] = ['voice', 'system_share', 'desktop_widget', 'shortcut', 'web'];
 
 function assertPriority(p: unknown) {
   if (p != null && ![0, 1, 2, 3].includes(p as number)) {
@@ -24,6 +25,69 @@ function assertISODate(value: unknown, field: string): asserts value is string {
   if (typeof value !== 'string' || Number.isNaN(Date.parse(value))) {
     throw new AppError(400, 'invalid', `${field} must be an ISO date string`);
   }
+}
+
+function quickAddParseOptions(userId: string, requestedValue: unknown) {
+  const quickAdd = getSettings(userId).quickAdd;
+  const requested = requestedValue && typeof requestedValue === 'object' ? requestedValue as Record<string, unknown> : {};
+  return {
+    dateRecognition: typeof requested.dateRecognition === 'boolean' ? requested.dateRecognition : quickAdd.dateRecognition,
+    removeDateText: typeof requested.removeDateText === 'boolean' ? requested.removeDateText : quickAdd.removeDateText,
+    tagRecognition: typeof requested.tagRecognition === 'boolean' ? requested.tagRecognition : quickAdd.tagRecognition,
+    removeTagText: typeof requested.removeTagText === 'boolean' ? requested.removeTagText : quickAdd.removeTagText,
+    urlParsing: typeof requested.urlParsing === 'boolean' ? requested.urlParsing : quickAdd.urlParsing,
+  };
+}
+
+function optionalTrimmedString(value: unknown, field: string): string | null {
+  if (value == null) return null;
+  if (typeof value !== 'string') throw new AppError(400, 'invalid', `${field} must be a string`);
+  const trimmed = value.trim();
+  return trimmed ? trimmed : null;
+}
+
+function normalizeCaptureSource(value: unknown): QuickCaptureSource {
+  if (value == null) return 'web';
+  if (typeof value !== 'string') throw new AppError(400, 'invalid', 'source must be a string');
+  if (!QUICK_CAPTURE_SOURCES.includes(value as QuickCaptureSource)) {
+    throw new AppError(400, 'invalid_capture_source', `source must be one of ${QUICK_CAPTURE_SOURCES.join(', ')}`);
+  }
+  return value as QuickCaptureSource;
+}
+
+function normalizeSharedUrl(value: unknown): string | null {
+  const raw = optionalTrimmedString(value, 'url');
+  if (!raw) return null;
+  let parsed: URL;
+  try {
+    parsed = new URL(raw);
+  } catch {
+    throw new AppError(400, 'invalid_url', 'url must be a valid URL');
+  }
+  if (!['http:', 'https:'].includes(parsed.protocol)) {
+    throw new AppError(400, 'invalid_url', 'url must be http or https');
+  }
+  return parsed.toString();
+}
+
+function noteWithUrl(note: string | null | undefined, url: string | null): string | null | undefined {
+  if (!url) return note;
+  if (note && note.includes(url)) return note;
+  return note ? `${note}\n${url}` : url;
+}
+
+function ensureTagIdsByName(userId: string, names: string[]): string[] {
+  const existing = new Map(repo.listTags(userId).map((tag) => [tag.name.trim().toLowerCase(), tag]));
+  const ids: string[] = [];
+  for (const raw of names) {
+    const name = raw.trim();
+    if (!name) continue;
+    const key = name.toLowerCase();
+    const tag = existing.get(key) ?? repo.createTag(userId, { name });
+    existing.set(key, tag);
+    ids.push(tag.id);
+  }
+  return Array.from(new Set(ids));
 }
 
 // GET /api/tasks?view=...  OR  ?listId=...
@@ -50,16 +114,61 @@ router.post('/quick-parse', async (req: Request, res: Response, next: NextFuncti
   try {
     const text = req.body?.text;
     if (typeof text !== 'string' || !text.trim()) throw new AppError(400, 'invalid', 'text is required');
-    const quickAdd = getSettings(requireUserId(req)).quickAdd;
-    const requested = req.body?.options && typeof req.body.options === 'object' ? req.body.options : {};
-    const parsed = await quickParseTaskWithUrlTitle(text, {
-      dateRecognition: typeof requested.dateRecognition === 'boolean' ? requested.dateRecognition : quickAdd.dateRecognition,
-      removeDateText: typeof requested.removeDateText === 'boolean' ? requested.removeDateText : quickAdd.removeDateText,
-      tagRecognition: typeof requested.tagRecognition === 'boolean' ? requested.tagRecognition : quickAdd.tagRecognition,
-      removeTagText: typeof requested.removeTagText === 'boolean' ? requested.removeTagText : quickAdd.removeTagText,
-      urlParsing: typeof requested.urlParsing === 'boolean' ? requested.urlParsing : quickAdd.urlParsing,
-    });
+    const parsed = await quickParseTaskWithUrlTitle(text, quickAddParseOptions(requireUserId(req), req.body?.options));
     res.json(parsed);
+  } catch (err) {
+    next(err);
+  }
+});
+
+router.post('/quick-capture', async (req: Request, res: Response, next: NextFunction) => {
+  try {
+    const userId = requireUserId(req);
+    const body = req.body ?? {};
+    const source = normalizeCaptureSource(body.source);
+    const title = optionalTrimmedString(body.title, 'title');
+    const text = optionalTrimmedString(body.text, 'text');
+    const url = normalizeSharedUrl(body.url);
+    const captureText = [title, text].filter(Boolean).join(' ').trim() || url;
+    if (!captureText) throw new AppError(400, 'invalid', 'text, title or url is required');
+    const listId = body.listId == null ? null : optionalTrimmedString(body.listId, 'listId');
+    const input: Parameters<typeof repo.createTask>[1] = {
+      title: captureText,
+      source,
+    };
+    if (listId) input.listId = listId;
+    assertPriority(body.priority);
+    if (body.startDate != null) assertISODate(body.startDate, 'startDate');
+    if (body.dueDate != null) assertISODate(body.dueDate, 'dueDate');
+    if (body.isAllDay != null && typeof body.isAllDay !== 'boolean') throw new AppError(400, 'invalid', 'isAllDay must be boolean');
+    if (body.startDate && body.dueDate && body.startDate > body.dueDate) {
+      throw new AppError(400, 'invalid', 'startDate must be on or before dueDate');
+    }
+    if (Object.prototype.hasOwnProperty.call(body, 'priority')) input.priority = body.priority ?? 0;
+    if (Object.prototype.hasOwnProperty.call(body, 'dueDate')) input.dueDate = body.dueDate ?? null;
+    if (Object.prototype.hasOwnProperty.call(body, 'startDate')) input.startDate = body.startDate ?? null;
+    if (Object.prototype.hasOwnProperty.call(body, 'isAllDay')) input.isAllDay = body.isAllDay ?? true;
+    let parsed: Awaited<ReturnType<typeof quickParseTaskWithUrlTitle>> | null = null;
+    if (body.parse !== false) {
+      parsed = await quickParseTaskWithUrlTitle(captureText, quickAddParseOptions(userId, body.options));
+      input.title = parsed.draft.title || captureText;
+      if (parsed.draft.dueDate || parsed.draft.startDate) {
+        input.dueDate = parsed.draft.dueDate;
+        input.startDate = parsed.draft.startDate;
+        input.isAllDay = parsed.draft.isAllDay;
+      }
+      if (parsed.draft.priority > 0) input.priority = parsed.draft.priority;
+      if (parsed.draft.estimatedMinutes != null) input.estimatedMinutes = parsed.draft.estimatedMinutes;
+      if (parsed.draft.recurrenceRule) input.recurrenceRule = parsed.draft.recurrenceRule;
+      if (parsed.draft.note) input.note = parsed.draft.note;
+      const parsedTagIds = ensureTagIdsByName(userId, parsed.draft.tags);
+      if (parsedTagIds.length) {
+        input.tagIds = Array.from(new Set([...getSettings(userId).taskDefaults.defaultTagIds, ...parsedTagIds]));
+      }
+    }
+    input.note = noteWithUrl(input.note, url);
+    const task = repo.createTask(userId, input);
+    res.status(201).json({ task, parsed });
   } catch (err) {
     next(err);
   }
@@ -144,6 +253,17 @@ router.get('/:id/activity', (req, res) => {
 router.patch('/:id', (req, res) => {
   assertPriority(req.body?.priority);
   const task = repo.updateTask(requireUserId(req), req.params.id, req.body ?? {});
+  if (!task) throw new AppError(404, 'not_found', 'task not found');
+  res.json({ task });
+});
+
+// POST /api/tasks/:id/reparent
+router.post('/:id/reparent', (req, res) => {
+  const rawParentId = req.body?.parentId;
+  if (rawParentId != null && (typeof rawParentId !== 'string' || !rawParentId.trim())) {
+    throw new AppError(400, 'invalid', 'parentId must be a task id or null');
+  }
+  const task = repo.reparentTask(requireUserId(req), req.params.id, rawParentId == null ? null : rawParentId.trim());
   if (!task) throw new AppError(404, 'not_found', 'task not found');
   res.json({ task });
 });

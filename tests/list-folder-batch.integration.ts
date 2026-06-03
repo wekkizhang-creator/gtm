@@ -175,7 +175,14 @@ async function main() {
       cookie: alice,
       body: JSON.stringify({ name: 'Later' }),
     });
+    const noteList = await req(base, '/api/lists', {
+      method: 'POST',
+      cookie: alice,
+      body: JSON.stringify({ name: 'Reference Notes', type: 'note' }),
+    });
     assert(projectList.body.list.folderId === folderId, 'created list should be in folder');
+    assert(projectList.body.list.type === 'task', 'normal list should default to task type');
+    assert(noteList.body.list.type === 'note', 'note list type should persist on creation');
 
     const collapsed = await req(base, `/api/lists/folders/${folderId}`, {
       method: 'PATCH',
@@ -194,6 +201,30 @@ async function main() {
       cookie: alice,
       body: JSON.stringify({ title: 'Batch two', listId: projectList.body.list.id }),
     });
+    const noteRecord = await req(base, '/api/tasks', {
+      method: 'POST',
+      cookie: alice,
+      body: JSON.stringify({ title: 'Reference-only item', listId: noteList.body.list.id }),
+    });
+    assert(noteRecord.res.status === 201, `note-list record create failed: ${noteRecord.res.status}`);
+    assert(noteRecord.body.task.completed === false, 'note-list record should be open');
+    const completeNote = await req(base, `/api/tasks/${noteRecord.body.task.id}`, {
+      method: 'PATCH',
+      cookie: alice,
+      body: JSON.stringify({ completed: true }),
+    });
+    assert(completeNote.res.status === 400, `note-list record should not be completable, got ${completeNote.res.status}`);
+    assert(completeNote.body.error?.code === 'note_list_no_completion', `unexpected note-list completion error: ${JSON.stringify(completeNote.body)}`);
+    const batchCompleteNote = await req(base, '/api/tasks/batch', {
+      method: 'POST',
+      cookie: alice,
+      body: JSON.stringify({
+        taskIds: [noteRecord.body.task.id],
+        action: 'update',
+        patch: { completed: true },
+      }),
+    });
+    assert(batchCompleteNote.res.status === 400, `batch completing a note-list record should fail, got ${batchCompleteNote.res.status}`);
     const dueDate = new Date('2030-01-02T00:00:00.000Z').toISOString();
     const batched = await req(base, '/api/tasks/batch', {
       method: 'POST',
@@ -236,8 +267,12 @@ async function main() {
     try {
       const rows = db.prepare('SELECT COUNT(*) c FROM tasks WHERE list_id = ? AND priority = 3 AND completed = 1').get(laterList.body.list.id) as { c: number };
       const folders = db.prepare('SELECT COUNT(*) c FROM list_folders').get() as { c: number };
+      const noteListRow = db.prepare('SELECT type FROM lists WHERE id = ?').get(noteList.body.list.id) as { type: string };
+      const noteTaskRow = db.prepare('SELECT completed FROM tasks WHERE id = ?').get(noteRecord.body.task.id) as { completed: number };
       assert(rows.c === 2, `expected two moved completed tasks, got ${rows.c}`);
       assert(folders.c === 0, `expected deleted folder row, got ${folders.c}`);
+      assert(noteListRow.type === 'note', `expected note list type in DB, got ${noteListRow.type}`);
+      assert(noteTaskRow.completed === 0, 'note-list record should remain incomplete in DB');
     } finally {
       db.close();
     }

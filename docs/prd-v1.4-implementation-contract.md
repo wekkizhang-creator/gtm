@@ -1932,6 +1932,31 @@ When quick-add parsing is enabled, pressing Enter on a draft without a current p
 
 `npm run test:quick-add-preview-client` verifies token labels, draft summaries, parsed submit mode, dismissed raw submit mode, and stale-preview invalidation. `npm run test:quick-add-preview` logs in through SMTP, calls `/api/tasks/quick-parse` for `明天下午3点开会 #工作 !高`, creates one task using the parsed draft and tag relation, creates another task as raw text to simulate `撤销解析`, and checks SQLite for parsed priority/start time/tag plus raw title/no tag/no parsed time. Client typecheck/build verify the quick-add preview UI compiles.
 
+### Slice 90: T-04 quick capture from voice/share/widget/shortcut
+
+T-04 is implemented as a real task-capture contract instead of native-shell mock data. `POST /api/tasks/quick-capture` accepts:
+
+```ts
+{
+  source: 'voice' | 'system_share' | 'desktop_widget' | 'shortcut' | 'web';
+  text?: string;
+  title?: string;
+  url?: string | null;
+  listId?: string | null;
+  priority?: 0 | 1 | 2 | 3;
+  dueDate?: string | null;
+  startDate?: string | null;
+  isAllDay?: boolean;
+  parse?: boolean;
+}
+```
+
+The backend validates the source enum and URL shape, uses the current account `quickAdd` settings when `parse !== false`, creates missing parsed tags through the real tag repository, merges parsed tags with account default tags, and persists the task through the shared `repo.createTask` path with `tasks.source` set to the capture source. Shared URLs are preserved in `tasks.note`.
+
+The task quick-add panel exposes a browser voice button. It only uses real `SpeechRecognition` / `webkitSpeechRecognition`; unsupported browsers return `voice_capture_unsupported` and no fake transcript is created. Recognized speech is sent to `/api/tasks/quick-capture` with the current task-list context. Offline network failures are queued through the existing local sync queue with the capture source retained.
+
+`npm run test:quick-add-preview` now also calls `/api/tasks/quick-capture` for `system_share` and `voice`, verifies source persistence, parsed priority/tag attachment, shared URL preservation, invalid-source rejection, and SQLite rows in `tasks`/`task_tags`. `npm run test:voice-quick-capture-client` verifies browser speech API detection, transcript extraction, unsupported runtime rejection, and surfaced recognition errors.
+
 ## Slice 73: List And Folder Ordering
 
 L-05 now has a real persisted ordering path for custom lists and list folders. The sidebar exposes up, down, and pin-to-top controls; these write `sortOrder` through the existing list/folder PATCH APIs instead of storing order in browser state.
@@ -2372,3 +2397,70 @@ Calling the route again on the same skipped instance returns `nextTask: null` an
 ### Verification
 
 `npm run test:metadata` creates a daily recurring task and reminder, calls `POST /api/tasks/:id/recurrence/skip`, verifies the current task becomes `skipped` and not completed, verifies the current reminder is `cancelled`, verifies the generated next task and reminder are shifted one day, verifies a repeated skip call is idempotent, verifies the skipped task is absent from `/api/tasks?view=active`, and checks SQLite rows for the skipped task plus both reminder rows. `npm run test:task-list-view`, client/server typecheck, and `npm run build -w client` verify list filtering and the task-detail UI compile.
+
+## Slice 88: Existing Task Reparent And Conversion
+
+T-19 and SUB-06 now have a real task-conversion path instead of relying on an unsafe generic `parentId` patch. Users can attach an existing independent task as a subtask, or promote a subtask back to an independent task. The backend enforces the PRD's five-level hierarchy limit and rejects cycles.
+
+### Data Model
+
+No new table is required. The source of truth remains:
+
+- `tasks.parent_id`
+- `tasks.list_id`
+- `tasks.sort_order`
+- `task_activity_logs`
+
+When a task is attached under a parent, it inherits the parent task's list and receives the next child `sort_order`. When a task is promoted, it keeps its current list and receives a top-level `sort_order`. Old and new parents are reconciled so roll-up completion/progress stays accurate.
+
+### API Contract
+
+`POST /api/tasks/:id/reparent` accepts:
+
+```json
+{ "parentId": "target-parent-task-id-or-null" }
+```
+
+It returns `{ "task": TaskDTO }`. The route returns:
+
+- `404 not_found` when the task or parent does not belong to the current account.
+- `409 hierarchy_cycle` when moving a task under itself or one of its descendants would create a cycle.
+- `400 max_depth_exceeded` when the resulting hierarchy would exceed five levels.
+
+The legacy `PATCH /api/tasks/:id` path still accepts `parentId`, but it delegates to the same reparent logic so no client can bypass these rules.
+
+### Client Contract
+
+`TaskDetailModal` exposes a search field for finding existing active tasks and attaching them under the current task through the real reparent route. Existing subtask "promote" actions call the same route with `parentId:null`.
+
+### Verification
+
+`npm run test:metadata` attaches an existing task under a real parent through HTTP, verifies the parent subtask count, rejects a parent-under-child cycle, promotes the task back to top level, rejects a sixth hierarchy level, rejects another account's reparent attempt with `404`, and checks SQLite for `tasks.parent_id = NULL` plus two `task_reparented` activity rows. Client/server typecheck and `npm run build -w client` verify the API client and task-detail UI compile.
+
+## Slice 89: List Type Task Or Note
+
+L-04 now has a persisted list-type contract. A custom list can be a normal task list or a note list. Note lists are still account-scoped lists with real rows, but their items are reference records rather than completable tasks.
+
+### Data Model
+
+`lists` now includes:
+
+- `type TEXT NOT NULL DEFAULT 'task'`
+
+Allowed values are `task` and `note`. Existing lists migrate to `task`; inbox remains a task list.
+
+### API Contract
+
+- `POST /api/lists` accepts `{ name, color?, icon?, folderId?, type?: "task"|"note" }`.
+- `PATCH /api/lists/:id` accepts `{ type?: "task"|"note" }` alongside existing list fields.
+- `GET /api/lists` returns `ListDTO.type`.
+
+Invalid types return `400 invalid_list_type`. Creating or updating a task into `completed:true` / `status:"done"` while its final list type is `note` returns `400 note_list_no_completion`. Batch updates use the same backend rule.
+
+### Client Contract
+
+The sidebar create-list form exposes `任务清单` / `笔记清单`. Existing custom lists expose a compact type selector and show a `Note` badge when the list is a note list. Task rows in note lists render a static record marker instead of a completion checkbox; all writes still go through the real task/list APIs.
+
+### Verification
+
+`npm run test:list-batch` creates a note list through HTTP, verifies the returned type, creates a record in that list, verifies direct completion and batch completion both fail with `note_list_no_completion`, and checks SQLite for `lists.type = "note"` plus an incomplete task row. Client/server typecheck and `npm run build -w client` verify the DTO, sidebar, API client, and note-list row rendering compile.
