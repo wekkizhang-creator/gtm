@@ -23,6 +23,13 @@ function freePort(): Promise<number> {
   });
 }
 
+function localDateString(date = new Date()): string {
+  const y = date.getFullYear();
+  const m = String(date.getMonth() + 1).padStart(2, '0');
+  const d = String(date.getDate()).padStart(2, '0');
+  return `${y}-${m}-${d}`;
+}
+
 async function startSmtp(): Promise<{ port: number; messages: string[]; close: () => Promise<void> }> {
   const messages: string[] = [];
   const server = net.createServer((socket) => {
@@ -366,8 +373,77 @@ async function main() {
     });
     assert(disabledInboxQuickAdd.res.status === 409, `disabled inbox quick-add should be 409, got ${disabledInboxQuickAdd.res.status}`);
 
+    const today = localDateString();
+    const todayDow = new Date().getDay();
+    const habit = await req(base, '/api/habits', {
+      method: 'POST',
+      cookie,
+      body: JSON.stringify({
+        name: 'Widget habit check-in',
+        icon: 'check',
+        color: '#14b8a6',
+        daysOfWeek: [todayDow],
+        note: 'Created by desktop widget integration test',
+      }),
+    });
+    assert(habit.res.status === 201, `habit fixture create failed: ${habit.res.status}`);
+
+    const habitWidget = await req(base, '/api/desktop/widgets', {
+      method: 'POST',
+      cookie,
+      body: JSON.stringify({
+        type: 'habit-checkin',
+        title: 'Daily habits',
+        config: { date: 'today', allowCheckin: true },
+      }),
+    });
+    assert(habitWidget.res.status === 201, `habit widget create failed: ${habitWidget.res.status}`);
+
+    const habitDataBefore = await req(base, `/api/desktop/widgets/${habitWidget.body.widget.id}/data`, { cookie });
+    assert(habitDataBefore.res.status === 200, `habit widget data failed: ${habitDataBefore.res.status}`);
+    assert(habitDataBefore.body.data.type === 'habit-checkin', 'habit widget data type mismatch');
+    assert(habitDataBefore.body.data.date === today, 'habit widget should use the local current date');
+    assert(habitDataBefore.body.data.allowCheckin === true, 'habit widget allowCheckin flag should come from config');
+    assert(habitDataBefore.body.data.counts.total === 1, `habit widget total count mismatch: ${habitDataBefore.body.data.counts.total}`);
+    assert(habitDataBefore.body.data.counts.checked === 0, 'habit widget should start unchecked');
+    assert(habitDataBefore.body.data.habits.some((item: any) => item.id === habit.body.habit.id), 'habit widget should include scheduled habit');
+
+    const invalidHabitAction = await req(base, `/api/desktop/widgets/${habitWidget.body.widget.id}/actions`, {
+      method: 'POST',
+      cookie,
+      body: JSON.stringify({ action: 'complete_task', habitId: habit.body.habit.id }),
+    });
+    assert(invalidHabitAction.res.status === 400, `invalid habit widget action should be 400, got ${invalidHabitAction.res.status}`);
+
+    const habitCheckin = await req(base, `/api/desktop/widgets/${habitWidget.body.widget.id}/actions`, {
+      method: 'POST',
+      cookie,
+      body: JSON.stringify({ action: 'toggle_habit', habitId: habit.body.habit.id, note: 'Checked from widget' }),
+    });
+    assert(habitCheckin.res.status === 200, `habit widget check-in failed: ${habitCheckin.res.status}`);
+    assert(habitCheckin.body.checkin.checked === true, 'habit widget action should check in the habit');
+    assert(habitCheckin.body.habit.checkins.includes(today), 'habit widget action should return the checked date');
+    assert(habitCheckin.body.data.counts.checked === 1, 'habit widget data should refresh checked count after action');
+
+    const habitDataAfter = await req(base, `/api/desktop/widgets/${habitWidget.body.widget.id}/data`, { cookie });
+    assert(habitDataAfter.body.data.counts.checked === 1, 'habit widget data should persist checked count after refresh');
+    assert(habitDataAfter.body.data.habits[0].checkinDetails.some((item: any) => item.date === today), 'habit widget data should expose real check-in detail');
+
+    const habitWidgetDisabledCheckin = await req(base, `/api/desktop/widgets/${habitWidget.body.widget.id}`, {
+      method: 'PATCH',
+      cookie,
+      body: JSON.stringify({ config: { allowCheckin: false } }),
+    });
+    assert(habitWidgetDisabledCheckin.body.widget.config.allowCheckin === false, 'habit allowCheckin config patch did not persist');
+    const disabledHabitCheckin = await req(base, `/api/desktop/widgets/${habitWidget.body.widget.id}/actions`, {
+      method: 'POST',
+      cookie,
+      body: JSON.stringify({ action: 'toggle_habit', habitId: habit.body.habit.id }),
+    });
+    assert(disabledHabitCheckin.res.status === 409, `disabled habit check-in should be 409, got ${disabledHabitCheckin.res.status}`);
+
     const widgetList = await req(base, '/api/desktop/widgets', { cookie });
-    assert(widgetList.body.widgets.length === 3, `expected three widgets, got ${widgetList.body.widgets.length}`);
+    assert(widgetList.body.widgets.length === 4, `expected four widgets, got ${widgetList.body.widgets.length}`);
 
     const disableComplete = await req(base, `/api/desktop/widgets/${widget.body.widget.id}`, {
       method: 'PATCH',
@@ -535,7 +611,7 @@ async function main() {
     assert(unlock.body.status.state.locked === false, 'desktop unlock state did not persist');
 
     const exported = await req(base, '/api/settings/export', { cookie });
-    assert(exported.body.desktopWidgets.length === 3, 'export should include desktop widgets');
+    assert(exported.body.desktopWidgets.length === 4, 'export should include desktop widgets');
     assert(exported.body.desktopShortcuts.length === 7, 'export should include reset default desktop shortcuts');
     assert(exported.body.desktopShellState.length >= 4, 'export should include desktop shell state rows');
     assert(!('desktopAppLockCredentials' in exported.body), 'export must not include app-lock password credentials');
@@ -548,6 +624,9 @@ async function main() {
         .get() as { config_json: string; enabled: number };
       const inboxWidgetRow = db
         .prepare("SELECT config_json FROM desktop_widgets WHERE type = 'inbox-quick-add'")
+        .get() as { config_json: string };
+      const habitWidgetRow = db
+        .prepare("SELECT config_json FROM desktop_widgets WHERE type = 'habit-checkin'")
         .get() as { config_json: string };
       const countdownRow = db
         .prepare("SELECT config_json FROM desktop_widgets WHERE type = 'countdowns'")
@@ -573,14 +652,19 @@ async function main() {
       const completedFromWidget = db.prepare('SELECT completed FROM tasks WHERE id = ?').get(overdueTask.body.task.id) as { completed: number };
       const inboxTaskRow = db.prepare('SELECT source, list_id FROM tasks WHERE id = ?').get(inboxQuickAdd.body.task.id) as { source: string; list_id: string };
       const inboxListRow = db.prepare("SELECT id FROM lists WHERE user_id IS NOT NULL AND is_inbox = 1").get() as { id: string };
-      assert(widgetCount.count === 3, 'widget templates were not written to SQLite');
+      const habitCheckinRow = db
+        .prepare('SELECT date, note FROM habit_checkins WHERE habit_id = ?')
+        .get(habit.body.habit.id) as { date: string; note: string | null };
+      assert(widgetCount.count === 4, 'widget templates were not written to SQLite');
       assert(JSON.parse(widgetRow.config_json).range === 'today', 'widget config was not written to SQLite');
       assert(JSON.parse(widgetRow.config_json).allowComplete === false, 'widget allowComplete patch was not written to SQLite');
       assert(JSON.parse(inboxWidgetRow.config_json).quickAdd === false, 'inbox widget quickAdd patch was not written to SQLite');
+      assert(JSON.parse(habitWidgetRow.config_json).allowCheckin === false, 'habit widget allowCheckin patch was not written to SQLite');
       assert(JSON.parse(countdownRow.config_json).limit === 3, 'countdown widget config was not written to SQLite');
       assert(widgetRow.enabled === 0, 'widget enabled patch was not written to SQLite');
       assert(completedFromWidget.completed === 1, 'desktop widget completion was not written to SQLite');
       assert(inboxTaskRow.source === 'desktop_widget' && inboxTaskRow.list_id === inboxListRow.id, 'inbox widget quick-add task was not written to inbox in SQLite');
+      assert(habitCheckinRow.date === today && habitCheckinRow.note === 'Checked from widget', 'habit widget check-in was not written to SQLite');
       assert(shortcutCount.count === 7, 'default shortcuts were not written to SQLite');
       assert(shortcutRow.accelerator === 'CommandOrControl+N', 'default quick-add accelerator was not written to SQLite');
       assert(!!shortcutRow.registered_at, 'shortcut registration request was not written to SQLite');

@@ -12,6 +12,7 @@ import {
   type DesktopWidgetTemplateDTO,
 } from './types';
 import * as taskRepo from './repo';
+import * as habitsRepo from './habitsRepo';
 
 type WidgetRow = {
   id: string;
@@ -365,6 +366,18 @@ function localTodayStartMs(): number {
   return d.getTime();
 }
 
+function localDateString(date = new Date()): string {
+  const y = date.getFullYear();
+  const m = String(date.getMonth() + 1).padStart(2, '0');
+  const d = String(date.getDate()).padStart(2, '0');
+  return `${y}-${m}-${d}`;
+}
+
+function dayOfWeek(date: string): number {
+  const [y, m, d] = date.split('-').map(Number);
+  return new Date(y, m - 1, d).getDay();
+}
+
 function todayTasksWidgetData(userId: string, widget: DesktopWidgetDTO): DesktopWidgetDataDTO {
   const allTasks = taskRepo.getTasks(userId, { view: 'today' });
   const limit = Number(widget.config.limit);
@@ -401,11 +414,35 @@ function inboxQuickAddWidgetData(userId: string, widget: DesktopWidgetDTO): Desk
   };
 }
 
+function habitsForWidgetDate(userId: string, date: string) {
+  const dow = dayOfWeek(date);
+  return habitsRepo.listHabits(userId, date, date).filter((habit) => habit.daysOfWeek.includes(dow));
+}
+
+function habitCheckinWidgetData(userId: string, widget: DesktopWidgetDTO): DesktopWidgetDataDTO {
+  const date = localDateString();
+  const habits = habitsForWidgetDate(userId, date);
+  return {
+    type: 'habit-checkin',
+    widget,
+    generatedAt: nowISO(),
+    date,
+    habits,
+    counts: {
+      shown: habits.length,
+      total: habits.length,
+      checked: habits.filter((habit) => habit.checkins.includes(date)).length,
+    },
+    allowCheckin: widget.config.allowCheckin === true,
+  };
+}
+
 export function getWidgetData(userId: string, id: string): DesktopWidgetDataDTO {
   const widget = requireWidget(userId, id);
   if (!widget.enabled) throw new AppError(409, 'desktop_widget_disabled', 'widget is disabled');
   if (widget.type === 'today-tasks') return todayTasksWidgetData(userId, widget);
   if (widget.type === 'inbox-quick-add') return inboxQuickAddWidgetData(userId, widget);
+  if (widget.type === 'habit-checkin') return habitCheckinWidgetData(userId, widget);
   throw new AppError(501, 'desktop_widget_data_not_implemented', `${widget.type} widget data is not implemented`);
 }
 
@@ -429,6 +466,34 @@ export function runWidgetAction(userId: string, id: string, input: unknown): Des
       source: 'desktop_widget',
     });
     return { widget, task, data: inboxQuickAddWidgetData(userId, widget) };
+  }
+  if (widget.type === 'habit-checkin') {
+    if (input.action !== 'toggle_habit') {
+      throw new AppError(400, 'invalid_desktop_widget_action', 'action must be toggle_habit');
+    }
+    if (widget.config.allowCheckin !== true) {
+      throw new AppError(409, 'desktop_widget_action_disabled', 'habit check-in is disabled for this widget');
+    }
+    if (typeof input.habitId !== 'string' || !input.habitId.trim()) {
+      throw new AppError(400, 'invalid_desktop_widget_action', 'habitId is required');
+    }
+    const value =
+      input.value == null
+        ? null
+        : typeof input.value === 'number' && Number.isFinite(input.value)
+          ? input.value
+          : undefined;
+    if (value === undefined) throw new AppError(400, 'invalid_desktop_widget_action', 'value must be a number or null');
+    if (input.note != null && typeof input.note !== 'string') {
+      throw new AppError(400, 'invalid_desktop_widget_action', 'note must be a string or null');
+    }
+    const date = localDateString();
+    const visibleHabitIds = new Set(habitsForWidgetDate(userId, date).map((habit) => habit.id));
+    if (!visibleHabitIds.has(input.habitId)) throw new AppError(404, 'not_found', 'habit not found in widget data');
+    const checkin = habitsRepo.toggleCheckin(userId, input.habitId, date, value, input.note ?? null);
+    const habit = habitsRepo.getHabit(userId, input.habitId, date, date);
+    if (!habit) throw new AppError(404, 'not_found', 'habit not found');
+    return { widget, habit, checkin, data: habitCheckinWidgetData(userId, widget) };
   }
   if (widget.type !== 'today-tasks') {
     throw new AppError(501, 'desktop_widget_action_not_implemented', `${widget.type} widget actions are not implemented`);

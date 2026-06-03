@@ -2502,3 +2502,11 @@ WID-02 now uses the same widget-host data/action boundary as WID-01. `GET /api/d
 `POST /api/desktop/widgets/:id/actions` supports `{ action:"quick_add_task", text }` for `inbox-quick-add`. The route respects `config.quickAdd`, validates non-empty text, creates a real task in the account inbox through `repo.createTask`, marks `source:"desktop_widget"`, and returns refreshed widget data. Invalid actions return `400`; disabled quick add returns `409 desktop_widget_action_disabled`.
 
 `npm run test:desktop` now creates an `inbox-quick-add` widget, verifies widget data reads real inbox tasks, creates a task through the widget action, verifies the new task appears in refreshed data, rejects wrong actions and disabled quick-add config, exports the widget row, and checks SQLite for the widget config plus a task row whose `source` is `desktop_widget` and whose `list_id` is the account inbox.
+
+## Slice 94: Habit Check-In Desktop Widget
+
+WID-03 now uses the same widget-host data/action boundary as WID-01 and WID-02. `GET /api/desktop/widgets/:id/data` supports `type:"habit-checkin"` and returns the saved widget config, generated timestamp, local `YYYY-MM-DD` date, scheduled real `HabitDTO[]`, and counts `{ shown, total, checked }`.
+
+`POST /api/desktop/widgets/:id/actions` supports `{ action:"toggle_habit", habitId, value?, note? }` for `habit-checkin`. The route respects `config.allowCheckin`, verifies the habit is visible in today's widget data, calls the shared `habitsRepo.toggleCheckin` path, returns the refreshed habit/check-in result plus refreshed widget data, and writes a real row to `habit_checkins`. Invalid actions return `400`; disabled check-in returns `409 desktop_widget_action_disabled`; non-visible habits return `404`.
+
+`npm run test:desktop` now creates a scheduled habit through HTTP, creates a `habit-checkin` widget, verifies widget data reads the real habit and unchecked counts, toggles the habit through the widget action, verifies refreshed data and check-in details, rejects wrong actions and disabled check-in config, exports the widget row, and checks SQLite for the widget config plus the `habit_checkins` row written by the widget action.

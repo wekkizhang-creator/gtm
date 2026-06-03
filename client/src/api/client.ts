@@ -498,7 +498,13 @@ export const api = {
     patch: Partial<Pick<DesktopWidget, 'type' | 'title' | 'config' | 'position' | 'enabled'>>,
   ) => req<{ widget: DesktopWidget }>(`/desktop/widgets/${id}`, { method: 'PATCH', body: JSON.stringify(patch) }).then((r) => r.widget),
   getDesktopWidgetData: (id: string) => req<{ data: DesktopWidgetData }>(`/desktop/widgets/${id}/data`).then((r) => r.data),
-  runDesktopWidgetAction: (id: string, input: { action: 'complete_task'; taskId: string } | { action: 'quick_add_task'; text: string }) =>
+  runDesktopWidgetAction: (
+    id: string,
+    input:
+      | { action: 'complete_task'; taskId: string }
+      | { action: 'quick_add_task'; text: string }
+      | { action: 'toggle_habit'; habitId: string; value?: number | null; note?: string | null },
+  ) =>
     req<DesktopWidgetActionResult>(`/desktop/widgets/${id}/actions`, { method: 'POST', body: JSON.stringify(input) }),
   deleteDesktopWidget: (id: string) => req<void>(`/desktop/widgets/${id}`, { method: 'DELETE' }),
   listDesktopShortcuts: () => req<{ shortcuts: DesktopShortcut[] }>('/desktop/shortcuts').then((r) => r.shortcuts),

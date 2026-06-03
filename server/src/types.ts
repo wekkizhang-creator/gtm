@@ -234,12 +234,27 @@ export interface DesktopInboxQuickAddWidgetDataDTO {
   quickAdd: boolean;
 }
 
-export type DesktopWidgetDataDTO = DesktopTodayTasksWidgetDataDTO | DesktopInboxQuickAddWidgetDataDTO;
+export interface DesktopHabitCheckinWidgetDataDTO {
+  type: 'habit-checkin';
+  widget: DesktopWidgetDTO;
+  generatedAt: string;
+  date: string;
+  habits: HabitDTO[];
+  counts: { shown: number; total: number; checked: number };
+  allowCheckin: boolean;
+}
+
+export type DesktopWidgetDataDTO =
+  | DesktopTodayTasksWidgetDataDTO
+  | DesktopInboxQuickAddWidgetDataDTO
+  | DesktopHabitCheckinWidgetDataDTO;
 
 export interface DesktopWidgetActionResultDTO {
   widget: DesktopWidgetDTO;
   data: DesktopWidgetDataDTO;
   task?: TaskDTO;
+  habit?: HabitDTO;
+  checkin?: { checked: boolean; currentStreak: number; bestStreak: number };
 }
 
 export interface DesktopShortcutDTO {

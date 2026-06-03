@@ -284,12 +284,24 @@ export interface DesktopInboxQuickAddWidgetData {
   quickAdd: boolean;
 }
 
-export type DesktopWidgetData = DesktopTodayTasksWidgetData | DesktopInboxQuickAddWidgetData;
+export interface DesktopHabitCheckinWidgetData {
+  type: 'habit-checkin';
+  widget: DesktopWidget;
+  generatedAt: string;
+  date: string;
+  habits: Habit[];
+  counts: { shown: number; total: number; checked: number };
+  allowCheckin: boolean;
+}
+
+export type DesktopWidgetData = DesktopTodayTasksWidgetData | DesktopInboxQuickAddWidgetData | DesktopHabitCheckinWidgetData;
 
 export interface DesktopWidgetActionResult {
   widget: DesktopWidget;
   data: DesktopWidgetData;
   task?: Task;
+  habit?: Habit;
+  checkin?: { checked: boolean; currentStreak: number; bestStreak: number };
 }
 
 export interface DesktopShortcut {
