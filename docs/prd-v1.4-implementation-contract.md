@@ -2526,3 +2526,11 @@ WID-06 now has a real read-only widget data contract. `GET /api/desktop/widgets/
 The widget uses the existing `countdownsRepo.listCountdowns` source of truth, including `effectiveDate` and signed `daysRemaining`. `config.limit` truncates the returned list. `config.pinnedFirst:false` disables pinned-priority ordering and sorts by date only; the default keeps pinned items first. WID-06 has no widget action requirement, so `POST /api/desktop/widgets/:id/actions` still returns `501 desktop_widget_action_not_implemented` for `countdowns`.
 
 `npm run test:desktop` now creates three countdowns through HTTP, creates a `countdowns` widget, verifies widget data reads real countdown rows, validates pinned-first ordering, limit, pinned count, and elapsed count, exports the widget row, and checks SQLite for the widget config plus the three countdown rows.
+
+## Slice 97: Goal Progress Desktop Widget
+
+WID-05 now has a real read-only widget data contract. `GET /api/desktop/widgets/:id/data` supports `type:"goal-progress"` and returns saved widget config, generated timestamp, real goals, progress rollups, counts `{ shown, total, active, completed }`, and the resolved `showTodaySuggestion` flag.
+
+The widget uses existing `repo.listGoals` and `repo.getGoalTree` data. For each shown non-archived goal, progress includes total/completed task counts, total/completed estimated minutes, and a percent derived from estimated minutes when available, otherwise task counts; completed goals report 100%. When `config.showTodaySuggestion` is true, the widget suggests a real open goal task scheduled or due today, falling back to the highest-priority open goal task. WID-05 has no widget action requirement, so `POST /api/desktop/widgets/:id/actions` still returns `501 desktop_widget_action_not_implemented` for `goal-progress`.
+
+`npm run test:desktop` now creates active and completed goals through HTTP, creates real goal tasks, completes one task, schedules another for today, creates a `goal-progress` widget, verifies progress and today suggestion from widget data, exports the widget row, and checks SQLite for the widget config plus the goal/task fixture rows.

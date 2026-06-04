@@ -449,6 +449,74 @@ async function main() {
     });
     assert(disabledFocusStart.res.status === 409, `disabled focus start should be 409, got ${disabledFocusStart.res.status}`);
 
+    const goal = await req(base, '/api/goals', {
+      method: 'POST',
+      cookie,
+      body: JSON.stringify({
+        title: 'Widget launch goal',
+        totalEstimatedMinutes: 150,
+        status: 'active',
+      }),
+    });
+    const completedGoal = await req(base, '/api/goals', {
+      method: 'POST',
+      cookie,
+      body: JSON.stringify({
+        title: 'Widget completed goal',
+        status: 'completed',
+      }),
+    });
+    assert(goal.res.status === 201 && completedGoal.res.status === 201, 'goal fixtures should be created through HTTP');
+    const finishedGoalTask = await req(base, `/api/goals/${goal.body.goal.id}/tasks`, {
+      method: 'POST',
+      cookie,
+      body: JSON.stringify({ title: 'Finish widget goal research', estimatedMinutes: 60, priority: 1 }),
+    });
+    const suggestedGoalTask = await req(base, `/api/goals/${goal.body.goal.id}/tasks`, {
+      method: 'POST',
+      cookie,
+      body: JSON.stringify({ title: 'Build widget goal slice', estimatedMinutes: 90, priority: 3 }),
+    });
+    assert(finishedGoalTask.res.status === 201 && suggestedGoalTask.res.status === 201, 'goal task fixtures should be created through HTTP');
+    const finishGoalTask = await req(base, `/api/tasks/${finishedGoalTask.body.task.id}`, {
+      method: 'PATCH',
+      cookie,
+      body: JSON.stringify({ completed: true }),
+    });
+    const scheduleSuggestedGoalTask = await req(base, `/api/tasks/${suggestedGoalTask.body.task.id}`, {
+      method: 'PATCH',
+      cookie,
+      body: JSON.stringify({ dueDate: atLocalHour(0, 15), isAllDay: false }),
+    });
+    assert(finishGoalTask.body.task.completed === true, 'completed goal task fixture did not persist');
+    assert(scheduleSuggestedGoalTask.body.task.dueDate, 'suggested goal task due date did not persist');
+
+    const goalWidget = await req(base, '/api/desktop/widgets', {
+      method: 'POST',
+      cookie,
+      body: JSON.stringify({
+        type: 'goal-progress',
+        title: 'Goal progress',
+        config: { limit: 2, showTodaySuggestion: true },
+      }),
+    });
+    assert(goalWidget.res.status === 201, `goal widget create failed: ${goalWidget.res.status}`);
+    const goalData = await req(base, `/api/desktop/widgets/${goalWidget.body.widget.id}/data`, { cookie });
+    assert(goalData.res.status === 200, `goal widget data failed: ${goalData.res.status}`);
+    assert(goalData.body.data.type === 'goal-progress', 'goal widget data type mismatch');
+    assert(goalData.body.data.showTodaySuggestion === true, 'goal widget showTodaySuggestion flag should come from config');
+    assert(goalData.body.data.counts.total === 2, `goal widget total count mismatch: ${goalData.body.data.counts.total}`);
+    assert(goalData.body.data.counts.active === 1, 'goal widget active count mismatch');
+    assert(goalData.body.data.counts.completed === 1, 'goal widget completed count mismatch');
+    const launchGoal = goalData.body.data.goals.find((item: any) => item.goal.id === goal.body.goal.id);
+    assert(launchGoal, 'goal widget should include the active goal');
+    assert(launchGoal.progress.totalTasks === 2, 'goal widget should count real goal tasks');
+    assert(launchGoal.progress.completedTasks === 1, 'goal widget should count completed goal tasks');
+    assert(launchGoal.progress.totalEstimatedMinutes === 150, 'goal widget should sum goal task estimates');
+    assert(launchGoal.progress.completedEstimatedMinutes === 60, 'goal widget should sum completed goal task estimates');
+    assert(launchGoal.progress.percent === 40, `goal widget progress percent mismatch: ${launchGoal.progress.percent}`);
+    assert(launchGoal.todaySuggestion.taskId === suggestedGoalTask.body.task.id, 'goal widget should suggest the scheduled open goal task');
+
     const inboxWidget = await req(base, '/api/desktop/widgets', {
       method: 'POST',
       cookie,
@@ -565,7 +633,7 @@ async function main() {
     assert(disabledHabitCheckin.res.status === 409, `disabled habit check-in should be 409, got ${disabledHabitCheckin.res.status}`);
 
     const widgetList = await req(base, '/api/desktop/widgets', { cookie });
-    assert(widgetList.body.widgets.length === 5, `expected five widgets, got ${widgetList.body.widgets.length}`);
+    assert(widgetList.body.widgets.length === 6, `expected six widgets, got ${widgetList.body.widgets.length}`);
 
     const disableComplete = await req(base, `/api/desktop/widgets/${widget.body.widget.id}`, {
       method: 'PATCH',
@@ -733,7 +801,7 @@ async function main() {
     assert(unlock.body.status.state.locked === false, 'desktop unlock state did not persist');
 
     const exported = await req(base, '/api/settings/export', { cookie });
-    assert(exported.body.desktopWidgets.length === 5, 'export should include desktop widgets');
+    assert(exported.body.desktopWidgets.length === 6, 'export should include desktop widgets');
     assert(exported.body.desktopShortcuts.length === 7, 'export should include reset default desktop shortcuts');
     assert(exported.body.desktopShellState.length >= 4, 'export should include desktop shell state rows');
     assert(!('desktopAppLockCredentials' in exported.body), 'export must not include app-lock password credentials');
@@ -753,6 +821,9 @@ async function main() {
       const focusWidgetRow = db
         .prepare("SELECT config_json FROM desktop_widgets WHERE type = 'focus-timer'")
         .get() as { config_json: string };
+      const goalWidgetRow = db
+        .prepare("SELECT config_json FROM desktop_widgets WHERE type = 'goal-progress'")
+        .get() as { config_json: string };
       const countdownRow = db
         .prepare("SELECT config_json FROM desktop_widgets WHERE type = 'countdowns'")
         .get() as { config_json: string };
@@ -761,6 +832,8 @@ async function main() {
         .get(focusWidget.body.widget.id) as { status: string; target_duration_sec: number; paused_at: string | null };
       const widgetCount = db.prepare('SELECT COUNT(*) count FROM desktop_widgets').get() as { count: number };
       const countdownCount = db.prepare('SELECT COUNT(*) count FROM countdowns').get() as { count: number };
+      const goalCount = db.prepare('SELECT COUNT(*) count FROM goals').get() as { count: number };
+      const goalTaskCount = db.prepare('SELECT COUNT(*) count FROM tasks WHERE goal_id = ?').get(goal.body.goal.id) as { count: number };
       const shortcutRow = db
         .prepare("SELECT registered_at, accelerator FROM desktop_shortcuts WHERE action = 'task.quickAdd'")
         .get() as { registered_at: string | null; accelerator: string };
@@ -784,14 +857,16 @@ async function main() {
       const habitCheckinRow = db
         .prepare('SELECT date, note FROM habit_checkins WHERE habit_id = ?')
         .get(habit.body.habit.id) as { date: string; note: string | null };
-      assert(widgetCount.count === 5, 'widget templates were not written to SQLite');
+      assert(widgetCount.count === 6, 'widget templates were not written to SQLite');
       assert(JSON.parse(widgetRow.config_json).range === 'today', 'widget config was not written to SQLite');
       assert(JSON.parse(widgetRow.config_json).allowComplete === false, 'widget allowComplete patch was not written to SQLite');
       assert(JSON.parse(inboxWidgetRow.config_json).quickAdd === false, 'inbox widget quickAdd patch was not written to SQLite');
       assert(JSON.parse(habitWidgetRow.config_json).allowCheckin === false, 'habit widget allowCheckin patch was not written to SQLite');
       assert(JSON.parse(focusWidgetRow.config_json).allowStartPause === false, 'focus widget allowStartPause patch was not written to SQLite');
+      assert(JSON.parse(goalWidgetRow.config_json).showTodaySuggestion === true, 'goal widget config was not written to SQLite');
       assert(JSON.parse(countdownRow.config_json).limit === 2, 'countdown widget config was not written to SQLite');
       assert(countdownCount.count === 3, 'countdown fixtures were not written to SQLite');
+      assert(goalCount.count === 2 && goalTaskCount.count === 2, 'goal widget fixtures were not written to SQLite');
       assert(
         focusTimerRow.status === 'paused' && focusTimerRow.target_duration_sec === 1500 && !!focusTimerRow.paused_at,
         'focus widget timer state was not written to SQLite',

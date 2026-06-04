@@ -323,12 +323,40 @@ export interface DesktopCountdownsWidgetData {
   pinnedFirst: boolean;
 }
 
+export interface DesktopGoalProgressItem {
+  goal: Goal;
+  progress: {
+    totalTasks: number;
+    completedTasks: number;
+    totalEstimatedMinutes: number;
+    completedEstimatedMinutes: number;
+    percent: number;
+  };
+  todaySuggestion: {
+    taskId: string;
+    title: string;
+    estimatedMinutes: number | null;
+    plannedStartAt: string | null;
+    dueDate: string | null;
+  } | null;
+}
+
+export interface DesktopGoalProgressWidgetData {
+  type: 'goal-progress';
+  widget: DesktopWidget;
+  generatedAt: string;
+  goals: DesktopGoalProgressItem[];
+  counts: { shown: number; total: number; active: number; completed: number };
+  showTodaySuggestion: boolean;
+}
+
 export type DesktopWidgetData =
   | DesktopTodayTasksWidgetData
   | DesktopInboxQuickAddWidgetData
   | DesktopHabitCheckinWidgetData
   | DesktopFocusTimerWidgetData
-  | DesktopCountdownsWidgetData;
+  | DesktopCountdownsWidgetData
+  | DesktopGoalProgressWidgetData;
 
 export interface DesktopWidgetActionResult {
   widget: DesktopWidget;

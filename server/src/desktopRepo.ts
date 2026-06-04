@@ -10,6 +10,7 @@ import {
   type DesktopStatusDTO,
   type DesktopWidgetDTO,
   type DesktopWidgetTemplateDTO,
+  type TaskDTO,
 } from './types';
 import * as taskRepo from './repo';
 import * as habitsRepo from './habitsRepo';
@@ -555,6 +556,84 @@ function countdownsWidgetData(userId: string, widget: DesktopWidgetDTO): Desktop
   };
 }
 
+function isSameLocalDate(value: string | null, date: string): boolean {
+  if (!value) return false;
+  const parsed = new Date(value);
+  if (Number.isNaN(parsed.getTime())) return false;
+  return localDateString(parsed) === date;
+}
+
+function goalProgressPercent(goalStatus: string, totalTasks: number, completedTasks: number, totalEstimated: number, completedEstimated: number): number {
+  if (goalStatus === 'completed') return 100;
+  if (totalEstimated > 0) return Math.round((completedEstimated / totalEstimated) * 100);
+  if (totalTasks > 0) return Math.round((completedTasks / totalTasks) * 100);
+  return 0;
+}
+
+function pickGoalTodaySuggestion(tasks: TaskDTO[], today: string): TaskDTO | null {
+  const open = tasks.filter((task) => !task.completed);
+  if (!open.length) return null;
+  const scheduledToday = open.filter((task) => isSameLocalDate(task.plannedStartAt, today) || isSameLocalDate(task.dueDate, today));
+  const candidates = scheduledToday.length ? scheduledToday : open;
+  candidates.sort((a, b) => {
+    if (a.priority !== b.priority) return b.priority - a.priority;
+    const aTime = Date.parse(a.plannedStartAt ?? a.dueDate ?? a.createdAt);
+    const bTime = Date.parse(b.plannedStartAt ?? b.dueDate ?? b.createdAt);
+    return (Number.isFinite(aTime) ? aTime : 0) - (Number.isFinite(bTime) ? bTime : 0);
+  });
+  return candidates[0] ?? null;
+}
+
+function goalProgressWidgetData(userId: string, widget: DesktopWidgetDTO): DesktopWidgetDataDTO {
+  const allGoals = taskRepo.listGoals(userId).filter((goal) => goal.status !== 'archived');
+  const limit = Number(widget.config.limit);
+  const shownGoals = allGoals.slice(0, Number.isInteger(limit) && limit > 0 ? limit : 5);
+  const today = localDateString();
+  const showTodaySuggestion = widget.config.showTodaySuggestion === true;
+  const goals = shownGoals.map((goal) => {
+    const tree = taskRepo.getGoalTree(userId, goal.id);
+    const tasks = tree?.tasks ?? [];
+    const completedTasks = tasks.filter((task) => task.completed).length;
+    const totalEstimatedMinutes = tasks.reduce((sum, task) => sum + Math.max(0, task.estimatedMinutes ?? 0), 0);
+    const completedEstimatedMinutes = tasks
+      .filter((task) => task.completed)
+      .reduce((sum, task) => sum + Math.max(0, task.estimatedMinutes ?? 0), 0);
+    const suggestion = showTodaySuggestion ? pickGoalTodaySuggestion(tasks, today) : null;
+    return {
+      goal,
+      progress: {
+        totalTasks: tasks.length,
+        completedTasks,
+        totalEstimatedMinutes,
+        completedEstimatedMinutes,
+        percent: goalProgressPercent(goal.status, tasks.length, completedTasks, totalEstimatedMinutes, completedEstimatedMinutes),
+      },
+      todaySuggestion: suggestion
+        ? {
+            taskId: suggestion.id,
+            title: suggestion.title,
+            estimatedMinutes: suggestion.estimatedMinutes,
+            plannedStartAt: suggestion.plannedStartAt,
+            dueDate: suggestion.dueDate,
+          }
+        : null,
+    };
+  });
+  return {
+    type: 'goal-progress',
+    widget,
+    generatedAt: nowISO(),
+    goals,
+    counts: {
+      shown: goals.length,
+      total: allGoals.length,
+      active: allGoals.filter((goal) => goal.status === 'active').length,
+      completed: allGoals.filter((goal) => goal.status === 'completed').length,
+    },
+    showTodaySuggestion,
+  };
+}
+
 export function getWidgetData(userId: string, id: string): DesktopWidgetDataDTO {
   const widget = requireWidget(userId, id);
   if (!widget.enabled) throw new AppError(409, 'desktop_widget_disabled', 'widget is disabled');
@@ -563,6 +642,7 @@ export function getWidgetData(userId: string, id: string): DesktopWidgetDataDTO 
   if (widget.type === 'habit-checkin') return habitCheckinWidgetData(userId, widget);
   if (widget.type === 'focus-timer') return focusTimerWidgetData(userId, widget);
   if (widget.type === 'countdowns') return countdownsWidgetData(userId, widget);
+  if (widget.type === 'goal-progress') return goalProgressWidgetData(userId, widget);
   throw new AppError(501, 'desktop_widget_data_not_implemented', `${widget.type} widget data is not implemented`);
 }
 
