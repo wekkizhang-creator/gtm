@@ -314,11 +314,21 @@ export interface DesktopFocusTimerWidgetData {
   allowStartPause: boolean;
 }
 
+export interface DesktopCountdownsWidgetData {
+  type: 'countdowns';
+  widget: DesktopWidget;
+  generatedAt: string;
+  countdowns: Countdown[];
+  counts: { shown: number; total: number; pinned: number; elapsed: number };
+  pinnedFirst: boolean;
+}
+
 export type DesktopWidgetData =
   | DesktopTodayTasksWidgetData
   | DesktopInboxQuickAddWidgetData
   | DesktopHabitCheckinWidgetData
-  | DesktopFocusTimerWidgetData;
+  | DesktopFocusTimerWidgetData
+  | DesktopCountdownsWidgetData;
 
 export interface DesktopWidgetActionResult {
   widget: DesktopWidget;

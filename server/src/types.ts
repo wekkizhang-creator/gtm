@@ -264,11 +264,21 @@ export interface DesktopFocusTimerWidgetDataDTO {
   allowStartPause: boolean;
 }
 
+export interface DesktopCountdownsWidgetDataDTO {
+  type: 'countdowns';
+  widget: DesktopWidgetDTO;
+  generatedAt: string;
+  countdowns: CountdownDTO[];
+  counts: { shown: number; total: number; pinned: number; elapsed: number };
+  pinnedFirst: boolean;
+}
+
 export type DesktopWidgetDataDTO =
   | DesktopTodayTasksWidgetDataDTO
   | DesktopInboxQuickAddWidgetDataDTO
   | DesktopHabitCheckinWidgetDataDTO
-  | DesktopFocusTimerWidgetDataDTO;
+  | DesktopFocusTimerWidgetDataDTO
+  | DesktopCountdownsWidgetDataDTO;
 
 export interface DesktopWidgetActionResultDTO {
   widget: DesktopWidgetDTO;

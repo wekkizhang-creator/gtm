@@ -30,6 +30,13 @@ function localDateString(date = new Date()): string {
   return `${y}-${m}-${d}`;
 }
 
+function localDatePlusDays(days: number): string {
+  const d = new Date();
+  d.setHours(0, 0, 0, 0);
+  d.setDate(d.getDate() + days);
+  return localDateString(d);
+}
+
 async function startSmtp(): Promise<{ port: number; messages: string[]; close: () => Promise<void> }> {
   const messages: string[] = [];
   const server = net.createServer((socket) => {
@@ -313,19 +320,71 @@ async function main() {
     });
     assert(invalidWidgetAction.res.status === 400, `invalid widget action should be 400, got ${invalidWidgetAction.res.status}`);
 
+    const pinnedCountdown = await req(base, '/api/countdowns', {
+      method: 'POST',
+      cookie,
+      body: JSON.stringify({
+        title: 'Widget launch day',
+        targetDate: localDatePlusDays(10),
+        icon: 'rocket',
+        color: '#f97316',
+        pinned: true,
+        note: 'Pinned countdown fixture',
+      }),
+    });
+    const nearestCountdown = await req(base, '/api/countdowns', {
+      method: 'POST',
+      cookie,
+      body: JSON.stringify({
+        title: 'Widget nearest day',
+        targetDate: localDatePlusDays(2),
+        icon: 'calendar',
+        color: '#0ea5e9',
+      }),
+    });
+    const elapsedCountdown = await req(base, '/api/countdowns', {
+      method: 'POST',
+      cookie,
+      body: JSON.stringify({
+        title: 'Widget elapsed day',
+        targetDate: localDatePlusDays(-3),
+        icon: 'history',
+        color: '#64748b',
+      }),
+    });
+    assert(
+      pinnedCountdown.res.status === 201 && nearestCountdown.res.status === 201 && elapsedCountdown.res.status === 201,
+      'countdown fixtures should be created through HTTP',
+    );
+
     const countdownWidget = await req(base, '/api/desktop/widgets', {
       method: 'POST',
       cookie,
       body: JSON.stringify({
         type: 'countdowns',
         title: 'Important dates',
-        config: { limit: 3, pinnedFirst: true },
+        config: { limit: 2, pinnedFirst: true },
       }),
     });
     assert(countdownWidget.res.status === 201, `countdown widget create failed: ${countdownWidget.res.status}`);
-    assert(countdownWidget.body.widget.config.limit === 3, 'countdown widget config did not round-trip');
-    const unsupportedWidgetData = await req(base, `/api/desktop/widgets/${countdownWidget.body.widget.id}/data`, { cookie });
-    assert(unsupportedWidgetData.res.status === 501, `unsupported widget data should be 501, got ${unsupportedWidgetData.res.status}`);
+    assert(countdownWidget.body.widget.config.limit === 2, 'countdown widget config did not round-trip');
+    const countdownData = await req(base, `/api/desktop/widgets/${countdownWidget.body.widget.id}/data`, { cookie });
+    assert(countdownData.res.status === 200, `countdown widget data failed: ${countdownData.res.status}`);
+    assert(countdownData.body.data.type === 'countdowns', 'countdown widget data type mismatch');
+    assert(countdownData.body.data.pinnedFirst === true, 'countdown widget pinnedFirst flag should come from config');
+    assert(countdownData.body.data.counts.total === 3, `countdown widget total count mismatch: ${countdownData.body.data.counts.total}`);
+    assert(countdownData.body.data.counts.shown === 2, `countdown widget shown count mismatch: ${countdownData.body.data.counts.shown}`);
+    assert(countdownData.body.data.counts.pinned === 1, 'countdown widget should count pinned dates');
+    assert(countdownData.body.data.counts.elapsed === 1, 'countdown widget should count elapsed dates');
+    assert(countdownData.body.data.countdowns[0].id === pinnedCountdown.body.countdown.id, 'countdown widget should put pinned dates first');
+    assert(
+      countdownData.body.data.countdowns.some((item: any) => item.id === nearestCountdown.body.countdown.id),
+      'countdown widget should include the nearest unpinned upcoming date within the limit',
+    );
+    assert(
+      !countdownData.body.data.countdowns.some((item: any) => item.id === elapsedCountdown.body.countdown.id),
+      'countdown widget should hide elapsed dates when limit is reached',
+    );
 
     const focusWidget = await req(base, '/api/desktop/widgets', {
       method: 'POST',
@@ -701,6 +760,7 @@ async function main() {
         .prepare('SELECT status, target_duration_sec, paused_at FROM desktop_focus_timers WHERE widget_id = ?')
         .get(focusWidget.body.widget.id) as { status: string; target_duration_sec: number; paused_at: string | null };
       const widgetCount = db.prepare('SELECT COUNT(*) count FROM desktop_widgets').get() as { count: number };
+      const countdownCount = db.prepare('SELECT COUNT(*) count FROM countdowns').get() as { count: number };
       const shortcutRow = db
         .prepare("SELECT registered_at, accelerator FROM desktop_shortcuts WHERE action = 'task.quickAdd'")
         .get() as { registered_at: string | null; accelerator: string };
@@ -730,7 +790,8 @@ async function main() {
       assert(JSON.parse(inboxWidgetRow.config_json).quickAdd === false, 'inbox widget quickAdd patch was not written to SQLite');
       assert(JSON.parse(habitWidgetRow.config_json).allowCheckin === false, 'habit widget allowCheckin patch was not written to SQLite');
       assert(JSON.parse(focusWidgetRow.config_json).allowStartPause === false, 'focus widget allowStartPause patch was not written to SQLite');
-      assert(JSON.parse(countdownRow.config_json).limit === 3, 'countdown widget config was not written to SQLite');
+      assert(JSON.parse(countdownRow.config_json).limit === 2, 'countdown widget config was not written to SQLite');
+      assert(countdownCount.count === 3, 'countdown fixtures were not written to SQLite');
       assert(
         focusTimerRow.status === 'paused' && focusTimerRow.target_duration_sec === 1500 && !!focusTimerRow.paused_at,
         'focus widget timer state was not written to SQLite',

@@ -14,6 +14,7 @@ import {
 import * as taskRepo from './repo';
 import * as habitsRepo from './habitsRepo';
 import * as focusRepo from './focusRepo';
+import * as countdownsRepo from './countdownsRepo';
 
 type WidgetRow = {
   id: string;
@@ -525,6 +526,35 @@ function writeFocusTimer(
   );
 }
 
+function compareCountdownDates(a: { daysRemaining: number; title: string }, b: { daysRemaining: number; title: string }): number {
+  const aUpcoming = a.daysRemaining >= 0;
+  const bUpcoming = b.daysRemaining >= 0;
+  if (aUpcoming !== bUpcoming) return aUpcoming ? -1 : 1;
+  if (aUpcoming && a.daysRemaining !== b.daysRemaining) return a.daysRemaining - b.daysRemaining;
+  if (!aUpcoming && a.daysRemaining !== b.daysRemaining) return b.daysRemaining - a.daysRemaining;
+  return a.title.localeCompare(b.title);
+}
+
+function countdownsWidgetData(userId: string, widget: DesktopWidgetDTO): DesktopWidgetDataDTO {
+  const allCountdowns = countdownsRepo.listCountdowns(userId);
+  const ordered = widget.config.pinnedFirst === false ? [...allCountdowns].sort(compareCountdownDates) : allCountdowns;
+  const limit = Number(widget.config.limit);
+  const countdowns = ordered.slice(0, Number.isInteger(limit) && limit > 0 ? limit : 5);
+  return {
+    type: 'countdowns',
+    widget,
+    generatedAt: nowISO(),
+    countdowns,
+    counts: {
+      shown: countdowns.length,
+      total: allCountdowns.length,
+      pinned: allCountdowns.filter((countdown) => countdown.pinned).length,
+      elapsed: allCountdowns.filter((countdown) => countdown.daysRemaining < 0).length,
+    },
+    pinnedFirst: widget.config.pinnedFirst !== false,
+  };
+}
+
 export function getWidgetData(userId: string, id: string): DesktopWidgetDataDTO {
   const widget = requireWidget(userId, id);
   if (!widget.enabled) throw new AppError(409, 'desktop_widget_disabled', 'widget is disabled');
@@ -532,6 +562,7 @@ export function getWidgetData(userId: string, id: string): DesktopWidgetDataDTO 
   if (widget.type === 'inbox-quick-add') return inboxQuickAddWidgetData(userId, widget);
   if (widget.type === 'habit-checkin') return habitCheckinWidgetData(userId, widget);
   if (widget.type === 'focus-timer') return focusTimerWidgetData(userId, widget);
+  if (widget.type === 'countdowns') return countdownsWidgetData(userId, widget);
   throw new AppError(501, 'desktop_widget_data_not_implemented', `${widget.type} widget data is not implemented`);
 }
 

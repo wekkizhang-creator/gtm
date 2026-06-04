@@ -2518,3 +2518,11 @@ WID-04 now has a persisted widget timer state instead of a UI-only countdown. A 
 `GET /api/desktop/widgets/:id/data` supports `type:"focus-timer"` and returns `{ timer, stats, allowStartPause }`, where `timer` is calculated from the persisted row and current server time, and `stats` comes from the real `focusRepo.stats` aggregate. `POST /api/desktop/widgets/:id/actions` supports `{ action:"start_focus" }` and `{ action:"pause_focus" }`, respects `config.allowStartPause`, writes `desktop_focus_timers`, returns refreshed widget data, rejects invalid actions with `400`, rejects disabled start/pause with `409 desktop_widget_action_disabled`, and rejects pause while not running with `409 desktop_focus_timer_not_running`.
 
 `npm run test:desktop` now creates a `focus-timer` widget, verifies idle data and real focus stats, rejects pause before start, starts and pauses the timer through widget actions, rejects invalid and disabled actions, exports the widget row, and checks SQLite for the widget config plus the persisted `desktop_focus_timers` paused state.
+
+## Slice 96: Countdowns Desktop Widget
+
+WID-06 now has a real read-only widget data contract. `GET /api/desktop/widgets/:id/data` supports `type:"countdowns"` and returns saved widget config, generated timestamp, real `CountdownDTO[]`, counts `{ shown, total, pinned, elapsed }`, and the resolved `pinnedFirst` flag.
+
+The widget uses the existing `countdownsRepo.listCountdowns` source of truth, including `effectiveDate` and signed `daysRemaining`. `config.limit` truncates the returned list. `config.pinnedFirst:false` disables pinned-priority ordering and sorts by date only; the default keeps pinned items first. WID-06 has no widget action requirement, so `POST /api/desktop/widgets/:id/actions` still returns `501 desktop_widget_action_not_implemented` for `countdowns`.
+
+`npm run test:desktop` now creates three countdowns through HTTP, creates a `countdowns` widget, verifies widget data reads real countdown rows, validates pinned-first ordering, limit, pinned count, and elapsed count, exports the widget row, and checks SQLite for the widget config plus the three countdown rows.
