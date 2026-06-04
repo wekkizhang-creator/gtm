@@ -5,8 +5,8 @@ This document is Step 1 only: contracts and verification plan. Do not implement 
 ## Current Baseline
 
 - Runtime stack: Vite + React client, Express + TypeScript server, SQLite via `node:sqlite`.
-- Existing persisted slices: lists, tasks, subtasks, calendar task blocks, matrix classification, focus sessions, habits, countdowns, settings.
-- Main contract gap: PRD v1.4 requires logged-in use with `userId` ownership, but the current app is local single-user and still has a `localStorage` API path for static builds.
+- Existing persisted slices: authenticated account ownership, lists, tasks, subtasks, calendar task blocks, matrix classification, focus sessions, habits, countdowns, settings, desktop widgets, and account-scoped settings/export.
+- The client API path is real HTTP only (`/api` with same-origin credentials). There is no localStorage-backed static API fallback in `client/src/api/client.ts`.
 
 ## Slice Order
 
@@ -2486,14 +2486,14 @@ WID-01 now has a real widget-host contract instead of only a stored template. Ex
 - `GET /api/desktop/widgets/:id/data`
   - For `type:"today-tasks"` returns `{ data }` with the saved widget config, `generatedAt`, real `TaskDTO[]`, and counts `{ shown, total, overdue }`.
   - Disabled widgets return `409 desktop_widget_disabled`.
-  - Widget types without data implementation return `501 desktop_widget_data_not_implemented`.
+  - Unknown future widget types return `501 desktop_widget_data_not_implemented`; all six PRD widget templates now have data implementations.
 - `POST /api/desktop/widgets/:id/actions`
   - For `type:"today-tasks"` accepts `{ action:"complete_task", taskId }`.
   - The route verifies the task is currently part of that widget's real today data, respects `config.allowComplete`, calls the shared `repo.updateTask` path, and returns the completed task plus refreshed widget data.
 
 ### Verification
 
-`npm run test:desktop` now creates overdue/today/future/completed tasks through HTTP, creates a `today-tasks` widget, verifies the widget data contains only real today-visible open tasks, completes one task through the widget action, verifies the refreshed data excludes it, rejects invalid actions and disabled completion, returns `501` for unimplemented widget types, and checks SQLite for both the widget config and the task `completed` write.
+`npm run test:desktop` now creates overdue/today/future/completed tasks through HTTP, creates a `today-tasks` widget, verifies the widget data contains only real today-visible open tasks, completes one task through the widget action, verifies the refreshed data excludes it, rejects invalid actions and disabled completion, and checks SQLite for both the widget config and the task `completed` write.
 
 ## Slice 93: Inbox Quick Add Desktop Widget
 
