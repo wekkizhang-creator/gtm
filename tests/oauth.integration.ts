@@ -240,16 +240,6 @@ async function main() {
   });
   try {
     await waitForHealth(base);
-    const missing = await req(base, '/api/auth/oauth/missing/login', {
-      method: 'POST',
-      body: JSON.stringify({
-        accessToken: 'token-alice',
-        agreedToTerms: true,
-        device: { deviceId: 'missing-oauth', platform: 'Web' },
-      }),
-    });
-    assert(missing.res.status === 501, `missing OAuth provider should be 501, got ${missing.res.status}`);
-
     const oauthLogin = await req(base, '/api/auth/oauth/test/login', {
       method: 'POST',
       body: JSON.stringify({
@@ -258,76 +248,34 @@ async function main() {
         device: { deviceId: 'oauth-alice-device', deviceName: 'OAuth login', platform: 'Web' },
       }),
     });
-    assert(oauthLogin.res.status === 201, `OAuth login failed: ${oauthLogin.res.status} ${JSON.stringify(oauthLogin.body)}`);
-    const oauthCookie = cookiesFrom(oauthLogin.res);
-    const oauthAgain = await req(base, '/api/auth/oauth/test/login', {
-      method: 'POST',
-      body: JSON.stringify({
-        accessToken: 'token-alice',
-        agreedToTerms: true,
-        device: { deviceId: 'oauth-alice-device-2', platform: 'Web' },
-      }),
-    });
-    assert(oauthAgain.res.status === 200, `OAuth repeat login should be 200, got ${oauthAgain.res.status}`);
-    assert(oauthAgain.body.user.id === oauthLogin.body.user.id, 'repeat OAuth login should use same account');
-    assert(oauth.requests.includes('Bearer token-alice'), 'OAuth provider did not receive bearer token');
+    assert(oauthLogin.res.status === 400, `OAuth login should be blocked by email-only policy, got ${oauthLogin.res.status}`);
+    assert(oauthLogin.body.error.code === 'email_login_only', 'OAuth login should return email_login_only');
 
     const redirectUri = 'http://127.0.0.1/oauth/callback';
     const authorization = await req(base, '/api/auth/oauth/test/authorize', {
       method: 'POST',
       body: JSON.stringify({ redirectUri }),
     });
-    assert(authorization.res.status === 201, `OAuth authorization start failed: ${authorization.res.status} ${JSON.stringify(authorization.body)}`);
-    assert(typeof authorization.body.state === 'string' && authorization.body.state.length >= 32, 'OAuth state was not returned');
-    const authorizationUrl = new URL(authorization.body.authorizationUrl);
-    assert(`${authorizationUrl.origin}${authorizationUrl.pathname}` === oauth.authorizeUrl, 'authorizationUrl should point to configured provider authorize URL');
-    assert(authorizationUrl.searchParams.get('response_type') === 'code', 'authorizationUrl should request an authorization code');
-    assert(authorizationUrl.searchParams.get('client_id') === 'oauth-test-client', 'authorizationUrl missing client_id');
-    assert(authorizationUrl.searchParams.get('redirect_uri') === redirectUri, 'authorizationUrl missing redirect_uri');
-    assert(authorizationUrl.searchParams.get('state') === authorization.body.state, 'authorizationUrl state should match response state');
-    assert(authorizationUrl.searchParams.get('code_challenge_method') === 'S256', 'authorizationUrl should use PKCE S256');
-    assert((authorizationUrl.searchParams.get('code_challenge') ?? '').length >= 32, 'authorizationUrl missing PKCE code_challenge');
+    assert(authorization.res.status === 400, `OAuth authorization login should be blocked, got ${authorization.res.status}`);
+    assert(authorization.body.error.code === 'email_login_only', 'OAuth authorization login should return email_login_only');
 
     const codeLogin = await req(base, '/api/auth/oauth/test/callback', {
       method: 'POST',
       body: JSON.stringify({
-        state: authorization.body.state,
+        state: 'blocked-state',
         code: 'valid-code',
         redirectUri,
         agreedToTerms: true,
         device: { deviceId: 'oauth-code-device', deviceName: 'OAuth code login', platform: 'Web' },
       }),
     });
-    assert(codeLogin.res.status === 201, `OAuth code login failed: ${codeLogin.res.status} ${JSON.stringify(codeLogin.body)}`);
-    assert(
-      codeLogin.body.user.emailMasked.startsWith('oa') &&
-        codeLogin.body.user.emailMasked.endsWith('@example.com') &&
-        codeLogin.body.user.emailMasked.includes('*'),
-      'OAuth code login should use masked UserInfo email',
-    );
-    assert(oauth.requests.includes('Bearer token-code'), 'OAuth code flow did not fetch UserInfo with exchanged access token');
-    assert(oauth.tokenRequests.length === 1, `expected one OAuth token exchange, got ${oauth.tokenRequests.length}`);
-    const tokenRequest = oauth.tokenRequests[0];
-    assert(tokenRequest.get('grant_type') === 'authorization_code', 'token request missing authorization_code grant');
-    assert(tokenRequest.get('code') === 'valid-code', 'token request missing code');
-    assert(tokenRequest.get('redirect_uri') === redirectUri, 'token request missing redirect_uri');
-    assert(tokenRequest.get('client_id') === 'oauth-test-client', 'token request missing client_id');
-    assert(tokenRequest.get('client_secret') === 'oauth-test-secret', 'token request missing client_secret');
-    assert((tokenRequest.get('code_verifier') ?? '').length >= 32, 'token request missing PKCE verifier');
-
-    const replay = await req(base, '/api/auth/oauth/test/callback', {
-      method: 'POST',
-      body: JSON.stringify({
-        state: authorization.body.state,
-        code: 'valid-code',
-        redirectUri,
-        agreedToTerms: true,
-        device: { deviceId: 'oauth-code-replay', platform: 'Web' },
-      }),
-    });
-    assert(replay.res.status === 400, `OAuth state replay should be rejected, got ${replay.res.status}`);
+    assert(codeLogin.res.status === 400, `OAuth code login should be blocked, got ${codeLogin.res.status}`);
+    assert(codeLogin.body.error.code === 'email_login_only', 'OAuth code login should return email_login_only');
+    assert(oauth.requests.length === 0, 'blocked OAuth login must not call the OAuth provider');
+    assert(oauth.tokenRequests.length === 0, 'blocked OAuth login must not call the token endpoint');
 
     const emailUser = await loginEmail(base, 'oauth-bind@example.com', smtp.messages);
+    const otherEmailUser = await loginEmail(base, 'oauth-other@example.com', smtp.messages);
     const bind = await req(base, '/api/account/oauth/test/bind', {
       method: 'POST',
       cookie: emailUser.cookie,
@@ -345,7 +293,7 @@ async function main() {
     assert(wrongUserAuthorization.res.status === 201, `OAuth bind authorization failed: ${wrongUserAuthorization.res.status}`);
     const wrongUserBinding = await req(base, '/api/account/oauth/test/callback', {
       method: 'POST',
-      cookie: oauthCookie,
+      cookie: otherEmailUser.cookie,
       body: JSON.stringify({
         state: wrongUserAuthorization.body.state,
         code: 'bind-code',
@@ -353,7 +301,7 @@ async function main() {
       }),
     });
     assert(wrongUserBinding.res.status === 400, `OAuth bind state should be account-scoped, got ${wrongUserBinding.res.status}`);
-    assert(oauth.tokenRequests.length === 1, 'wrong-user bind callback should not call the token endpoint');
+    assert(oauth.tokenRequests.length === 0, 'wrong-user bind callback should not call the token endpoint');
 
     const bindAuthorization = await req(base, '/api/account/oauth/test/authorize', {
       method: 'POST',
@@ -376,21 +324,11 @@ async function main() {
     assert(bindCode.res.status === 200, `OAuth code bind failed: ${bindCode.res.status} ${JSON.stringify(bindCode.body)}`);
     assert(bindCode.body.identities.some((i: any) => i.type === 'oauth' && i.provider === 'test'), 'OAuth code identity missing after bind');
     assert(oauth.requests.includes('Bearer token-bind-code'), 'OAuth bind code flow did not fetch UserInfo with exchanged access token');
-    assert(oauth.tokenRequests.length === 2, `expected two successful OAuth token exchanges, got ${oauth.tokenRequests.length}`);
-
-    const boundLogin = await req(base, '/api/auth/oauth/test/login', {
-      method: 'POST',
-      body: JSON.stringify({
-        accessToken: 'token-bound',
-        agreedToTerms: true,
-        device: { deviceId: 'oauth-bound-device', platform: 'Web' },
-      }),
-    });
-    assert(boundLogin.body.user.id === emailUser.userId, 'bound OAuth identity should log into the same email account');
+    assert(oauth.tokenRequests.length === 1, `expected one successful OAuth token exchange, got ${oauth.tokenRequests.length}`);
 
     const conflict = await req(base, '/api/account/oauth/test/bind', {
       method: 'POST',
-      cookie: oauthCookie,
+      cookie: otherEmailUser.cookie,
       body: JSON.stringify({ accessToken: 'token-bound' }),
     });
     assert(conflict.res.status === 409, `OAuth bind conflict should be 409, got ${conflict.res.status}`);
@@ -409,15 +347,15 @@ async function main() {
     const db = new DatabaseSync(dbPath);
     try {
       const oauthRows = db.prepare("SELECT COUNT(*) c FROM auth_identities WHERE type = 'oauth' AND provider = 'test'").get() as { c: number };
-      assert(oauthRows.c === 4, `expected four OAuth identities, got ${oauthRows.c}`);
+      assert(oauthRows.c === 2, `expected two OAuth identities, got ${oauthRows.c}`);
       const activeOAuthRows = db
         .prepare("SELECT COUNT(*) c FROM auth_identities WHERE type = 'oauth' AND provider = 'test' AND unbound_at IS NULL")
         .get() as { c: number };
-      assert(activeOAuthRows.c === 3, `expected three active OAuth identities after code login, code bind, and unbind, got ${activeOAuthRows.c}`);
+      assert(activeOAuthRows.c === 1, `expected one active OAuth identity after code bind and unbind, got ${activeOAuthRows.c}`);
       const consumedStates = db
         .prepare("SELECT COUNT(*) c FROM oauth_login_states WHERE provider = 'test' AND consumed_at IS NOT NULL")
         .get() as { c: number };
-      assert(consumedStates.c === 2, `expected two consumed OAuth states, got ${consumedStates.c}`);
+      assert(consumedStates.c === 1, `expected one consumed OAuth state, got ${consumedStates.c}`);
       const bindState = db
         .prepare("SELECT COUNT(*) c FROM oauth_login_states WHERE provider = 'test' AND purpose = 'account_bind' AND user_id IS NOT NULL")
         .get() as { c: number };

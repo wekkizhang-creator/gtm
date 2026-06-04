@@ -174,11 +174,12 @@ async function main() {
 
     const unauth = await req(base, '/api/tasks?view=today');
     assert(unauth.res.status === 401, `expected unauthenticated tasks to be 401, got ${unauth.res.status}`);
-    const noSms = await req(base, '/api/auth/verification-codes', {
+    const phoneLogin = await req(base, '/api/auth/verification-codes', {
       method: 'POST',
       body: JSON.stringify({ type: 'phone', identifier: '+15550001111', purpose: 'login' }),
     });
-    assert(noSms.res.status === 501, `phone login without SMS provider should be 501, got ${noSms.res.status}`);
+    assert(phoneLogin.res.status === 400, `phone login should be blocked by email-only policy, got ${phoneLogin.res.status}`);
+    assert(phoneLogin.body.error.code === 'email_login_only', 'phone login should return email_login_only');
 
     const riskMessages = smtp.messages.length;
     const blockedIdentifier = await req(base, '/api/auth/verification-codes', {

@@ -11,7 +11,6 @@ interface AuthCtx {
 }
 
 const Ctx = createContext<AuthCtx | null>(null);
-const LOGIN_METHOD_KEY = 'efficiency-list.lastLoginMethod';
 
 export function useAuth() {
   const ctx = useContext(Ctx);
@@ -28,25 +27,11 @@ function devicePayload() {
   };
 }
 
-function defaultRedirectUri() {
-  return `${window.location.origin}/oauth/callback`;
-}
-
 function LoginScreen({ onAuthed }: { onAuthed: (s: { user: User; session: AuthSession }) => void }) {
-  const [loginType, setLoginType] = useState<'email' | 'phone'>(() => {
-    const saved = localStorage.getItem(LOGIN_METHOD_KEY);
-    return saved === 'phone' ? 'phone' : 'email';
-  });
   const [identifier, setIdentifier] = useState('');
   const [challengeId, setChallengeId] = useState('');
   const [masked, setMasked] = useState('');
   const [code, setCode] = useState('');
-  const [oauthProvider, setOauthProvider] = useState('test');
-  const [oauthToken, setOauthToken] = useState('');
-  const [oauthRedirectUri, setOauthRedirectUri] = useState(defaultRedirectUri);
-  const [oauthAuthorizationUrl, setOauthAuthorizationUrl] = useState('');
-  const [oauthState, setOauthState] = useState('');
-  const [oauthCode, setOauthCode] = useState('');
   const [agreed, setAgreed] = useState(false);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -54,25 +39,14 @@ function LoginScreen({ onAuthed }: { onAuthed: (s: { user: User; session: AuthSe
 
   useEffect(() => {
     trackEvent('auth_page_view', { entry: 'app_start', platform: 'web', is_offline: !navigator.onLine });
-    const params = new URLSearchParams(window.location.search);
-    const state = params.get('state');
-    const authCode = params.get('code');
-    if (state) setOauthState(state);
-    if (authCode) setOauthCode(authCode);
   }, []);
-
-  function selectLoginType(type: 'email' | 'phone') {
-    setLoginType(type);
-    localStorage.setItem(LOGIN_METHOD_KEY, type);
-    trackEvent('auth_method_select', { method: type, entry: 'login_page' });
-  }
 
   async function requestCode(e: FormEvent) {
     e.preventDefault();
     setBusy(true);
     setError(null);
     try {
-      const r = await api.requestVerificationCode({ type: loginType, identifier: identifier.trim(), purpose: 'login' });
+      const r = await api.requestVerificationCode({ type: 'email', identifier: identifier.trim(), purpose: 'login' });
       setChallengeId(r.challengeId);
       setMasked(r.maskedIdentifier);
     } catch (err) {
@@ -93,61 +67,6 @@ function LoginScreen({ onAuthed }: { onAuthed: (s: { user: User; session: AuthSe
         agreedToTerms: agreed,
         device: devicePayload(),
       });
-      localStorage.setItem(LOGIN_METHOD_KEY, loginType);
-      onAuthed({ user: r.user, session: r.session });
-    } catch (err) {
-      setError((err as Error).message);
-    } finally {
-      setBusy(false);
-    }
-  }
-
-  async function startOAuthAuthorization() {
-    setBusy(true);
-    setError(null);
-    trackEvent('auth_third_party_start', { provider: oauthProvider.trim(), entry: 'login_page', flow: 'authorization_code' });
-    try {
-      const r = await api.startOAuthAuthorization(oauthProvider.trim(), { redirectUri: oauthRedirectUri.trim() });
-      setOauthAuthorizationUrl(r.authorizationUrl);
-      setOauthState(r.state);
-    } catch (err) {
-      setError((err as Error).message);
-    } finally {
-      setBusy(false);
-    }
-  }
-
-  async function completeOAuthLogin(e: FormEvent) {
-    e.preventDefault();
-    setBusy(true);
-    setError(null);
-    try {
-      const r = await api.completeOAuthLogin(oauthProvider.trim(), {
-        state: oauthState.trim(),
-        code: oauthCode.trim(),
-        redirectUri: oauthRedirectUri.trim(),
-        agreedToTerms: agreed,
-        device: devicePayload(),
-      });
-      onAuthed({ user: r.user, session: r.session });
-    } catch (err) {
-      setError((err as Error).message);
-    } finally {
-      setBusy(false);
-    }
-  }
-
-  async function oauthTokenLogin(e: FormEvent) {
-    e.preventDefault();
-    setBusy(true);
-    setError(null);
-    trackEvent('auth_third_party_start', { provider: oauthProvider.trim(), entry: 'login_page', flow: 'access_token' });
-    try {
-      const r = await api.loginWithOAuth(oauthProvider.trim(), {
-        accessToken: oauthToken.trim(),
-        agreedToTerms: agreed,
-        device: devicePayload(),
-      });
       onAuthed({ user: r.user, session: r.session });
     } catch (err) {
       setError((err as Error).message);
@@ -158,44 +77,42 @@ function LoginScreen({ onAuthed }: { onAuthed: (s: { user: User; session: AuthSe
 
   return (
     <main className="auth-page">
+      <div className="auth-ambient">
+        <div className="auth-ambient-brand">效率清单</div>
+        <p>把今天整理清楚，再开始行动。</p>
+      </div>
       <section className="auth-panel">
+        <div className="auth-kicker">邮箱验证码</div>
         <div className="auth-brand">效率清单</div>
-        <h1>登录后继续</h1>
-        <p>使用邮箱或手机号验证码登录。第三方账号走真实 OAuth 授权码回调，未配置服务商时后端会返回 501。</p>
+        <h1>{challengeId ? '输入验证码' : '登录 / 注册'}</h1>
+        <p>{challengeId ? `验证码已发送至 ${masked}` : '使用邮箱接收验证码，首次登录会自动创建账号。'}</p>
 
         {!challengeId ? (
           <form onSubmit={requestCode} className="auth-form">
             <label>
-              {loginType === 'email' ? '邮箱' : '手机号'}
+              邮箱地址
               <input
                 autoFocus
-                type={loginType === 'email' ? 'email' : 'tel'}
+                type="email"
+                autoComplete="email"
                 value={identifier}
-                placeholder={loginType === 'email' ? 'name@example.com' : '+8613800000000'}
+                placeholder="name@example.com"
                 onChange={(e) => setIdentifier(e.target.value)}
                 disabled={busy}
               />
             </label>
-            <div className="auth-type">
-              <button type="button" className={loginType === 'email' ? 'active' : ''} onClick={() => selectLoginType('email')}>
-                邮箱
-              </button>
-              <button type="button" className={loginType === 'phone' ? 'active' : ''} onClick={() => selectLoginType('phone')}>
-                手机
-              </button>
-            </div>
             <button className="btn-primary" disabled={busy || !identifier.trim()}>
-              {busy ? '发送中...' : '发送验证码'}
+              {busy ? '发送中...' : '获取邮箱验证码'}
             </button>
           </form>
         ) : (
           <form onSubmit={login} className="auth-form">
-            <div className="auth-muted">验证码已发送至 {masked}</div>
             <label>
               验证码
               <input
                 autoFocus
                 inputMode="numeric"
+                autoComplete="one-time-code"
                 value={code}
                 placeholder="6 位验证码"
                 onChange={(e) => setCode(e.target.value)}
@@ -213,62 +130,14 @@ function LoginScreen({ onAuthed }: { onAuthed: (s: { user: User; session: AuthSe
               />
               我已阅读并同意用户协议与隐私政策
             </label>
-            <button className="btn-primary" disabled={busy || code.trim().length < 6}>
+            <button className="btn-primary" disabled={busy || code.trim().length < 6 || !agreed}>
               {busy ? '登录中...' : '登录 / 注册'}
             </button>
             <button type="button" className="auth-link" onClick={() => setChallengeId('')} disabled={busy}>
-              换一个账号
+              更换邮箱
             </button>
           </form>
         )}
-
-        <form onSubmit={completeOAuthLogin} className="auth-form auth-oauth">
-          <div className="auth-muted">第三方账号</div>
-          <input value={oauthProvider} placeholder="provider" onChange={(e) => setOauthProvider(e.target.value)} disabled={busy} />
-          <label>
-            回调地址
-            <input value={oauthRedirectUri} onChange={(e) => setOauthRedirectUri(e.target.value)} disabled={busy} />
-          </label>
-          <button type="button" className="btn-primary" disabled={busy || !oauthProvider.trim() || !oauthRedirectUri.trim()} onClick={() => void startOAuthAuthorization()}>
-            生成授权链接
-          </button>
-          {oauthAuthorizationUrl && (
-            <a className="auth-link" href={oauthAuthorizationUrl}>
-              打开授权页
-            </a>
-          )}
-          <label>
-            state
-            <input value={oauthState} onChange={(e) => setOauthState(e.target.value)} disabled={busy} />
-          </label>
-          <label>
-            code
-            <input value={oauthCode} onChange={(e) => setOauthCode(e.target.value)} disabled={busy} />
-          </label>
-          <label className="auth-check">
-            <input
-              type="checkbox"
-              checked={agreed}
-              onChange={(e) => {
-                setAgreed(e.target.checked);
-                trackEvent('auth_agreement_check', { checked: e.target.checked, entry: 'oauth_login' });
-              }}
-            />
-            我已阅读并同意用户协议与隐私政策
-          </label>
-          <button className="btn-primary" disabled={busy || !oauthProvider.trim() || !oauthState.trim() || !oauthCode.trim()}>
-            完成第三方登录
-          </button>
-        </form>
-
-        <form onSubmit={oauthTokenLogin} className="auth-form auth-oauth">
-          <div className="auth-muted">Access Token 登录</div>
-          <input value={oauthProvider} placeholder="provider" onChange={(e) => setOauthProvider(e.target.value)} disabled={busy} />
-          <input type="password" value={oauthToken} placeholder="access token" onChange={(e) => setOauthToken(e.target.value)} disabled={busy} />
-          <button className="btn-primary" disabled={busy || !oauthProvider.trim() || !oauthToken.trim()}>
-            使用访问令牌登录
-          </button>
-        </form>
 
         {error && (
           <div className="banner banner-error">

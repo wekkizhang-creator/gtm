@@ -3,7 +3,6 @@ import * as auth from '../authRepo';
 import { optionalAuth } from '../authMiddleware';
 import { AppError } from '../types';
 import * as analytics from '../analyticsRepo';
-import { createOAuthAuthorization } from '../oauth';
 
 const router = Router();
 
@@ -19,6 +18,10 @@ function track(req: Parameters<typeof analytics.recordServerEvent>[1], name: str
   }
 }
 
+function emailLoginOnlyError(): AppError {
+  return new AppError(400, 'email_login_only', 'registration and login only support email verification');
+}
+
 router.get('/session', optionalAuth, (req, res) => {
   if (!req.auth) throw new AppError(401, 'unauthenticated', 'please sign in');
   res.json(auth.currentSession(req.auth));
@@ -30,6 +33,9 @@ router.post('/verification-codes', async (req, res, next) => {
     if (b.type !== 'email' && b.type !== 'phone') throw new AppError(400, 'invalid_identifier', 'type must be email or phone');
     if (typeof b.identifier !== 'string') throw new AppError(400, 'invalid_identifier', 'identifier is required');
     const purpose = typeof b.purpose === 'string' ? b.purpose : 'login';
+    if (purpose === 'login' && b.type !== 'email') {
+      throw emailLoginOnlyError();
+    }
     const challenge = await auth.createVerificationCode({
       type: b.type,
       identifier: b.identifier,
@@ -81,88 +87,28 @@ router.post('/login', (req, res, next) => {
   }
 });
 
-router.post('/oauth/:provider/login', async (req, res, next) => {
-  try {
-    const b = req.body ?? {};
-    const device = b.device ?? {};
-    if (typeof device.deviceId !== 'string' || !device.deviceId.trim()) {
-      throw new AppError(400, 'invalid', 'device.deviceId is required');
-    }
-    const result = await auth.loginWithOAuth({
-      provider: req.params.provider,
-      accessToken: b.accessToken,
-      agreedToTerms: !!b.agreedToTerms,
-      device: {
-        deviceId: device.deviceId,
-        deviceName: typeof device.deviceName === 'string' ? device.deviceName : null,
-        platform: typeof device.platform === 'string' ? device.platform : null,
-        appVersion: typeof device.appVersion === 'string' ? device.appVersion : null,
-      },
-      res,
-      risk: { ip: req.ip, userAgent: req.headers['user-agent'] },
-    });
-    auth.audit(result.user.id, result.isNewUser ? 'oauth_account_registered' : 'oauth_account_login', 'session', result.session.id, req.ip, req.headers['user-agent']);
-    track(req, 'auth_third_party_result', { provider: req.params.provider, success: true, is_new_user: result.isNewUser }, result.user.id, result.session.id);
-    track(req, 'auth_login_success', { method: 'oauth', is_new_user: result.isNewUser, has_local_cache: false }, result.user.id, result.session.id);
-    if (result.isNewUser) track(req, 'auth_register_success', { method: 'oauth', init_success: true }, result.user.id, result.session.id);
-    res.status(result.isNewUser ? 201 : 200).json(result);
-  } catch (e) {
-    track(req, 'auth_third_party_result', { provider: req.params.provider, success: false, fail_reason: failReason(e), is_new_user: false });
-    next(e);
-  }
+router.post('/oauth/:provider/login', (req, _res, next) => {
+  const err = emailLoginOnlyError();
+  track(req, 'auth_third_party_result', { provider: req.params.provider, success: false, fail_reason: err.code, is_new_user: false });
+  next(err);
 });
 
-router.post('/oauth/:provider/authorize', (req, res, next) => {
-  try {
-    const authorization = createOAuthAuthorization(req.params.provider, {
-      redirectUri: req.body?.redirectUri,
-      scope: req.body?.scope,
-    });
-    track(req, 'auth_third_party_start', { provider: req.params.provider, entry: 'oauth_authorize' });
-    res.status(201).json(authorization);
-  } catch (e) {
-    track(req, 'auth_third_party_start', { provider: req.params.provider, entry: 'oauth_authorize', success: false, fail_reason: failReason(e) });
-    next(e);
-  }
+router.post('/oauth/:provider/authorize', (req, _res, next) => {
+  const err = emailLoginOnlyError();
+  track(req, 'auth_third_party_start', { provider: req.params.provider, entry: 'oauth_authorize', success: false, fail_reason: err.code });
+  next(err);
 });
 
-router.post('/oauth/:provider/callback', async (req, res, next) => {
-  try {
-    const b = req.body ?? {};
-    const device = b.device ?? {};
-    if (typeof device.deviceId !== 'string' || !device.deviceId.trim()) {
-      throw new AppError(400, 'invalid', 'device.deviceId is required');
-    }
-    const result = await auth.loginWithOAuthCode({
-      provider: req.params.provider,
-      state: b.state,
-      code: b.code,
-      redirectUri: b.redirectUri,
-      agreedToTerms: !!b.agreedToTerms,
-      device: {
-        deviceId: device.deviceId,
-        deviceName: typeof device.deviceName === 'string' ? device.deviceName : null,
-        platform: typeof device.platform === 'string' ? device.platform : null,
-        appVersion: typeof device.appVersion === 'string' ? device.appVersion : null,
-      },
-      res,
-      risk: { ip: req.ip, userAgent: req.headers['user-agent'] },
-    });
-    auth.audit(result.user.id, result.isNewUser ? 'oauth_code_account_registered' : 'oauth_code_account_login', 'session', result.session.id, req.ip, req.headers['user-agent']);
-    track(req, 'auth_third_party_result', { provider: req.params.provider, success: true, is_new_user: result.isNewUser, flow: 'authorization_code' }, result.user.id, result.session.id);
-    track(req, 'auth_login_success', { method: 'oauth_code', is_new_user: result.isNewUser, has_local_cache: false }, result.user.id, result.session.id);
-    if (result.isNewUser) track(req, 'auth_register_success', { method: 'oauth_code', init_success: true }, result.user.id, result.session.id);
-    res.status(result.isNewUser ? 201 : 200).json(result);
-  } catch (e) {
-    track(req, 'auth_third_party_result', {
-      provider: req.params.provider,
-      success: false,
-      fail_reason: failReason(e),
-      is_new_user: false,
-      flow: 'authorization_code',
-    });
-    next(e);
-  }
+router.post('/oauth/:provider/callback', (req, _res, next) => {
+  const err = emailLoginOnlyError();
+  track(req, 'auth_third_party_result', {
+    provider: req.params.provider,
+    success: false,
+    fail_reason: err.code,
+    is_new_user: false,
+    flow: 'authorization_code',
+  });
+  next(err);
 });
 
 router.post('/refresh', (req, res, next) => {

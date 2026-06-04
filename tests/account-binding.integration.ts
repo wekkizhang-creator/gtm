@@ -259,8 +259,14 @@ async function main() {
     assert(sms.messages.at(-1).purpose === 'account_bind', 'SMS provider did not receive purpose');
     assert(sms.messages.at(-1).auth === 'Bearer sms-test-token', 'SMS provider did not receive bearer token');
 
-    const alicePhone = await loginWithPhone(base, '+15551230000', sms.messages);
-    assert(alicePhone.userId === alice.userId, 'bound phone should log into the same user');
+    const smsBeforeLoginAttempt = sms.messages.length;
+    const phoneLoginAttempt = await req(base, '/api/auth/verification-codes', {
+      method: 'POST',
+      body: JSON.stringify({ type: 'phone', identifier: '+15551230000', purpose: 'login' }),
+    });
+    assert(phoneLoginAttempt.res.status === 400, `phone login should be blocked by email-only policy, got ${phoneLoginAttempt.res.status}`);
+    assert(phoneLoginAttempt.body.error.code === 'email_login_only', 'phone login should return email_login_only');
+    assert(sms.messages.length === smsBeforeLoginAttempt, 'blocked phone login must not send an SMS code');
 
     const bobPhoneCode = await requestSmsCode(base, '+15551230000', 'account_bind', sms.messages);
     const phoneConflict = await req(base, '/api/account/phone/bind', {
