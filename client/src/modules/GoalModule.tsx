@@ -4,6 +4,7 @@ import { aiConfigurationIssue } from '../aiGuide';
 import { buildGoalDetailSummary } from '../goalDetailSummary';
 import { GOAL_STATUS_LABELS, goalCanAutoSchedule, goalStatusActions } from '../goalStatus';
 import { buildGoalTaskCreateInput, buildGoalTaskEditPatch } from '../goalTaskForm';
+import { buildScheduleProposalImpact } from '../scheduleProposalImpact';
 import { useSettings } from '../settings';
 import { dateInputToISO, isoToDateInput } from '../util';
 import type {
@@ -174,6 +175,7 @@ export default function GoalModule() {
   const taskById = useMemo(() => new Map(tasks.map((task) => [task.id, task])), [tasks]);
   const scheduleInsightByTaskId = useMemo(() => new Map(scheduleInsights.map((insight) => [insight.taskId, insight])), [scheduleInsights]);
   const goalDetailSummary = useMemo(() => (selected ? buildGoalDetailSummary(selected, tasks) : null), [selected, tasks]);
+  const proposalImpact = useMemo(() => (proposal ? buildScheduleProposalImpact(proposal) : null), [proposal]);
 
   useEffect(() => {
     setEditingGoal(false);
@@ -1387,6 +1389,66 @@ export default function GoalModule() {
                     </button>
                   </div>
                 </div>
+                {proposalImpact && (
+                  <div className="goal-proposal-impact">
+                    <div className="goal-proposal-impact-grid">
+                      <div>
+                        <strong>{proposalImpact.counts.added}</strong>
+                        <span>新增时间块</span>
+                      </div>
+                      <div>
+                        <strong>{proposalImpact.counts.moved}</strong>
+                        <span>移动时间块</span>
+                      </div>
+                      <div>
+                        <strong>{proposalImpact.counts.blocked}</strong>
+                        <span>无法排期任务</span>
+                      </div>
+                      <div>
+                        <strong>{proposalImpact.counts.risks}</strong>
+                        <span>排期风险</span>
+                      </div>
+                    </div>
+                    {(proposalImpact.affectedConflicts.length > 0 ||
+                      proposalImpact.movedChanges.length > 0 ||
+                      proposalImpact.blockedConflicts.length > 0) && (
+                      <div className="goal-proposal-impact-detail">
+                        {proposalImpact.affectedConflicts.length > 0 && (
+                          <div>
+                            <small>受影响任务</small>
+                            {proposalImpact.affectedConflicts.slice(0, 3).map((conflict, index) => (
+                              <p key={`affected-${conflict.taskId ?? index}`}>
+                                {conflict.message}
+                                {conflict.suggestions.length > 0 && ` · 建议：${conflict.suggestions.join('、')}`}
+                              </p>
+                            ))}
+                          </div>
+                        )}
+                        {proposalImpact.movedChanges.length > 0 && (
+                          <div>
+                            <small>移动时间块</small>
+                            {proposalImpact.movedChanges.slice(0, 3).map((change) => (
+                              <p key={`moved-${change.changeKey}`}>
+                                {change.title}：{formatDateTime(change.oldPlannedStartAt ?? change.oldStartDate)} → {formatDateTime(change.plannedStartAt)}
+                              </p>
+                            ))}
+                          </div>
+                        )}
+                        {proposalImpact.blockedConflicts.length > 0 && (
+                          <div>
+                            <small>无法排期任务</small>
+                            {proposalImpact.blockedConflicts.slice(0, 3).map((conflict, index) => (
+                              <p key={`blocked-${conflict.taskId ?? index}`}>
+                                {conflict.message}
+                                {conflict.suggestions.length > 0 && ` · 建议：${conflict.suggestions.join('、')}`}
+                              </p>
+                            ))}
+                          </div>
+                        )}
+                      </div>
+                    )}
+                  </div>
+                )}
                 {proposal.conflicts.length > 0 && (
                   <div className="goal-conflicts">
                     {proposal.conflicts.map((conflict, index) => (
