@@ -106,13 +106,18 @@ async function req<T>(path: string, opts?: RequestInit): Promise<T> {
   }
   if (!res.ok) {
     let message = `HTTP ${res.status}`;
+    let code: string | undefined;
     try {
       const body = await res.json();
       if (body?.error?.message) message = body.error.message;
+      if (body?.error?.code) code = body.error.code;
     } catch {
       /* ignore parse errors */
     }
-    throw new Error(message);
+    const err = new Error(message) as Error & { code?: string; status?: number };
+    err.code = code;
+    err.status = res.status;
+    throw err;
   }
   if (res.status === 204) return undefined as T;
   return res.json() as Promise<T>;

@@ -2,6 +2,7 @@ import { createContext, useContext, useEffect, useMemo, useState, type FormEvent
 import { api } from './api/client';
 import { getDeviceId, trackEvent } from './analytics';
 import { resolveLogoutFlow } from './logoutFlow';
+import { describeAuthError, passwordScore } from './authMessages';
 import type { AuthSession, User } from './types';
 
 interface AuthCtx {
@@ -20,6 +21,22 @@ export function useAuth() {
   return ctx;
 }
 
+function readLastEmail(): string {
+  try {
+    return localStorage.getItem('el_last_email') ?? '';
+  } catch {
+    return '';
+  }
+}
+
+function rememberEmail(email: string): void {
+  try {
+    localStorage.setItem('el_last_email', email);
+  } catch {
+    /* ignore storage errors (private mode etc.) */
+  }
+}
+
 function devicePayload() {
   return {
     deviceId: getDeviceId(),
@@ -29,9 +46,54 @@ function devicePayload() {
   };
 }
 
+function PasswordField({
+  label,
+  value,
+  placeholder,
+  autoComplete,
+  onChange,
+  disabled,
+  autoFocus,
+}: {
+  label: string;
+  value: string;
+  placeholder: string;
+  autoComplete: string;
+  onChange: (value: string) => void;
+  disabled?: boolean;
+  autoFocus?: boolean;
+}) {
+  const [show, setShow] = useState(false);
+  return (
+    <label>
+      {label}
+      <div className="auth-input-wrap">
+        <input
+          type={show ? 'text' : 'password'}
+          autoComplete={autoComplete}
+          value={value}
+          placeholder={placeholder}
+          onChange={(e) => onChange(e.target.value)}
+          disabled={disabled}
+          autoFocus={autoFocus}
+        />
+        <button
+          type="button"
+          className="auth-eye"
+          onClick={() => setShow((s) => !s)}
+          aria-label={show ? '隐藏密码' : '显示密码'}
+          tabIndex={-1}
+        >
+          {show ? '隐藏' : '显示'}
+        </button>
+      </div>
+    </label>
+  );
+}
+
 function PasswordAuthScreen({ onAuthed }: { onAuthed: (s: { user: User; session: AuthSession }) => void }) {
   const [mode, setMode] = useState<AuthMode>('login');
-  const [email, setEmail] = useState('');
+  const [email, setEmail] = useState(readLastEmail);
   const [challengeId, setChallengeId] = useState('');
   const [masked, setMasked] = useState('');
   const [code, setCode] = useState('');
@@ -39,13 +101,23 @@ function PasswordAuthScreen({ onAuthed }: { onAuthed: (s: { user: User; session:
   const [passwordConfirm, setPasswordConfirm] = useState('');
   const [agreed, setAgreed] = useState(false);
   const [busy, setBusy] = useState(false);
+  const [resendIn, setResendIn] = useState(0);
   const [error, setError] = useState<string | null>(null);
   const isRiskRestricted = error?.includes('账号验证受限') ?? false;
   const waitingForCode = mode !== 'login' && !!challengeId;
+  const strength = passwordScore(password);
 
   useEffect(() => {
     trackEvent('auth_page_view', { entry: 'app_start', platform: 'web', is_offline: !navigator.onLine });
   }, []);
+
+  // Tick the resend cooldown down to zero. The boolean dependency keeps a single
+  // stable interval running until it reaches zero, then clears it.
+  useEffect(() => {
+    if (resendIn <= 0) return;
+    const timer = setInterval(() => setResendIn((s) => (s <= 1 ? 0 : s - 1)), 1000);
+    return () => clearInterval(timer);
+  }, [resendIn > 0]);
 
   function switchMode(next: AuthMode) {
     setMode(next);
@@ -55,6 +127,19 @@ function PasswordAuthScreen({ onAuthed }: { onAuthed: (s: { user: User; session:
     setPassword('');
     setPasswordConfirm('');
     setAgreed(false);
+    setResendIn(0);
+    setError(null);
+  }
+
+  // Return to the email-entry step. Keeps the email so the user can edit it, but
+  // clears the verification code and passwords (previously left stale).
+  function resetCodeStep() {
+    setChallengeId('');
+    setCode('');
+    setPassword('');
+    setPasswordConfirm('');
+    setAgreed(false);
+    setResendIn(0);
     setError(null);
   }
 
@@ -84,9 +169,10 @@ function PasswordAuthScreen({ onAuthed }: { onAuthed: (s: { user: User; session:
         password,
         device: devicePayload(),
       });
+      rememberEmail(email.trim());
       onAuthed({ user: result.user, session: result.session });
     } catch (err) {
-      setError((err as Error).message);
+      setError(describeAuthError(err));
     } finally {
       setBusy(false);
     }
@@ -103,8 +189,29 @@ function PasswordAuthScreen({ onAuthed }: { onAuthed: (s: { user: User; session:
           : await api.startPasswordReset({ email: email.trim() });
       setChallengeId(result.challengeId);
       setMasked(result.maskedIdentifier);
+      setResendIn(result.resendAfterSec);
     } catch (err) {
-      setError((err as Error).message);
+      setError(describeAuthError(err));
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function resendCode() {
+    if (busy || resendIn > 0) return;
+    setBusy(true);
+    setError(null);
+    try {
+      const result =
+        mode === 'register'
+          ? await api.startRegistration({ email: email.trim() })
+          : await api.startPasswordReset({ email: email.trim() });
+      setChallengeId(result.challengeId);
+      setMasked(result.maskedIdentifier);
+      setResendIn(result.resendAfterSec);
+      setCode('');
+    } catch (err) {
+      setError(describeAuthError(err));
     } finally {
       setBusy(false);
     }
@@ -131,9 +238,10 @@ function PasswordAuthScreen({ onAuthed }: { onAuthed: (s: { user: User; session:
               password,
               device: devicePayload(),
             });
+      rememberEmail(email.trim());
       onAuthed({ user: result.user, session: result.session });
     } catch (err) {
-      setError((err as Error).message);
+      setError(describeAuthError(err));
     } finally {
       setBusy(false);
     }
@@ -188,19 +296,19 @@ function PasswordAuthScreen({ onAuthed }: { onAuthed: (s: { user: User; session:
                 disabled={busy}
               />
             </label>
-            <label>
-              密码
-              <input
-                type="password"
-                autoComplete="current-password"
-                value={password}
-                placeholder="输入密码"
-                onChange={(e) => setPassword(e.target.value)}
-                disabled={busy}
-              />
-            </label>
+            <PasswordField
+              label="密码"
+              value={password}
+              placeholder="输入密码"
+              autoComplete="current-password"
+              onChange={setPassword}
+              disabled={busy}
+            />
             <button className="btn-primary" disabled={busy || !email.trim() || !password}>
               {busy ? '登录中...' : '登录'}
+            </button>
+            <button type="button" className="auth-link" onClick={() => switchMode('reset')} disabled={busy}>
+              忘记密码？
             </button>
           </form>
         ) : !waitingForCode ? (
@@ -229,34 +337,49 @@ function PasswordAuthScreen({ onAuthed }: { onAuthed: (s: { user: User; session:
                 autoFocus
                 inputMode="numeric"
                 autoComplete="one-time-code"
+                maxLength={6}
                 value={code}
                 placeholder="6 位验证码"
-                onChange={(e) => setCode(e.target.value)}
+                onChange={(e) => setCode(e.target.value.replace(/\D/g, '').slice(0, 6))}
                 disabled={busy}
               />
             </label>
-            <label>
-              {mode === 'register' ? '登录密码' : '新密码'}
-              <input
-                type="password"
-                autoComplete="new-password"
-                value={password}
-                placeholder="至少 8 个字符"
-                onChange={(e) => setPassword(e.target.value)}
-                disabled={busy}
-              />
-            </label>
-            <label>
-              确认密码
-              <input
-                type="password"
-                autoComplete="new-password"
-                value={passwordConfirm}
-                placeholder="再次输入密码"
-                onChange={(e) => setPasswordConfirm(e.target.value)}
-                disabled={busy}
-              />
-            </label>
+            <div className="auth-resend">
+              {resendIn > 0 ? (
+                <span className="auth-muted">{resendIn} 秒后可重新发送</span>
+              ) : (
+                <button type="button" className="auth-link" onClick={() => void resendCode()} disabled={busy}>
+                  重新发送验证码
+                </button>
+              )}
+              <button type="button" className="auth-link" onClick={resetCodeStep} disabled={busy}>
+                更换邮箱
+              </button>
+            </div>
+            <PasswordField
+              label={mode === 'register' ? '登录密码' : '新密码'}
+              value={password}
+              placeholder="至少 8 个字符"
+              autoComplete="new-password"
+              onChange={setPassword}
+              disabled={busy}
+            />
+            {password && (
+              <div className={`auth-strength level-${strength.level}`}>
+                <div className="auth-strength-bar">
+                  <span />
+                </div>
+                <span className="auth-strength-label">密码强度：{strength.label}</span>
+              </div>
+            )}
+            <PasswordField
+              label="确认密码"
+              value={passwordConfirm}
+              placeholder="再次输入密码"
+              autoComplete="new-password"
+              onChange={setPasswordConfirm}
+              disabled={busy}
+            />
             {mode === 'register' && (
               <label className="auth-check">
                 <input
@@ -273,14 +396,11 @@ function PasswordAuthScreen({ onAuthed }: { onAuthed: (s: { user: User; session:
             <button className="btn-primary" disabled={busy || code.trim().length < 6 || password.length < 8 || (mode === 'register' && !agreed)}>
               {busy ? '提交中...' : mode === 'register' ? '完成注册' : '重置并登录'}
             </button>
-            <button type="button" className="auth-link" onClick={() => setChallengeId('')} disabled={busy}>
-              更换邮箱
-            </button>
           </form>
         )}
 
         {error && (
-          <div className="banner banner-error">
+          <div className="banner banner-error" role="alert">
             {error}
             {isRiskRestricted && (
               <div className="auth-muted">
@@ -317,9 +437,9 @@ function AccountDeletingScreen({
       trackEvent('auth_delete_account_cancel', { entry: 'account_deleting_screen', success: true });
       onCancelled(result);
     } catch (err) {
-      const message = (err as Error).message;
-      trackEvent('auth_delete_account_cancel', { entry: 'account_deleting_screen', success: false, fail_reason: message });
-      setError(message);
+      const reason = (err as Error).message;
+      trackEvent('auth_delete_account_cancel', { entry: 'account_deleting_screen', success: false, fail_reason: reason });
+      setError(describeAuthError(err));
     } finally {
       setBusy(false);
     }
@@ -340,7 +460,11 @@ function AccountDeletingScreen({
             退出登录
           </button>
         </div>
-        {error && <div className="banner banner-error">{error}</div>}
+        {error && (
+          <div className="banner banner-error" role="alert">
+            {error}
+          </div>
+        )}
       </section>
     </main>
   );

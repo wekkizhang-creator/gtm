@@ -12,6 +12,7 @@
     "dev:server": "npm run dev -w server",
     "dev:client": "npm run dev -w client",
     "test:auth": "npm exec -w server -- tsx ../tests/auth.integration.ts",
+    "test:auth-messages": "npm exec -w server -- tsx ../tests/auth-messages-client.test.ts",
     "test:metadata": "npm exec -w server -- tsx ../tests/task-metadata.integration.ts",
     "test:checklist": "npm exec -w server -- tsx ../tests/checklist.integration.ts",
     "test:activity": "npm exec -w server -- tsx ../tests/activity.integration.ts",

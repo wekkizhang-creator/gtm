@@ -9,6 +9,7 @@ import {
   AppError,
   type AttachmentDTO,
   type DayPilotDashboardDTO,
+  type DayPilotDashboardRuleImpactDTO,
   type DayPilotDashboardRiskDTO,
   type DayPilotDashboardTaskDTO,
   type ListFolderDTO,
@@ -398,7 +399,31 @@ function mapDashboardTask(row: any): DayPilotDashboardTaskDTO {
     scheduleEnergyType: row.schedule_energy_type ?? null,
     scheduleTaskType: row.schedule_task_type ?? null,
     status: row.status ?? (row.completed ? 'done' : 'todo'),
+    dependencyTaskIds: parseIdList(row.dependency_task_ids),
+    blockingDependencies: [],
   };
+}
+
+function attachDashboardDependencyState(userId: string, tasks: DayPilotDashboardTaskDTO[]): DayPilotDashboardTaskDTO[] {
+  const dependencyIds = Array.from(new Set(tasks.flatMap((task) => task.dependencyTaskIds)));
+  if (!dependencyIds.length) return tasks;
+  const ph = dependencyIds.map(() => '?').join(',');
+  const rows = db
+    .prepare(`SELECT id, title, status, completed FROM tasks WHERE user_id = ? AND id IN (${ph}) AND deleted_at IS NULL`)
+    .all(userId, ...dependencyIds) as Array<{ id: string; title: string; status: TaskStatus | null; completed: number }>;
+  const byId = new Map(rows.map((row) => [row.id, row]));
+  return tasks.map((task) => ({
+    ...task,
+    blockingDependencies: task.dependencyTaskIds
+      .map((id) => byId.get(id))
+      .filter((row): row is NonNullable<typeof row> => !!row && !row.completed && row.status !== 'skipped')
+      .map((row) => ({
+        id: row.id,
+        title: row.title,
+        status: row.status ?? 'todo',
+        completed: !!row.completed,
+      })),
+  }));
 }
 
 function parseJsonArraySafe(raw: unknown): any[] {
@@ -2153,7 +2178,7 @@ export function getDayPilotDashboard(userId: string, input: { date?: string | nu
         SELECT 1 FROM tasks child
         WHERE child.user_id = t.user_id AND child.parent_id = t.id AND child.deleted_at IS NULL AND child.status <> 'skipped'
       )`;
-  const topTasks = (
+  const topTasks = attachDashboardDependencyState(userId, (
     db
       .prepare(
         `SELECT t.*, g.title goal_title
@@ -2170,8 +2195,8 @@ export function getDayPilotDashboard(userId: string, input: { date?: string | nu
          LIMIT 3`,
       )
       .all(userId, range.from, range.to) as any[]
-  ).map(mapDashboardTask);
-  const scheduledTasks = (
+  ).map(mapDashboardTask));
+  const scheduledTasks = attachDashboardDependencyState(userId, (
     db
       .prepare(
         `SELECT t.*, g.title goal_title
@@ -2185,8 +2210,8 @@ export function getDayPilotDashboard(userId: string, input: { date?: string | nu
          LIMIT 8`,
       )
       .all(userId, range.to, range.from) as any[]
-  ).map(mapDashboardTask);
-  const unscheduledTasks = (
+  ).map(mapDashboardTask));
+  const unscheduledTasks = attachDashboardDependencyState(userId, (
     db
       .prepare(
         `SELECT t.*, g.title goal_title
@@ -2203,7 +2228,7 @@ export function getDayPilotDashboard(userId: string, input: { date?: string | nu
          LIMIT 8`,
       )
       .all(userId, range.to) as any[]
-  ).map(mapDashboardTask);
+  ).map(mapDashboardTask));
 
   const ruleRows = db
     .prepare('SELECT id, name, priority, status FROM personal_schedule_rules WHERE user_id = ?')
@@ -2215,14 +2240,22 @@ export function getDayPilotDashboard(userId: string, input: { date?: string | nu
       .filter((rule): rule is NonNullable<typeof rule> => !!rule);
   const proposalRows = db
     .prepare(
-      `SELECT p.goal_id, g.title goal_title, p.conflicts_json
+      `SELECT p.id, p.goal_id, g.title goal_title, p.status, p.changes_json, p.conflicts_json, p.created_at
        FROM schedule_proposals p
        LEFT JOIN goals g ON g.user_id = p.user_id AND g.id = p.goal_id
        WHERE p.user_id = ?
        ORDER BY p.created_at DESC
        LIMIT 20`,
     )
-    .all(userId) as Array<{ goal_id: string | null; goal_title: string | null; conflicts_json: string }>;
+    .all(userId) as Array<{
+      id: string;
+      goal_id: string | null;
+      goal_title: string | null;
+      status: 'draft' | 'confirmed' | 'discarded' | 'undone';
+      changes_json: string;
+      conflicts_json: string;
+      created_at: string;
+    }>;
   const proposalConflicts: Array<{
     goalId: string | null;
     goalTitle: string | null;
@@ -2250,6 +2283,59 @@ export function getDayPilotDashboard(userId: string, input: { date?: string | nu
       });
     }
   }
+  const taskTitleCache = new Map<string, string | null>();
+  const taskTitle = (taskId: string | null | undefined): string | null => {
+    if (!taskId) return null;
+    if (!taskTitleCache.has(taskId)) {
+      const row = db.prepare('SELECT title FROM tasks WHERE user_id = ? AND id = ?').get(userId, taskId) as { title: string } | undefined;
+      taskTitleCache.set(taskId, row?.title ?? null);
+    }
+    return taskTitleCache.get(taskId) ?? null;
+  };
+  const ruleImpacts: DayPilotDashboardRuleImpactDTO[] = [];
+  const seenRuleImpacts = new Set<string>();
+  for (const proposal of proposalRows) {
+    for (const change of parseJsonArraySafe(proposal.changes_json)) {
+      if (!change || typeof change !== 'object') continue;
+      const row = change as {
+        changeKey?: string;
+        taskId?: string | null;
+        title?: string;
+        plannedStartAt?: string;
+        plannedEndAt?: string;
+        ruleIds?: unknown;
+        avoidedBlocks?: unknown;
+        reason?: string | null;
+      };
+      if (typeof row.plannedStartAt !== 'string' || typeof row.plannedEndAt !== 'string') continue;
+      if (row.plannedStartAt > range.to || row.plannedEndAt < range.from) continue;
+      const ruleIds = Array.from(new Set(Array.isArray(row.ruleIds) ? row.ruleIds.filter((id): id is string => typeof id === 'string' && !!id) : []));
+      const avoidedBlocks = Array.isArray(row.avoidedBlocks) ? row.avoidedBlocks.filter((block) => !!block && typeof block === 'object') : [];
+      const hasRuleAvoidance = avoidedBlocks.some((block) => (block as { source?: unknown }).source === 'rule');
+      if (!ruleIds.length && !hasRuleAvoidance) continue;
+      const key = `${proposal.id}:${row.changeKey ?? row.taskId ?? row.title ?? row.plannedStartAt}`;
+      if (seenRuleImpacts.has(key)) continue;
+      seenRuleImpacts.add(key);
+      ruleImpacts.push({
+        proposalId: proposal.id,
+        proposalStatus: proposal.status,
+        goalId: proposal.goal_id,
+        goalTitle: proposal.goal_title,
+        taskId: row.taskId ?? null,
+        taskTitle: taskTitle(row.taskId) ?? row.title ?? 'Untitled task',
+        plannedStartAt: row.plannedStartAt,
+        plannedEndAt: row.plannedEndAt,
+        ruleIds,
+        rules: relatedRules(ruleIds),
+        avoidedBlocks: avoidedBlocks as DayPilotDashboardRuleImpactDTO['avoidedBlocks'],
+        reason: typeof row.reason === 'string' ? row.reason : null,
+        createdAt: proposal.created_at,
+      });
+      if (ruleImpacts.length >= 8) break;
+    }
+    if (ruleImpacts.length >= 8) break;
+  }
+  ruleImpacts.sort((a, b) => (a.plannedStartAt === b.plannedStartAt ? b.createdAt.localeCompare(a.createdAt) : a.plannedStartAt.localeCompare(b.plannedStartAt)));
   const conflictForTask = (task: DayPilotDashboardTaskDTO) =>
     proposalConflicts.find((conflict) => conflict.taskId === task.id) ??
     proposalConflicts.find((conflict) => conflict.goalId === task.goalId && conflict.ruleIds.length > 0);
@@ -2310,15 +2396,25 @@ export function getDayPilotDashboard(userId: string, input: { date?: string | nu
       suggestions: conflict?.suggestions.length ? conflict.suggestions : ['把任务加入今日排期方案', '修改任务截止时间或预计耗时'],
     });
   }
-  const taskTitleCache = new Map<string, string | null>();
-  const taskTitle = (taskId: string | null | undefined): string | null => {
-    if (!taskId) return null;
-    if (!taskTitleCache.has(taskId)) {
-      const row = db.prepare('SELECT title FROM tasks WHERE user_id = ? AND id = ?').get(userId, taskId) as { title: string } | undefined;
-      taskTitleCache.set(taskId, row?.title ?? null);
-    }
-    return taskTitleCache.get(taskId) ?? null;
-  };
+  const dependencyRiskSeen = new Set<string>();
+  for (const task of [...topTasks, ...unscheduledTasks, ...scheduledTasks]) {
+    if (risks.length >= 10) break;
+    if (!task.blockingDependencies.length || dependencyRiskSeen.has(task.id)) continue;
+    dependencyRiskSeen.add(task.id);
+    const waitingOn = task.blockingDependencies.map((dependency) => dependency.title).join('、');
+    risks.push({
+      type: 'dependency_blocked',
+      severity: 'warning',
+      goalId: task.goalId,
+      goalTitle: task.goalTitle,
+      taskId: task.id,
+      taskTitle: task.title,
+      ruleIds: [],
+      rules: [],
+      message: `任务「${task.title}」正在等待前置任务：${waitingOn}。`,
+      suggestions: ['先完成前置任务', '调整任务依赖后重新生成排期方案'],
+    });
+  }
   for (const conflict of proposalConflicts) {
       if (risks.length >= 10) break;
       const rules = relatedRules(conflict.ruleIds);
@@ -2345,12 +2441,14 @@ export function getDayPilotDashboard(userId: string, input: { date?: string | nu
       scheduledTodayCount: scheduledTasks.length,
       unscheduledTaskCount: unscheduledTasks.length,
       riskCount: finalRisks.length,
+      ruleImpactCount: ruleImpacts.length,
     },
     topTasks,
     activeGoals,
     scheduledTasks,
     unscheduledTasks,
     risks: finalRisks,
+    ruleImpacts,
   };
 }
 
@@ -2691,12 +2789,39 @@ export function autoScheduleGoal(userId: string, goalId: string): { goal: GoalDT
   return { goal, scheduled: scheduledIds.map((id) => getTask(userId, id)!).filter(Boolean) };
 }
 
+function dependencyIdsForTask(userId: string, taskId: string, override?: { taskId: string; dependencyIds: string[] }): string[] {
+  if (override && override.taskId === taskId) return override.dependencyIds;
+  const row = db
+    .prepare('SELECT dependency_task_ids FROM tasks WHERE user_id = ? AND id = ? AND deleted_at IS NULL')
+    .get(userId, taskId) as { dependency_task_ids: string | null } | undefined;
+  return row ? parseIdList(row.dependency_task_ids) : [];
+}
+
+function assertDependencyAcyclic(userId: string, taskId: string, dependencyIds: string[]): void {
+  const seen = new Set<string>();
+  const override = { taskId, dependencyIds };
+  const visit = (currentId: string) => {
+    if (currentId === taskId) {
+      throw new AppError(409, 'dependency_cycle', 'task dependency would create a cycle');
+    }
+    if (seen.has(currentId)) return;
+    seen.add(currentId);
+    for (const dependencyId of dependencyIdsForTask(userId, currentId, override)) {
+      visit(dependencyId);
+    }
+  };
+  for (const dependencyId of dependencyIds) {
+    visit(dependencyId);
+  }
+}
+
 export function addTaskDependency(userId: string, taskId: string, dependencyId: string): TaskDTO {
   if (taskId === dependencyId) throw new AppError(400, 'invalid', 'task cannot depend on itself');
   ensureTask(userId, taskId);
   ensureTask(userId, dependencyId);
   const task = getTask(userId, taskId)!;
   const next = Array.from(new Set([...task.dependencyTaskIds, dependencyId]));
+  assertDependencyAcyclic(userId, taskId, next);
   updateTask(userId, taskId, { dependencyTaskIds: next });
   if (!task.dependencyTaskIds.includes(dependencyId)) {
     recordTaskActivity(userId, taskId, 'dependency_added', 'Added task dependency', { dependencyId });

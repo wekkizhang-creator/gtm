@@ -206,6 +206,30 @@ async function main() {
 
     const unauth = await req(base, '/api/tasks?view=today');
     assert(unauth.res.status === 401, `expected unauthenticated tasks to be 401, got ${unauth.res.status}`);
+
+    const savedSmtpHost = process.env.SMTP_HOST;
+    const savedSmtpFrom = process.env.SMTP_FROM;
+    try {
+      delete process.env.SMTP_HOST;
+      delete process.env.SMTP_FROM;
+      const missingSmtp = await req(base, '/api/auth/register/start', {
+        method: 'POST',
+        body: JSON.stringify({ email: 'missing-smtp@example.com' }),
+      });
+      assert(missingSmtp.res.status === 501, `missing SMTP should be 501, got ${missingSmtp.res.status}`);
+      assert(missingSmtp.body.error.code === 'auth_delivery_not_configured', 'missing SMTP should return auth_delivery_not_configured');
+      const db = new DatabaseSync(dbPath);
+      try {
+        const codeRows = db.prepare('SELECT COUNT(*) c FROM verification_codes').get() as { c: number };
+        assert(codeRows.c === 0, `failed SMTP delivery should delete verification code rows, got ${codeRows.c}`);
+      } finally {
+        db.close();
+      }
+    } finally {
+      if (savedSmtpHost) process.env.SMTP_HOST = savedSmtpHost;
+      if (savedSmtpFrom) process.env.SMTP_FROM = savedSmtpFrom;
+    }
+
     const phoneLogin = await req(base, '/api/auth/verification-codes', {
       method: 'POST',
       body: JSON.stringify({ type: 'phone', identifier: '+15550001111', purpose: 'login' }),

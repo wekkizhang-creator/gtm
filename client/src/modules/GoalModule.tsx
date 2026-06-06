@@ -93,6 +93,10 @@ function weekdayLabel(rule: PersonalScheduleRule): string {
     .join(' ');
 }
 
+function blockingDependencyText(task: { blockingDependencies: Array<{ title: string }> }): string {
+  return task.blockingDependencies.map((dependency) => dependency.title).join('、');
+}
+
 export default function GoalModule() {
   const { settings } = useSettings();
   const [goals, setGoals] = useState<Goal[]>([]);
@@ -686,7 +690,8 @@ export default function GoalModule() {
               <div>
                 <strong>今日驾驶舱</strong>
                 <span>
-                  {dashboard.date} · {dashboard.summary.activeGoalCount} 个进行中计划 · {dashboard.summary.riskCount} 条提醒
+                  {dashboard.date} · {dashboard.summary.activeGoalCount} 个进行中计划 · {dashboard.summary.riskCount} 条提醒 ·{' '}
+                  {dashboard.summary.ruleImpactCount} 个规则影响
                 </span>
               </div>
               <div>
@@ -709,6 +714,7 @@ export default function GoalModule() {
                         {task.goalTitle}
                         {task.dueDate ? ` · 截止 ${formatDateTime(task.dueDate)}` : ''}
                       </em>
+                      {task.blockingDependencies.length > 0 && <em>等待前置：{blockingDependencyText(task)}</em>}
                     </li>
                   ))}
                   {dashboard.topTasks.length === 0 && <li className="goal-empty">今天没有需要优先推进的任务</li>}
@@ -738,6 +744,7 @@ export default function GoalModule() {
                         {task.startDate ? formatDateTime(task.startDate) : ''}
                         {task.dueDate ? ` - ${new Date(task.dueDate).toLocaleTimeString()}` : ''}
                       </em>
+                      {task.blockingDependencies.length > 0 && <em>等待前置：{blockingDependencyText(task)}</em>}
                     </li>
                   ))}
                   {dashboard.scheduledTasks.length === 0 && <li className="goal-empty">今日还没有写入日历的计划任务</li>}
@@ -750,6 +757,7 @@ export default function GoalModule() {
                     <li key={task.id}>
                       <span>{task.title}</span>
                       <em>{task.goalTitle}</em>
+                      {task.blockingDependencies.length > 0 && <em>等待前置：{blockingDependencyText(task)}</em>}
                     </li>
                   ))}
                   {dashboard.risks.slice(0, 3).map((risk, index) => (
@@ -760,6 +768,26 @@ export default function GoalModule() {
                     </li>
                   ))}
                   {dashboard.unscheduledTasks.length === 0 && dashboard.risks.length === 0 && <li className="goal-empty">暂无待排期任务和风险提醒</li>}
+                </ul>
+              </div>
+              <div>
+                <small>规则影响</small>
+                <ul>
+                  {dashboard.ruleImpacts.slice(0, 4).map((impact) => (
+                    <li key={`${impact.proposalId}-${impact.taskId ?? impact.taskTitle}-${impact.plannedStartAt}`}>
+                      <span>{impact.taskTitle}</span>
+                      <em>
+                        {formatDateTime(impact.plannedStartAt)} - {new Date(impact.plannedEndAt).toLocaleTimeString()}
+                      </em>
+                      {impact.rules.length > 0 && <em>规则：{impact.rules.map((rule) => rule.name).join('、')}</em>}
+                      {impact.avoidedBlocks.length > 0 && (
+                        <em>
+                          避让：{impact.avoidedBlocks.map((block) => `${AVOIDED_SOURCE_LABELS[block.source]} ${block.title}`).join('、')}
+                        </em>
+                      )}
+                    </li>
+                  ))}
+                  {dashboard.ruleImpacts.length === 0 && <li className="goal-empty">暂无受规则影响的排期记录</li>}
                 </ul>
               </div>
             </div>

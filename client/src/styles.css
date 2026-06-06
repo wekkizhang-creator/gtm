@@ -221,6 +221,85 @@ a.auth-link {
   text-decoration: none;
 }
 
+.auth-input-wrap {
+  position: relative;
+  display: block;
+}
+
+.auth-input-wrap input {
+  width: 100%;
+  padding-right: 60px;
+}
+
+.auth-eye {
+  position: absolute;
+  top: 0;
+  right: 0;
+  height: 48px;
+  padding: 0 14px;
+  border: 0;
+  background: transparent;
+  color: var(--accent);
+  font: inherit;
+  font-size: 13px;
+  font-weight: 700;
+  cursor: pointer;
+}
+
+.auth-resend {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin-top: -6px;
+  font-size: 13px;
+}
+
+.auth-resend .auth-link {
+  justify-self: auto;
+}
+
+.auth-strength {
+  display: grid;
+  gap: 6px;
+  margin-top: -6px;
+}
+
+.auth-strength-bar {
+  height: 6px;
+  border-radius: 999px;
+  background: rgba(101, 113, 105, 0.18);
+  overflow: hidden;
+}
+
+.auth-strength-bar span {
+  display: block;
+  width: 0;
+  height: 100%;
+  border-radius: 999px;
+  transition: width 0.2s ease, background 0.2s ease;
+}
+
+.auth-strength.level-1 .auth-strength-bar span {
+  width: 33%;
+  background: var(--red);
+}
+
+.auth-strength.level-2 .auth-strength-bar span {
+  width: 66%;
+  background: #d8a23a;
+}
+
+.auth-strength.level-3 .auth-strength-bar span {
+  width: 100%;
+  background: var(--green);
+}
+
+.auth-strength-label {
+  font-size: 12px;
+  color: var(--muted);
+}
+
 .auth-loading {
   color: var(--muted);
 }
@@ -4441,7 +4520,7 @@ html[data-animations='off'] * {
 
 .goal-dashboard-grid {
   display: grid;
-  grid-template-columns: repeat(4, minmax(0, 1fr));
+  grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
   gap: 12px;
 }
 

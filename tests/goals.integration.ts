@@ -224,6 +224,18 @@ async function main() {
       body: JSON.stringify({ dependencyId: read.body.task.id }),
     });
     assert(depRestored.body.task.dependencyTaskIds.includes(read.body.task.id), 'dependency was not restored after removal');
+    const cycleDep = await req(base, `/api/tasks/${read.body.task.id}/dependencies`, {
+      method: 'POST',
+      cookie,
+      body: JSON.stringify({ dependencyId: build.body.task.id }),
+    });
+    assert(cycleDep.res.status === 409, `dependency cycle should be rejected with 409, got ${cycleDep.res.status}`);
+    assert(cycleDep.body.error.code === 'dependency_cycle', 'dependency cycle should return dependency_cycle');
+    const readAfterCycleAttempt = await req(base, `/api/tasks/${read.body.task.id}`, { cookie });
+    assert(
+      !readAfterCycleAttempt.body.task.dependencyTaskIds.includes(build.body.task.id),
+      'rejected dependency cycle should not be persisted',
+    );
 
     const lockedStart = new Date(start.getTime() + 6 * 3600_000).toISOString();
     const lockedEnd = new Date(start.getTime() + 7 * 3600_000).toISOString();
@@ -266,6 +278,32 @@ async function main() {
       cookie,
       body: JSON.stringify({ dueDate: urgentDue, isAllDay: true, priority: 3 }),
     });
+    const impactRule = await req(base, '/api/schedule-rules', {
+      method: 'POST',
+      cookie,
+      body: JSON.stringify({
+        name: 'High energy tasks first',
+        type: 'energy_preference',
+        status: 'enabled',
+        priority: 'preference',
+        condition: { energyType: 'high' },
+        action: { effect: 'prefer', period: 'morning' },
+        scope: {},
+      }),
+    });
+    assert(impactRule.res.status === 201, `dashboard impact rule create failed: ${impactRule.res.status} ${JSON.stringify(impactRule.body)}`);
+    const impactProposal = await req(base, `/api/goals/${goalId}/schedule-proposals`, {
+      method: 'POST',
+      cookie,
+      body: JSON.stringify({ from: start.toISOString(), to: urgentDue, taskIds: [urgentUnscheduled.body.task.id] }),
+    });
+    assert(impactProposal.res.status === 201, `dashboard impact proposal failed: ${impactProposal.res.status} ${JSON.stringify(impactProposal.body)}`);
+    assert(
+      impactProposal.body.proposal.changes.some(
+        (change: any) => change.taskId === urgentUnscheduled.body.task.id && change.ruleIds.includes(impactRule.body.rule.id),
+      ),
+      'dashboard setup proposal should persist a rule-affected change',
+    );
     const blockingRule = await req(base, '/api/schedule-rules', {
       method: 'POST',
       cookie,
@@ -298,6 +336,19 @@ async function main() {
       dashboard.body.dashboard.scheduledTasks.some((task: any) => task.id === read.body.task.id || task.id === build.body.task.id),
       'dashboard should include scheduled goal tasks',
     );
+    const blockedScheduledTask = dashboard.body.dashboard.scheduledTasks.find((task: any) => task.id === build.body.task.id);
+    assert(blockedScheduledTask, 'dashboard should include the scheduled dependent task');
+    assert(
+      blockedScheduledTask.dependencyTaskIds.includes(read.body.task.id) &&
+        blockedScheduledTask.blockingDependencies.some((dependency: any) => dependency.id === read.body.task.id && dependency.title === 'Read docs'),
+      'dashboard should expose unfinished blocking dependencies for scheduled tasks',
+    );
+    assert(
+      dashboard.body.dashboard.risks.some(
+        (risk: any) => risk.type === 'dependency_blocked' && risk.taskId === build.body.task.id && risk.message.includes('Read docs'),
+      ),
+      'dashboard should raise a dependency-blocked risk with the blocking task name',
+    );
     assert(
       dashboard.body.dashboard.unscheduledTasks.some((task: any) => task.id === urgentUnscheduled.body.task.id),
       'dashboard should include the urgent unscheduled task',
@@ -314,6 +365,14 @@ async function main() {
       (risk: any) => risk.ruleIds.includes(blockingRule.body.rule.id) && risk.rules.some((rule: any) => rule.name === 'Today is protected'),
     );
     assert(ruleRisk, 'dashboard should explain rule-linked risk with the related rule name');
+    const ruleImpact = dashboard.body.dashboard.ruleImpacts.find(
+      (impact: any) =>
+        impact.taskId === urgentUnscheduled.body.task.id &&
+        impact.ruleIds.includes(impactRule.body.rule.id) &&
+        impact.rules.some((rule: any) => rule.name === 'High energy tasks first'),
+    );
+    assert(ruleImpact, 'dashboard should expose rule-affected schedule changes with rule names');
+    assert(dashboard.body.dashboard.summary.ruleImpactCount >= 1, 'dashboard summary should count rule-affected schedules');
 
     const bobCookie = await login(base, 'goals-bob@example.com', smtp.messages);
     const bobGoals = await req(base, '/api/goals', { cookie: bobCookie });

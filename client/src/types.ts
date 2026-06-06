@@ -175,6 +175,8 @@ export interface DayPilotDashboardTask {
   scheduleEnergyType: ScheduleEnergyType | null;
   scheduleTaskType: string | null;
   status: TaskStatus;
+  dependencyTaskIds: string[];
+  blockingDependencies: Array<{ id: string; title: string; status: TaskStatus; completed: boolean }>;
 }
 
 export interface DayPilotDashboardGoal {
@@ -188,7 +190,7 @@ export interface DayPilotDashboardGoal {
 }
 
 export interface DayPilotDashboardRisk {
-  type: 'deadline_risk' | 'rule_conflict' | 'unscheduled_today';
+  type: 'deadline_risk' | 'rule_conflict' | 'unscheduled_today' | 'dependency_blocked';
   severity: 'info' | 'warning' | 'blocking';
   goalId: string | null;
   goalTitle: string | null;
@@ -200,6 +202,22 @@ export interface DayPilotDashboardRisk {
   suggestions: string[];
 }
 
+export interface DayPilotDashboardRuleImpact {
+  proposalId: string;
+  proposalStatus: 'draft' | 'confirmed' | 'discarded' | 'undone';
+  goalId: string | null;
+  goalTitle: string | null;
+  taskId: string | null;
+  taskTitle: string;
+  plannedStartAt: string;
+  plannedEndAt: string;
+  ruleIds: string[];
+  rules: Array<{ id: string; name: string; priority: ScheduleRulePriority; status: ScheduleRuleStatus }>;
+  avoidedBlocks: ScheduleProposalAvoidedBlock[];
+  reason: string | null;
+  createdAt: string;
+}
+
 export interface DayPilotDashboard {
   date: string;
   range: { from: string; to: string };
@@ -209,12 +227,14 @@ export interface DayPilotDashboard {
     scheduledTodayCount: number;
     unscheduledTaskCount: number;
     riskCount: number;
+    ruleImpactCount: number;
   };
   topTasks: DayPilotDashboardTask[];
   activeGoals: DayPilotDashboardGoal[];
   scheduledTasks: DayPilotDashboardTask[];
   unscheduledTasks: DayPilotDashboardTask[];
   risks: DayPilotDashboardRisk[];
+  ruleImpacts: DayPilotDashboardRuleImpact[];
 }
 
 export type ScheduleRuleType =

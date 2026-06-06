@@ -125,6 +125,8 @@ export interface DayPilotDashboardTaskDTO {
   scheduleEnergyType: ScheduleEnergyType | null;
   scheduleTaskType: string | null;
   status: TaskStatus;
+  dependencyTaskIds: string[];
+  blockingDependencies: Array<{ id: string; title: string; status: TaskStatus; completed: boolean }>;
 }
 
 export interface DayPilotDashboardGoalDTO {
@@ -138,7 +140,7 @@ export interface DayPilotDashboardGoalDTO {
 }
 
 export interface DayPilotDashboardRiskDTO {
-  type: 'deadline_risk' | 'rule_conflict' | 'unscheduled_today';
+  type: 'deadline_risk' | 'rule_conflict' | 'unscheduled_today' | 'dependency_blocked';
   severity: 'info' | 'warning' | 'blocking';
   goalId: string | null;
   goalTitle: string | null;
@@ -150,6 +152,22 @@ export interface DayPilotDashboardRiskDTO {
   suggestions: string[];
 }
 
+export interface DayPilotDashboardRuleImpactDTO {
+  proposalId: string;
+  proposalStatus: 'draft' | 'confirmed' | 'discarded' | 'undone';
+  goalId: string | null;
+  goalTitle: string | null;
+  taskId: string | null;
+  taskTitle: string;
+  plannedStartAt: string;
+  plannedEndAt: string;
+  ruleIds: string[];
+  rules: Array<{ id: string; name: string; priority: ScheduleRulePriority; status: ScheduleRuleStatus }>;
+  avoidedBlocks: ScheduleProposalAvoidedBlockDTO[];
+  reason: string | null;
+  createdAt: string;
+}
+
 export interface DayPilotDashboardDTO {
   date: string;
   range: { from: string; to: string };
@@ -159,12 +177,14 @@ export interface DayPilotDashboardDTO {
     scheduledTodayCount: number;
     unscheduledTaskCount: number;
     riskCount: number;
+    ruleImpactCount: number;
   };
   topTasks: DayPilotDashboardTaskDTO[];
   activeGoals: DayPilotDashboardGoalDTO[];
   scheduledTasks: DayPilotDashboardTaskDTO[];
   unscheduledTasks: DayPilotDashboardTaskDTO[];
   risks: DayPilotDashboardRiskDTO[];
+  ruleImpacts: DayPilotDashboardRuleImpactDTO[];
 }
 
 export type ScheduleRuleType =
