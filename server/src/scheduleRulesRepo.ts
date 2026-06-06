@@ -277,6 +277,49 @@ function orderByDependencies(rows: TaskRow[]): TaskRow[] {
   return ordered;
 }
 
+function isDependencySatisfied(row: { completed?: unknown; status?: unknown } | undefined): boolean {
+  if (!row) return false;
+  return Number(row.completed) === 1 || row.status === 'done' || row.status === 'skipped';
+}
+
+function blockRowsWithExternalDependencies(
+  userId: string,
+  rows: TaskRow[],
+  conflicts: ScheduleProposalConflictDTO[],
+): TaskRow[] {
+  const candidateIds = new Set(rows.map((row) => row.id as string));
+  const externalDependencyIds = Array.from(
+    new Set(rows.flatMap((row) => parseIdList(row.dependency_task_ids)).filter((id) => !candidateIds.has(id))),
+  );
+  if (!externalDependencyIds.length) return rows;
+
+  const placeholders = externalDependencyIds.map(() => '?').join(',');
+  const dependencyRows = db
+    .prepare(`SELECT id, title, status, completed FROM tasks WHERE user_id = ? AND deleted_at IS NULL AND id IN (${placeholders})`)
+    .all(userId, ...externalDependencyIds) as Array<{ id: string; title: string; status: string | null; completed: number }>;
+  const dependencies = new Map(dependencyRows.map((row) => [row.id, row]));
+
+  return rows.filter((row) => {
+    const blockers = parseIdList(row.dependency_task_ids)
+      .filter((id) => !candidateIds.has(id))
+      .map((id) => dependencies.get(id) ?? { id, title: 'missing prerequisite task', status: null, completed: 0 })
+      .filter((dependency) => !isDependencySatisfied(dependency));
+    if (!blockers.length) return true;
+
+    conflicts.push({
+      type: 'dependency_blocked',
+      severity: 'blocking',
+      taskId: row.id,
+      ruleIds: [],
+      message: `Task "${row.title}" cannot be scheduled because prerequisite task(s) are unfinished: ${blockers
+        .map((dependency) => dependency.title)
+        .join(', ')}.`,
+      suggestions: ['Complete the prerequisite task first.', 'Include prerequisite tasks in the proposal.', 'Remove or adjust the dependency before scheduling.'],
+    });
+    return false;
+  });
+}
+
 function parseRange(goal: GoalDTO, input: Record<string, unknown>): { from: string; to: string; fromDate: Date; toDate: Date } {
   const fallbackFrom = goal.startAt ?? nowISO();
   const fallbackEnd = new Date(Date.parse(fallbackFrom) + 7 * 24 * 3600_000);
@@ -940,6 +983,9 @@ export function previewScheduleRule(userId: string, input: Record<string, unknow
 export function createScheduleProposal(userId: string, goalId: string, input: Record<string, unknown> = {}): ScheduleProposalDTO {
   const goal = getGoal(userId, goalId);
   if (!goal) throw new AppError(404, 'not_found', 'goal not found');
+  if (goal.status !== 'active' && goal.status !== 'not_started') {
+    throw new AppError(409, 'goal_not_schedulable', 'only active or not-started goals can generate schedule proposals');
+  }
   const mode: ProposalMode = input.mode === 'reschedule' ? 'reschedule' : 'initial_schedule';
   const range = parseRange(goal, input);
   const ruleList = listScheduleRules(userId).filter((rule) => rule.status === 'enabled' && scopedToGoal(rule, goalId));
@@ -971,6 +1017,7 @@ export function createScheduleProposal(userId: string, goalId: string, input: Re
     const allowed = new Set(taskIds);
     rows = rows.filter((row) => allowed.has(row.id));
   }
+  rows = blockRowsWithExternalDependencies(userId, rows, conflicts);
   if (mode === 'reschedule') {
     const selected = taskIds.length ? new Set(taskIds) : null;
     rows = rows.filter((row) => {
@@ -1009,13 +1056,35 @@ export function createScheduleProposal(userId: string, goalId: string, input: Re
   const explanations: ScheduleProposalExplanationDTO[] = [];
   let cursor = new Date(range.fromDate);
   const enabledRuleIds = ruleList.map((rule) => rule.id);
+  const candidateIds = new Set(ordered.map((row) => row.id as string));
+  const scheduledTaskIds = new Set<string>();
   for (const row of ordered) {
+    const unfinishedProposalDependencies = parseIdList(row.dependency_task_ids).filter((id) => {
+      if (!candidateIds.has(id) || scheduledTaskIds.has(id)) return false;
+      const dependencyRow = ordered.find((candidate) => candidate.id === id);
+      return !isDependencySatisfied(dependencyRow);
+    });
+    if (unfinishedProposalDependencies.length) {
+      const names = unfinishedProposalDependencies
+        .map((id) => ordered.find((candidate) => candidate.id === id)?.title)
+        .filter((title): title is string => typeof title === 'string' && title.length > 0);
+      conflicts.push({
+        type: 'dependency_blocked',
+        severity: 'blocking',
+        taskId: row.id,
+        ruleIds: [],
+        message: `Task "${row.title}" cannot be scheduled because prerequisite task(s) were not fully scheduled first: ${names.join(', ')}.`,
+        suggestions: ['Confirm or fix the prerequisite task schedule first.', 'Extend the scheduling range.', 'Remove or adjust the dependency before scheduling.'],
+      });
+      continue;
+    }
     const estimatedMinutes = Math.max(15, Number(row.estimated_minutes) || 60);
     const minScheduleMinutes = Math.max(15, Number(row.min_schedule_minutes) || 15);
     const durations = splitDurations(estimatedMinutes, minScheduleMinutes, !!row.is_splittable);
     const isSplit = durations.length > 1;
     const energyRuleIds = matchingEnergyRuleIds(row, ruleList);
     const ruleIds = Array.from(new Set([...enabledRuleIds, ...energyRuleIds]));
+    let scheduledSegments = 0;
     for (let index = 0; index < durations.length; index += 1) {
       const duration = durations[index];
       const slot = findSlot(cursor, duration, range.toDate, window, busySlots);
@@ -1073,7 +1142,9 @@ export function createScheduleProposal(userId: string, goalId: string, input: Re
       });
       busySlots.push({ start: slot.start, end: addMinutes(slot.end, bufferMinutes), source: 'scheduled', label: isSplit ? `${row.title} (${index + 1}/${durations.length})` : row.title });
       cursor = addMinutes(slot.end, bufferMinutes);
+      scheduledSegments += 1;
     }
+    if (scheduledSegments === durations.length) scheduledTaskIds.add(row.id);
   }
 
   if (ordered.length === 0 && conflicts.length === 0) {

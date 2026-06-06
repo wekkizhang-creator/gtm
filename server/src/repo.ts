@@ -14,6 +14,7 @@ import {
   type DayPilotDashboardTaskDTO,
   type ListFolderDTO,
   type GoalDTO,
+  type GoalTaskScheduleInsightDTO,
   type ListDTO,
   type NotificationDTO,
   type NotificationPermissionDTO,
@@ -215,8 +216,8 @@ function assertTaskStatus(status: unknown): asserts status is TaskStatus {
 }
 
 function assertGoalStatus(status: unknown): void {
-  if (status != null && !['not_started', 'active', 'completed', 'archived'].includes(String(status))) {
-    throw new AppError(400, 'invalid', 'goal status must be not_started, active, completed or archived');
+  if (status != null && !['not_started', 'active', 'paused', 'completed', 'archived'].includes(String(status))) {
+    throw new AppError(400, 'invalid', 'goal status must be not_started, active, paused, completed or archived');
   }
 }
 
@@ -2626,13 +2627,86 @@ export function deleteGoal(userId: string, id: string): boolean {
   return info.changes > 0;
 }
 
-export function getGoalTree(userId: string, id: string): { goal: GoalDTO; tasks: TaskDTO[] } | null {
+function listGoalTaskScheduleInsights(userId: string, goalId: string): GoalTaskScheduleInsightDTO[] {
+  const ruleRows = db
+    .prepare('SELECT id, name, priority, status FROM personal_schedule_rules WHERE user_id = ?')
+    .all(userId) as Array<{ id: string; name: string; priority: 'hard' | 'normal' | 'preference'; status: 'enabled' | 'disabled' }>;
+  const ruleMap = new Map(ruleRows.map((rule) => [rule.id, rule]));
+  const relatedRules = (ruleIds: string[]) =>
+    Array.from(new Set(ruleIds.filter((id) => typeof id === 'string' && id)))
+      .map((id) => ruleMap.get(id))
+      .filter((rule): rule is NonNullable<typeof rule> => !!rule);
+  const proposalRows = db
+    .prepare(
+      `SELECT id, status, changes_json, explanations_json, created_at
+       FROM schedule_proposals
+       WHERE user_id = ? AND goal_id = ?
+       ORDER BY created_at DESC
+       LIMIT 50`,
+    )
+    .all(userId, goalId) as Array<{
+      id: string;
+      status: 'draft' | 'confirmed' | 'discarded' | 'undone';
+      changes_json: string;
+      explanations_json: string;
+      created_at: string;
+    }>;
+  const insights = new Map<string, GoalTaskScheduleInsightDTO>();
+  for (const proposal of proposalRows) {
+    const explanations = new Map<string, { message: string; ruleIds: string[] }>();
+    for (const explanation of parseJsonArraySafe(proposal.explanations_json)) {
+      if (!explanation || typeof explanation !== 'object') continue;
+      const row = explanation as { taskId?: unknown; message?: unknown; ruleIds?: unknown };
+      if (typeof row.taskId !== 'string') continue;
+      explanations.set(row.taskId, {
+        message: typeof row.message === 'string' ? row.message : '',
+        ruleIds: Array.isArray(row.ruleIds) ? row.ruleIds.filter((ruleId): ruleId is string => typeof ruleId === 'string') : [],
+      });
+    }
+    for (const change of parseJsonArraySafe(proposal.changes_json)) {
+      if (!change || typeof change !== 'object') continue;
+      const row = change as {
+        taskId?: unknown;
+        plannedStartAt?: unknown;
+        plannedEndAt?: unknown;
+        reason?: unknown;
+        ruleIds?: unknown;
+        avoidedBlocks?: unknown;
+      };
+      if (typeof row.taskId !== 'string' || insights.has(row.taskId)) continue;
+      if (typeof row.plannedStartAt !== 'string' || typeof row.plannedEndAt !== 'string') continue;
+      const explanation = explanations.get(row.taskId);
+      const ruleIds = Array.from(
+        new Set([
+          ...(Array.isArray(row.ruleIds) ? row.ruleIds.filter((ruleId): ruleId is string => typeof ruleId === 'string' && !!ruleId) : []),
+          ...(explanation?.ruleIds ?? []),
+        ]),
+      );
+      insights.set(row.taskId, {
+        taskId: row.taskId,
+        proposalId: proposal.id,
+        proposalStatus: proposal.status,
+        plannedStartAt: row.plannedStartAt,
+        plannedEndAt: row.plannedEndAt,
+        reason: typeof row.reason === 'string' ? row.reason : null,
+        explanation: explanation?.message || null,
+        ruleIds,
+        rules: relatedRules(ruleIds),
+        avoidedBlocks: Array.isArray(row.avoidedBlocks) ? (row.avoidedBlocks.filter((block) => !!block && typeof block === 'object') as GoalTaskScheduleInsightDTO['avoidedBlocks']) : [],
+        createdAt: proposal.created_at,
+      });
+    }
+  }
+  return [...insights.values()];
+}
+
+export function getGoalTree(userId: string, id: string): { goal: GoalDTO; tasks: TaskDTO[]; scheduleInsights: GoalTaskScheduleInsightDTO[] } | null {
   const goal = getGoal(userId, id);
   if (!goal) return null;
   const rows = db
     .prepare('SELECT * FROM tasks WHERE user_id = ? AND goal_id = ? AND deleted_at IS NULL ORDER BY level ASC, sort_order ASC, created_at ASC')
     .all(userId, id) as any[];
-  return { goal, tasks: hydrateTasks(userId, rows) };
+  return { goal, tasks: hydrateTasks(userId, rows), scheduleInsights: listGoalTaskScheduleInsights(userId, id) };
 }
 
 export function createGoalTask(
@@ -2739,6 +2813,9 @@ function orderByDependencies(rows: any[]): any[] {
 export function autoScheduleGoal(userId: string, goalId: string): { goal: GoalDTO; scheduled: TaskDTO[] } {
   const goal = getGoal(userId, goalId);
   if (!goal) throw new AppError(404, 'not_found', 'goal not found');
+  if (goal.status !== 'active' && goal.status !== 'not_started') {
+    throw new AppError(409, 'goal_not_schedulable', 'only active or not-started goals can be automatically scheduled');
+  }
   const rows = db
     .prepare(
       `SELECT t.*

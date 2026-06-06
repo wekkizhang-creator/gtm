@@ -1,6 +1,9 @@
 import { useCallback, useEffect, useMemo, useState, type FormEvent } from 'react';
 import { api } from '../api/client';
 import { aiConfigurationIssue } from '../aiGuide';
+import { buildGoalDetailSummary } from '../goalDetailSummary';
+import { GOAL_STATUS_LABELS, goalCanAutoSchedule, goalStatusActions } from '../goalStatus';
+import { buildGoalTaskCreateInput, buildGoalTaskEditPatch } from '../goalTaskForm';
 import { useSettings } from '../settings';
 import { dateInputToISO, isoToDateInput } from '../util';
 import type {
@@ -9,7 +12,9 @@ import type {
   AIScheduleRuleParseResult,
   DayPilotDashboard,
   Goal,
+  GoalTaskScheduleInsight,
   PersonalScheduleRule,
+  Priority,
   ScheduleEnergyType,
   ScheduleProposal,
   ScheduleRuleDraft,
@@ -102,8 +107,10 @@ export default function GoalModule() {
   const [goals, setGoals] = useState<Goal[]>([]);
   const [selectedId, setSelectedId] = useState('');
   const [tasks, setTasks] = useState<Task[]>([]);
+  const [scheduleInsights, setScheduleInsights] = useState<GoalTaskScheduleInsight[]>([]);
   const [dashboard, setDashboard] = useState<DayPilotDashboard | null>(null);
   const [scheduleRules, setScheduleRules] = useState<PersonalScheduleRule[]>([]);
+  const [deletedScheduleRules, setDeletedScheduleRules] = useState<PersonalScheduleRule[]>([]);
   const [scheduleRuleTemplates, setScheduleRuleTemplates] = useState<ScheduleRuleTemplate[]>([]);
   const [proposal, setProposal] = useState<ScheduleProposal | null>(null);
   const [selectedProposalChangeKeys, setSelectedProposalChangeKeys] = useState<Set<string>>(new Set());
@@ -111,17 +118,36 @@ export default function GoalModule() {
   const [ruleConflicts, setRuleConflicts] = useState<ScheduleRuleConflictList | null>(null);
   const [ruleDetails, setRuleDetails] = useState<ScheduleRuleDetails | null>(null);
   const [rulePreview, setRulePreview] = useState<ScheduleRulePreview | null>(null);
+  const [deletePreviewRule, setDeletePreviewRule] = useState<PersonalScheduleRule | null>(null);
+  const [deletePreview, setDeletePreview] = useState<ScheduleRulePreview | null>(null);
   const [proposalBusy, setProposalBusy] = useState(false);
   const [ruleConflictBusy, setRuleConflictBusy] = useState(false);
   const [ruleDetailsBusy, setRuleDetailsBusy] = useState<string | null>(null);
   const [rulePreviewBusy, setRulePreviewBusy] = useState(false);
+  const [deletePreviewBusy, setDeletePreviewBusy] = useState<string | null>(null);
   const [title, setTitle] = useState('');
+  const [goalDescription, setGoalDescription] = useState('');
   const [deadline, setDeadline] = useState('');
   const [initialTasksText, setInitialTasksText] = useState('');
+  const [editingGoal, setEditingGoal] = useState(false);
+  const [goalEditTitle, setGoalEditTitle] = useState('');
+  const [goalEditDescription, setGoalEditDescription] = useState('');
+  const [goalEditDeadline, setGoalEditDeadline] = useState('');
   const [taskTitle, setTaskTitle] = useState('');
   const [taskEstimate, setTaskEstimate] = useState('60');
   const [taskEnergy, setTaskEnergy] = useState<'' | ScheduleEnergyType>('');
   const [taskType, setTaskType] = useState('');
+  const [taskSplittable, setTaskSplittable] = useState(false);
+  const [taskMinScheduleMinutes, setTaskMinScheduleMinutes] = useState('60');
+  const [editingTaskId, setEditingTaskId] = useState<string | null>(null);
+  const [taskEditTitle, setTaskEditTitle] = useState('');
+  const [taskEditPriority, setTaskEditPriority] = useState<Priority>(0);
+  const [taskEditDueDate, setTaskEditDueDate] = useState('');
+  const [taskEditEstimate, setTaskEditEstimate] = useState('60');
+  const [taskEditEnergy, setTaskEditEnergy] = useState<'' | ScheduleEnergyType>('');
+  const [taskEditType, setTaskEditType] = useState('');
+  const [taskEditSplittable, setTaskEditSplittable] = useState(false);
+  const [taskEditMinScheduleMinutes, setTaskEditMinScheduleMinutes] = useState('60');
   const [parentId, setParentId] = useState('');
   const [ruleName, setRuleName] = useState('');
   const [editingRuleId, setEditingRuleId] = useState<string | null>(null);
@@ -141,10 +167,20 @@ export default function GoalModule() {
   const [aiSchedule, setAiSchedule] = useState<AIScheduleResult | null>(null);
   const [structureBusy, setStructureBusy] = useState(false);
   const [aiBusy, setAiBusy] = useState(false);
+  const [deleteGoalConfirm, setDeleteGoalConfirm] = useState(false);
 
   const selected = goals.find((g) => g.id === selectedId) ?? null;
   const ruleNames = useMemo(() => new Map(scheduleRules.map((rule) => [rule.id, rule.name])), [scheduleRules]);
   const taskById = useMemo(() => new Map(tasks.map((task) => [task.id, task])), [tasks]);
+  const scheduleInsightByTaskId = useMemo(() => new Map(scheduleInsights.map((insight) => [insight.taskId, insight])), [scheduleInsights]);
+  const goalDetailSummary = useMemo(() => (selected ? buildGoalDetailSummary(selected, tasks) : null), [selected, tasks]);
+
+  useEffect(() => {
+    setEditingGoal(false);
+    setGoalEditTitle(selected?.title ?? '');
+    setGoalEditDescription(selected?.description ?? '');
+    setGoalEditDeadline(selected?.deadlineAt ? isoToDateInput(selected.deadlineAt) : '');
+  }, [selected?.id, selected?.title, selected?.description, selected?.deadlineAt]);
 
   function setProposalWithSelection(next: ScheduleProposal | null) {
     setProposal(next);
@@ -175,15 +211,22 @@ export default function GoalModule() {
   const loadTree = useCallback(async () => {
     if (!selectedId) {
       setTasks([]);
+      setScheduleInsights([]);
       return;
     }
     const tree = await api.getGoalTree(selectedId);
     setTasks(tree.tasks);
+    setScheduleInsights(tree.scheduleInsights ?? []);
   }, [selectedId]);
 
   const loadRules = useCallback(async () => {
-    const [rules, templates] = await Promise.all([api.listScheduleRules(), api.listScheduleRuleTemplates()]);
+    const [rules, allRules, templates] = await Promise.all([
+      api.listScheduleRules(),
+      api.listScheduleRules({ includeDeleted: true }),
+      api.listScheduleRuleTemplates(),
+    ]);
     setScheduleRules(rules);
+    setDeletedScheduleRules(allRules.filter((rule) => rule.deletedAt));
     setScheduleRuleTemplates(templates);
   }, []);
 
@@ -209,6 +252,10 @@ export default function GoalModule() {
     setSelectedProposalChangeKeys(new Set());
     setRuleConflicts(null);
     setRuleDetails(null);
+    setDeletePreviewRule(null);
+    setDeletePreview(null);
+    setDeleteGoalConfirm(false);
+    setEditingTaskId(null);
   }, [selectedId]);
 
   async function mutate(fn: () => Promise<unknown>) {
@@ -228,14 +275,31 @@ export default function GoalModule() {
     await mutate(async () => {
       const goal = await api.createGoal({
         title: name,
+        description: goalDescription.trim() || null,
         deadlineAt: dateInputToISO(deadline),
         availableTimeRule: JSON.stringify({ startHour: 9, endHour: 18 }),
         tasksText: initialTasksText,
       });
       setSelectedId(goal.id);
       setTitle('');
+      setGoalDescription('');
       setDeadline('');
       setInitialTasksText('');
+    });
+  }
+
+  async function saveGoalEdit(e: FormEvent) {
+    e.preventDefault();
+    if (!selected) return;
+    const nextTitle = goalEditTitle.trim();
+    if (!nextTitle) return;
+    await mutate(async () => {
+      await api.updateGoal(selected.id, {
+        title: nextTitle,
+        description: goalEditDescription.trim() || null,
+        deadlineAt: dateInputToISO(goalEditDeadline),
+      });
+      setEditingGoal(false);
     });
   }
 
@@ -244,16 +308,77 @@ export default function GoalModule() {
     const name = taskTitle.trim();
     if (!selectedId || !name) return;
     await mutate(async () => {
-      await api.createGoalTask(selectedId, {
-        title: name,
-        parentId: parentId || null,
-        estimatedMinutes: taskEstimate ? Number(taskEstimate) : null,
-        scheduleEnergyType: taskEnergy || null,
-        scheduleTaskType: taskType.trim() || null,
-      });
+      await api.createGoalTask(
+        selectedId,
+        buildGoalTaskCreateInput({
+          title: name,
+          parentId,
+          estimatedMinutesText: taskEstimate,
+          scheduleEnergyType: taskEnergy,
+          scheduleTaskType: taskType,
+          isSplittable: taskSplittable,
+          minScheduleMinutesText: taskMinScheduleMinutes,
+        }),
+      );
       setTaskTitle('');
       setTaskType('');
+      setTaskSplittable(false);
+      setTaskMinScheduleMinutes('60');
       setParentId('');
+    });
+  }
+
+  function beginTaskEdit(task: Task) {
+    setEditingTaskId(task.id);
+    setTaskEditTitle(task.title);
+    setTaskEditPriority(task.priority);
+    setTaskEditDueDate(isoToDateInput(task.dueDate));
+    setTaskEditEstimate(String(task.estimatedMinutes ?? 60));
+    setTaskEditEnergy(task.scheduleEnergyType ?? '');
+    setTaskEditType(task.scheduleTaskType ?? '');
+    setTaskEditSplittable(task.isSplittable);
+    setTaskEditMinScheduleMinutes(String(task.minScheduleMinutes ?? 60));
+  }
+
+  async function saveTaskEdit(e: FormEvent, task: Task) {
+    e.preventDefault();
+    if (!taskEditTitle.trim()) return;
+    await mutate(async () => {
+      await api.updateTask(
+        task.id,
+        buildGoalTaskEditPatch({
+          title: taskEditTitle,
+          priority: taskEditPriority,
+          dueDateText: taskEditDueDate,
+          estimatedMinutesText: taskEditEstimate,
+          scheduleEnergyType: taskEditEnergy,
+          scheduleTaskType: taskEditType,
+          isSplittable: taskEditSplittable,
+          minScheduleMinutesText: taskEditMinScheduleMinutes,
+        }),
+      );
+      setEditingTaskId(null);
+    });
+  }
+
+  async function setGoalStatus(status: Goal['status']) {
+    if (!selected) return;
+    await mutate(async () => {
+      await api.updateGoal(selected.id, { status });
+      setProposalWithSelection(null);
+      setAiSchedule(null);
+    });
+  }
+
+  async function deleteSelectedGoal() {
+    if (!selected) return;
+    const id = selected.id;
+    await mutate(async () => {
+      await api.deleteGoal(id);
+      setSelectedId((cur) => (cur === id ? '' : cur));
+      setProposalWithSelection(null);
+      setAiSchedule(null);
+      setDeleteGoalConfirm(false);
     });
   }
 
@@ -364,6 +489,61 @@ export default function GoalModule() {
     }
   }
 
+  function nextSevenDaysRange() {
+    const from = new Date();
+    const to = new Date(from.getTime() + 7 * 24 * 3600_000);
+    return { from: from.toISOString(), to: to.toISOString() };
+  }
+
+  async function previewRuleDelete(rule: PersonalScheduleRule) {
+    const range = nextSevenDaysRange();
+    setDeletePreviewBusy(rule.id);
+    try {
+      const preview = await api.previewScheduleRule({
+        id: rule.id,
+        name: rule.name,
+        description: rule.description,
+        type: rule.type,
+        priority: rule.priority,
+        status: rule.status,
+        condition: rule.condition,
+        action: rule.action,
+        scope: rule.scope,
+        from: range.from,
+        to: range.to,
+      });
+      setDeletePreviewRule(rule);
+      setDeletePreview(preview);
+      setError(null);
+    } catch (e) {
+      setError((e as Error).message);
+    } finally {
+      setDeletePreviewBusy(null);
+    }
+  }
+
+  async function confirmRuleDelete() {
+    if (!deletePreviewRule) return;
+    const ruleId = deletePreviewRule.id;
+    await mutate(async () => {
+      await api.deleteScheduleRule(ruleId);
+      setDeletePreviewRule(null);
+      setDeletePreview(null);
+      if (editingRuleId === ruleId) setEditingRuleId(null);
+    });
+  }
+
+  function cancelRuleDelete() {
+    setDeletePreviewRule(null);
+    setDeletePreview(null);
+  }
+
+  async function restoreRule(rule: PersonalScheduleRule) {
+    await mutate(async () => {
+      await api.restoreScheduleRule(rule.id);
+    });
+  }
+
   async function showRuleDetails(rule: PersonalScheduleRule) {
     setRuleDetailsBusy(rule.id);
     try {
@@ -433,6 +613,10 @@ export default function GoalModule() {
 
   async function generateProposal() {
     if (!selected) return;
+    if (!goalCanAutoSchedule(selected.status)) {
+      setError('当前计划已暂停、完成或归档，恢复为进行中后才能生成排期方案。');
+      return;
+    }
     setProposalBusy(true);
     try {
       const next = await api.createScheduleProposal(selected.id, {
@@ -450,6 +634,10 @@ export default function GoalModule() {
 
   async function generateRescheduleProposal() {
     if (!selected) return;
+    if (!goalCanAutoSchedule(selected.status)) {
+      setError('当前计划已暂停、完成或归档，恢复为进行中后才能生成重排建议。');
+      return;
+    }
     setProposalBusy(true);
     try {
       const next = await api.createScheduleProposal(selected.id, {
@@ -640,6 +828,12 @@ export default function GoalModule() {
           <input placeholder="新目标" value={title} onChange={(e) => setTitle(e.target.value)} />
           <input type="date" value={deadline} onChange={(e) => setDeadline(e.target.value)} />
           <textarea
+            rows={3}
+            placeholder="目标描述"
+            value={goalDescription}
+            onChange={(e) => setGoalDescription(e.target.value)}
+          />
+          <textarea
             rows={5}
             placeholder="按行输入任务"
             value={initialTasksText}
@@ -653,7 +847,9 @@ export default function GoalModule() {
           {goals.map((goal) => (
             <button key={goal.id} className={`goal-item${goal.id === selectedId ? ' active' : ''}`} onClick={() => setSelectedId(goal.id)}>
               <span>{goal.title}</span>
-              <small>{goal.deadlineAt ? isoToDateInput(goal.deadlineAt) : '无截止'}</small>
+              <small>
+                {GOAL_STATUS_LABELS[goal.status]} · {goal.deadlineAt ? isoToDateInput(goal.deadlineAt) : '无截止'}
+              </small>
             </button>
           ))}
           {goals.length === 0 && <div className="goal-empty">还没有目标</div>}
@@ -664,14 +860,19 @@ export default function GoalModule() {
         <header className="goal-head">
           <div>
             <h1>{selected?.title ?? '选择或创建目标'}</h1>
-            {selected?.deadlineAt && <p>截止 {isoToDateInput(selected.deadlineAt)}</p>}
+            {selected && (
+              <p>
+                {GOAL_STATUS_LABELS[selected.status]}
+                {selected.deadlineAt ? ` · 截止 ${isoToDateInput(selected.deadlineAt)}` : ' · 无截止'}
+              </p>
+            )}
           </div>
           {selected && (
             <div className="goal-actions">
-              <button className="goal-primary" onClick={() => void generateProposal()} disabled={proposalBusy}>
+              <button className="goal-primary" onClick={() => void generateProposal()} disabled={proposalBusy || !goalCanAutoSchedule(selected.status)}>
                 {proposalBusy ? '生成中' : '生成排期方案'}
               </button>
-              <button className="goal-secondary" onClick={() => void generateRescheduleProposal()} disabled={proposalBusy}>
+              <button className="goal-secondary" onClick={() => void generateRescheduleProposal()} disabled={proposalBusy || !goalCanAutoSchedule(selected.status)}>
                 重排建议
               </button>
               <button className="goal-secondary" onClick={() => void structureGoalTasks()} disabled={structureBusy || tasks.length === 0}>
@@ -680,9 +881,84 @@ export default function GoalModule() {
               <button className="goal-secondary" onClick={() => void suggestAiSchedule()} disabled={aiBusy}>
                 {aiBusy ? '生成中' : 'AI 排期建议'}
               </button>
+              <button className="goal-secondary" type="button" onClick={() => setEditingGoal((cur) => !cur)}>
+                {editingGoal ? '收起编辑' : '编辑计划'}
+              </button>
+              {goalStatusActions(selected.status).map((action) => (
+                <button key={action.status} className="goal-secondary" type="button" onClick={() => void setGoalStatus(action.status)}>
+                  {action.label}
+                </button>
+              ))}
+              {deleteGoalConfirm ? (
+                <>
+                  <button className="goal-danger" type="button" onClick={() => void deleteSelectedGoal()}>
+                    确认删除
+                  </button>
+                  <button className="goal-secondary" type="button" onClick={() => setDeleteGoalConfirm(false)}>
+                    取消
+                  </button>
+                </>
+              ) : (
+                <button className="goal-secondary" type="button" onClick={() => setDeleteGoalConfirm(true)}>
+                  删除
+                </button>
+              )}
             </div>
           )}
         </header>
+
+        {selected && (
+          <section className="goal-summary">
+            {editingGoal ? (
+              <form className="goal-edit-form" onSubmit={(e) => void saveGoalEdit(e)}>
+                <input value={goalEditTitle} onChange={(e) => setGoalEditTitle(e.target.value)} placeholder="计划名称" />
+                <textarea
+                  rows={3}
+                  value={goalEditDescription}
+                  onChange={(e) => setGoalEditDescription(e.target.value)}
+                  placeholder="目标描述"
+                />
+                <input type="date" value={goalEditDeadline} onChange={(e) => setGoalEditDeadline(e.target.value)} />
+                <div>
+                  <button type="submit" disabled={!goalEditTitle.trim()}>
+                    保存计划
+                  </button>
+                  <button type="button" onClick={() => setEditingGoal(false)}>
+                    取消
+                  </button>
+                </div>
+              </form>
+            ) : (
+              <p>{selected.description || '还没有填写目标描述'}</p>
+            )}
+            {goalDetailSummary && (
+              <div className="goal-detail-metrics">
+                <div>
+                  <strong>{goalDetailSummary.completionPercent}%</strong>
+                  <span>完成进度</span>
+                  <em>
+                    {goalDetailSummary.completedTaskCount}/{goalDetailSummary.totalTaskCount} 个任务
+                  </em>
+                </div>
+                <div>
+                  <strong>{goalDetailSummary.scheduledTaskCount}</strong>
+                  <span>已排期</span>
+                  <em>{goalDetailSummary.unscheduledTaskCount} 个待排期</em>
+                </div>
+                <div>
+                  <strong>{goalDetailSummary.estimatedMinutes.open}</strong>
+                  <span>剩余分钟</span>
+                  <em>总计 {goalDetailSummary.estimatedMinutes.total} 分钟</em>
+                </div>
+                <div className={goalDetailSummary.overdueTaskCount > 0 ? 'is-risk' : ''}>
+                  <strong>{goalDetailSummary.overdueTaskCount}</strong>
+                  <span>延期风险</span>
+                  <em>{goalDetailSummary.riskMessages[0] ?? '暂无延期风险'}</em>
+                </div>
+              </div>
+            )}
+          </section>
+        )}
 
         {dashboard && (
           <section className="goal-dashboard">
@@ -808,6 +1084,19 @@ export default function GoalModule() {
                 <option value="low">低精力</option>
               </select>
               <input placeholder="任务类型" value={taskType} onChange={(e) => setTaskType(e.target.value)} />
+              <label className="goal-task-split">
+                <input type="checkbox" checked={taskSplittable} onChange={(e) => setTaskSplittable(e.target.checked)} />
+                <span>允许拆分</span>
+              </label>
+              <input
+                type="number"
+                min="15"
+                step="15"
+                aria-label="最小排期块分钟"
+                value={taskMinScheduleMinutes}
+                onChange={(e) => setTaskMinScheduleMinutes(e.target.value)}
+                disabled={!taskSplittable}
+              />
               <select value={parentId} onChange={(e) => setParentId(e.target.value)}>
                 <option value="">作为顶层任务</option>
                 {tasks.map((task) => (
@@ -939,6 +1228,30 @@ export default function GoalModule() {
                   </ul>
                 </div>
               )}
+              {deletePreviewRule && deletePreview && (
+                <div className="goal-rule-preview goal-rule-delete-preview">
+                  <strong>
+                    删除「{deletePreviewRule.name}」前确认：未来 7 天会释放 {deletePreview.summary.blockedSlotCount} 个规则时间块，当前影响{' '}
+                    {deletePreview.summary.affectedTaskCount} 个已排任务
+                  </strong>
+                  <ul>
+                    {deletePreview.affectedTasks.slice(0, 5).map((item) => (
+                      <li key={`${item.taskId}-${item.ruleBlockStart}`}>
+                        {item.title} · {formatDateTime(item.startDate)} - {new Date(item.dueDate).toLocaleTimeString()}
+                      </li>
+                    ))}
+                    {deletePreview.affectedTasks.length === 0 && <li>未来 7 天没有已排任务会受这个规则删除影响</li>}
+                  </ul>
+                  <div className="goal-rule-delete-actions">
+                    <button type="button" onClick={() => void confirmRuleDelete()}>
+                      确认删除
+                    </button>
+                    <button type="button" onClick={cancelRuleDelete}>
+                      取消
+                    </button>
+                  </div>
+                </div>
+              )}
               {ruleConflicts && (
                 <div className="goal-rule-conflicts">
                   <div className="goal-rule-details-head">
@@ -1020,12 +1333,30 @@ export default function GoalModule() {
                       </button>
                       <button onClick={() => beginEditRule(rule)}>编辑</button>
                       <button onClick={() => void toggleRule(rule)}>{RULE_STATUS_LABELS[rule.status]}</button>
-                      <button onClick={() => void mutate(() => api.deleteScheduleRule(rule.id))}>删除</button>
+                      <button onClick={() => void previewRuleDelete(rule)} disabled={deletePreviewBusy === rule.id}>
+                        {deletePreviewBusy === rule.id ? '预览中' : '删除'}
+                      </button>
                     </div>
                   </div>
                 ))}
                 {scheduleRules.length === 0 && <div className="goal-empty">还没有个人规则</div>}
               </div>
+              {deletedScheduleRules.length > 0 && (
+                <div className="goal-rule-deleted">
+                  <small>最近删除</small>
+                  {deletedScheduleRules.slice(0, 5).map((rule) => (
+                    <div key={rule.id} className="goal-rule-deleted-row">
+                      <span>
+                        {rule.name}
+                        {rule.deletedAt ? ` · ${new Date(rule.deletedAt).toLocaleString()}` : ''}
+                      </span>
+                      <button type="button" onClick={() => void restoreRule(rule)}>
+                        恢复
+                      </button>
+                    </div>
+                  ))}
+                </div>
+              )}
             </section>
 
             {proposal && (
@@ -1171,9 +1502,15 @@ export default function GoalModule() {
             <ul className="goal-task-list">
               {tasks.map((task) => {
                 const dependencyOptions = tasks.filter((candidate) => candidate.id !== task.id && !task.dependencyTaskIds.includes(candidate.id));
+                const scheduleInsight = scheduleInsightByTaskId.get(task.id);
                 return (
                   <li key={task.id} className="goal-task" style={{ paddingLeft: 12 + (task.level - 1) * 20 }}>
-                    <span>{task.title}</span>
+                    <span className="goal-task-title-row">
+                      {task.title}
+                      <button type="button" onClick={() => beginTaskEdit(task)}>
+                        编辑
+                      </button>
+                    </span>
                     <small>
                       {task.plannedStartAt && task.plannedEndAt
                         ? `${new Date(task.plannedStartAt).toLocaleString()} - ${new Date(task.plannedEndAt).toLocaleTimeString()}`
@@ -1181,6 +1518,62 @@ export default function GoalModule() {
                       {task.scheduleEnergyType ? ` · ${ENERGY_LABELS[task.scheduleEnergyType]}` : ''}
                       {task.scheduleTaskType ? ` · ${task.scheduleTaskType}` : ''}
                     </small>
+                    {editingTaskId === task.id && (
+                      <form className="goal-task-edit-form" onSubmit={(e) => void saveTaskEdit(e, task)}>
+                        <input value={taskEditTitle} onChange={(e) => setTaskEditTitle(e.target.value)} placeholder="任务名称" />
+                        <input type="number" min="15" step="15" value={taskEditEstimate} onChange={(e) => setTaskEditEstimate(e.target.value)} />
+                        <select value={taskEditPriority} onChange={(e) => setTaskEditPriority(Number(e.target.value) as Priority)}>
+                          <option value={0}>无优先级</option>
+                          <option value={1}>低</option>
+                          <option value={2}>中</option>
+                          <option value={3}>高</option>
+                        </select>
+                        <input type="date" value={taskEditDueDate} onChange={(e) => setTaskEditDueDate(e.target.value)} />
+                        <select value={taskEditEnergy} onChange={(e) => setTaskEditEnergy(e.target.value as '' | ScheduleEnergyType)}>
+                          <option value="">精力</option>
+                          <option value="high">高精力</option>
+                          <option value="medium">中等</option>
+                          <option value="low">低精力</option>
+                        </select>
+                        <input placeholder="任务类型" value={taskEditType} onChange={(e) => setTaskEditType(e.target.value)} />
+                        <label className="goal-task-split">
+                          <input type="checkbox" checked={taskEditSplittable} onChange={(e) => setTaskEditSplittable(e.target.checked)} />
+                          <span>允许拆分</span>
+                        </label>
+                        <input
+                          type="number"
+                          min="15"
+                          step="15"
+                          aria-label="编辑最小排期块分钟"
+                          value={taskEditMinScheduleMinutes}
+                          onChange={(e) => setTaskEditMinScheduleMinutes(e.target.value)}
+                          disabled={!taskEditSplittable}
+                        />
+                        <div>
+                          <button type="submit" disabled={!taskEditTitle.trim()}>
+                            保存
+                          </button>
+                          <button type="button" onClick={() => setEditingTaskId(null)}>
+                            取消
+                          </button>
+                        </div>
+                      </form>
+                    )}
+                    {scheduleInsight && (
+                      <div className="goal-task-insight">
+                        <strong>排期解释</strong>
+                        <span>{scheduleInsight.explanation ?? scheduleInsight.reason ?? '最近排期方案已为这个任务生成时间块。'}</span>
+                        <em>
+                          {new Date(scheduleInsight.plannedStartAt).toLocaleString()} - {new Date(scheduleInsight.plannedEndAt).toLocaleTimeString()}
+                        </em>
+                        {scheduleInsight.rules.length > 0 && <em>命中规则：{scheduleInsight.rules.map((rule) => rule.name).join('、')}</em>}
+                        {scheduleInsight.avoidedBlocks.length > 0 && (
+                          <em>
+                            避让：{scheduleInsight.avoidedBlocks.map((block) => `${AVOIDED_SOURCE_LABELS[block.source]} ${block.title}`).join('、')}
+                          </em>
+                        )}
+                      </div>
+                    )}
                     <div className="goal-task-dependencies">
                       <div>
                         {task.dependencyTaskIds.map((dependencyId) => {

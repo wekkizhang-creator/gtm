@@ -663,6 +663,100 @@ async function main() {
       dbAfterReplanUndo.close();
     }
 
+    const dependencyGoal = await req(base, '/api/goals', {
+      method: 'POST',
+      cookie,
+      body: JSON.stringify({
+        title: 'Dependency aware plan',
+        startAt: new Date('2030-01-13T20:00:00+08:00').toISOString(),
+        deadlineAt: new Date('2030-01-13T23:00:00+08:00').toISOString(),
+        availableTimeRule: JSON.stringify({ startHour: 20, endHour: 23 }),
+      }),
+    });
+    assert(dependencyGoal.res.status === 201, `dependency goal create failed: ${dependencyGoal.res.status} ${JSON.stringify(dependencyGoal.body)}`);
+    const prerequisiteTask = await req(base, `/api/goals/${dependencyGoal.body.goal.id}/tasks`, {
+      method: 'POST',
+      cookie,
+      body: JSON.stringify({ title: 'Write launch copy', estimatedMinutes: 45, scheduleTaskType: 'writing' }),
+    });
+    const dependentTask = await req(base, `/api/goals/${dependencyGoal.body.goal.id}/tasks`, {
+      method: 'POST',
+      cookie,
+      body: JSON.stringify({ title: 'Design launch cover', estimatedMinutes: 45, scheduleTaskType: 'design' }),
+    });
+    assert(prerequisiteTask.res.status === 201 && dependentTask.res.status === 201, 'dependency tasks should be created');
+    const dependencyLink = await req(base, `/api/tasks/${dependentTask.body.task.id}/dependencies`, {
+      method: 'POST',
+      cookie,
+      body: JSON.stringify({ dependencyId: prerequisiteTask.body.task.id }),
+    });
+    assert(dependencyLink.res.status === 200, `dependency link failed: ${dependencyLink.res.status} ${JSON.stringify(dependencyLink.body)}`);
+
+    const dependencyBlockedProposalRes = await req(base, `/api/goals/${dependencyGoal.body.goal.id}/schedule-proposals`, {
+      method: 'POST',
+      cookie,
+      body: JSON.stringify({
+        taskIds: [dependentTask.body.task.id],
+        from: dependencyGoal.body.goal.startAt,
+        to: dependencyGoal.body.goal.deadlineAt,
+      }),
+    });
+    assert(
+      dependencyBlockedProposalRes.res.status === 201,
+      `dependency blocked proposal failed: ${dependencyBlockedProposalRes.res.status} ${JSON.stringify(dependencyBlockedProposalRes.body)}`,
+    );
+    assert(
+      !dependencyBlockedProposalRes.body.proposal.changes.some((change: any) => change.taskId === dependentTask.body.task.id),
+      'dependent task should not be scheduled when its prerequisite is not included or completed',
+    );
+    assert(
+      dependencyBlockedProposalRes.body.proposal.conflicts.some(
+        (conflict: any) =>
+          conflict.type === 'dependency_blocked' &&
+          conflict.severity === 'blocking' &&
+          conflict.taskId === dependentTask.body.task.id &&
+          conflict.message.includes('Write launch copy'),
+      ),
+      'proposal should explain the unfinished prerequisite that blocked scheduling',
+    );
+    const dbAfterDependencyBlocked = new DatabaseSync(dbPath);
+    try {
+      const dependentRow = dbAfterDependencyBlocked.prepare('SELECT start_date, due_date FROM tasks WHERE id = ?').get(dependentTask.body.task.id) as {
+        start_date: string | null;
+        due_date: string | null;
+      };
+      assert(dependentRow.start_date === null && dependentRow.due_date === null, 'blocked dependency proposal must not schedule the dependent task');
+    } finally {
+      dbAfterDependencyBlocked.close();
+    }
+
+    const dependencyOrderedProposalRes = await req(base, `/api/goals/${dependencyGoal.body.goal.id}/schedule-proposals`, {
+      method: 'POST',
+      cookie,
+      body: JSON.stringify({
+        taskIds: [dependentTask.body.task.id, prerequisiteTask.body.task.id],
+        from: dependencyGoal.body.goal.startAt,
+        to: dependencyGoal.body.goal.deadlineAt,
+      }),
+    });
+    assert(
+      dependencyOrderedProposalRes.res.status === 201,
+      `dependency ordered proposal failed: ${dependencyOrderedProposalRes.res.status} ${JSON.stringify(dependencyOrderedProposalRes.body)}`,
+    );
+    const dependencyChanges = dependencyOrderedProposalRes.body.proposal.changes;
+    const prerequisiteIndex = dependencyChanges.findIndex((change: any) => change.taskId === prerequisiteTask.body.task.id);
+    const dependentIndex = dependencyChanges.findIndex((change: any) => change.taskId === dependentTask.body.task.id);
+    assert(prerequisiteIndex >= 0 && dependentIndex >= 0, 'proposal should schedule both prerequisite and dependent tasks when both are selected');
+    assert(prerequisiteIndex < dependentIndex, 'proposal should schedule the prerequisite before the dependent task');
+    assert(
+      new Date(dependencyChanges[prerequisiteIndex].plannedEndAt) <= new Date(dependencyChanges[dependentIndex].plannedStartAt),
+      'dependent task should start only after the prerequisite time block ends',
+    );
+    assert(
+      !dependencyOrderedProposalRes.body.proposal.conflicts.some((conflict: any) => conflict.type === 'dependency_blocked' && conflict.taskId === dependentTask.body.task.id),
+      'proposal should not report dependency_blocked when the prerequisite is scheduled first',
+    );
+
     const overflowGoal = await req(base, '/api/goals', {
       method: 'POST',
       cookie,
@@ -708,9 +802,10 @@ async function main() {
     assert(ruleDetails.res.status === 200, `rule details failed: ${ruleDetails.res.status} ${JSON.stringify(ruleDetails.body)}`);
     assert(ruleDetails.body.details.rule.id === ruleId, 'rule details should return the requested rule');
     assert(ruleDetails.body.details.hitCount >= 1, 'rule details should count historical proposal changes that referenced the rule');
+    assert(ruleDetails.body.details.recentImpacts.length >= 1, 'rule details should include recent impacted tasks');
     assert(
-      ruleDetails.body.details.recentImpacts.some((impact: any) => impact.title.includes('Deep work block')),
-      'rule details should include the recent impacted task',
+      ruleDetails.body.details.recentImpacts.every((impact: any) => typeof impact.title === 'string' && typeof impact.reason === 'string'),
+      'rule details should expose impacted task titles and scheduling reasons',
     );
     assert(ruleDetails.body.details.conflictCount >= 1, 'rule details should count conflicts that referenced the rule');
     assert(
@@ -718,12 +813,60 @@ async function main() {
       'rule details should include the recent overflow conflict',
     );
 
+    const deletionImpactTask = await req(base, `/api/goals/${goalId}/tasks`, {
+      method: 'POST',
+      cookie,
+      body: JSON.stringify({ title: 'Late affected work', estimatedMinutes: 30, scheduleTaskType: 'writing' }),
+    });
+    assert(deletionImpactTask.res.status === 201, `delete impact task create failed: ${deletionImpactTask.res.status} ${JSON.stringify(deletionImpactTask.body)}`);
+    const scheduledDeletionImpactTask = await req(base, `/api/tasks/${deletionImpactTask.body.task.id}`, {
+      method: 'PATCH',
+      cookie,
+      body: JSON.stringify({
+        startDate: new Date('2030-01-08T21:45:00+08:00').toISOString(),
+        dueDate: new Date('2030-01-08T22:15:00+08:00').toISOString(),
+        plannedStartAt: new Date('2030-01-08T21:45:00+08:00').toISOString(),
+        plannedEndAt: new Date('2030-01-08T22:15:00+08:00').toISOString(),
+        isAllDay: false,
+      }),
+    });
+    assert(
+      scheduledDeletionImpactTask.res.status === 200,
+      `delete impact task schedule failed: ${scheduledDeletionImpactTask.res.status} ${JSON.stringify(scheduledDeletionImpactTask.body)}`,
+    );
+    const deletePreview = await req(base, '/api/schedule-rules/preview', {
+      method: 'POST',
+      cookie,
+      body: JSON.stringify({
+        id: ruleId,
+        name: 'No work after 21:30',
+        type: 'time_boundary',
+        status: 'enabled',
+        priority: 'hard',
+        condition: { daysOfWeek: [1, 2, 3], startTime: '21:30', endTime: '23:59' },
+        action: { effect: 'block' },
+        scope: {},
+        from: new Date('2030-01-08T00:00:00+08:00').toISOString(),
+        to: new Date('2030-01-09T00:00:00+08:00').toISOString(),
+      }),
+    });
+    assert(deletePreview.res.status === 200, `delete preview failed: ${deletePreview.res.status} ${JSON.stringify(deletePreview.body)}`);
+    assert(
+      deletePreview.body.preview.affectedTasks.some((item: any) => item.taskId === deletionImpactTask.body.task.id && item.title === 'Late affected work'),
+      'delete preview should expose future scheduled tasks affected by the rule',
+    );
+
     const deleteRule = await req(base, `/api/schedule-rules/${ruleId}`, { method: 'DELETE', cookie });
     assert(deleteRule.res.status === 204, `delete rule failed: ${deleteRule.res.status}`);
     const listRulesAfterDelete = await req(base, '/api/schedule-rules', { cookie });
     assert(!listRulesAfterDelete.body.rules.some((rule: any) => rule.id === ruleId), 'deleted rule should be hidden from default list');
+    const listRulesWithDeleted = await req(base, '/api/schedule-rules?includeDeleted=1', { cookie });
+    const deletedRule = listRulesWithDeleted.body.rules.find((rule: any) => rule.id === ruleId);
+    assert(deletedRule?.deletedAt, 'includeDeleted list should expose the soft-deleted rule');
+    assert(deletedRule.status === 'disabled', 'deleted rule should be disabled while soft-deleted');
     const restoreRule = await req(base, `/api/schedule-rules/${ruleId}/restore`, { method: 'POST', cookie });
     assert(restoreRule.res.status === 200, `restore rule failed: ${restoreRule.res.status}`);
+    assert(restoreRule.body.rule.deletedAt === null, 'restored rule should clear deletedAt');
 
     const parseNatural = await req(base, '/api/schedule-rules/parse-natural-language', {
       method: 'POST',

@@ -158,9 +158,23 @@ export interface Goal {
   totalEstimatedMinutes: number | null;
   availableTimeRule: string | null;
   progressMode: 'auto' | 'manual';
-  status: 'not_started' | 'active' | 'completed' | 'archived';
+  status: 'not_started' | 'active' | 'paused' | 'completed' | 'archived';
   createdAt: string;
   updatedAt: string;
+}
+
+export interface GoalTaskScheduleInsight {
+  taskId: string;
+  proposalId: string;
+  proposalStatus: 'draft' | 'confirmed' | 'discarded' | 'undone';
+  plannedStartAt: string;
+  plannedEndAt: string;
+  reason: string | null;
+  explanation: string | null;
+  ruleIds: string[];
+  rules: Array<{ id: string; name: string; priority: ScheduleRulePriority; status: ScheduleRuleStatus }>;
+  avoidedBlocks: ScheduleProposalAvoidedBlock[];
+  createdAt: string;
 }
 
 export interface DayPilotDashboardTask {
@@ -323,6 +337,7 @@ export interface ScheduleProposalConflict {
     | 'rule_conflict'
     | 'schedule_overflow'
     | 'dependency_cycle'
+    | 'dependency_blocked'
     | 'invalid_rule'
     | 'task_blocked'
     | 'reschedule_impact'

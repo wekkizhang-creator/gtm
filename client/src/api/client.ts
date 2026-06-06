@@ -36,6 +36,7 @@ import type {
   FocusReport,
   FocusStats,
   Goal,
+  GoalTaskScheduleInsight,
   Habit,
   HabitStats,
   ImportCommitResult,
@@ -522,7 +523,7 @@ export const api = {
   updateGoal: (id: string, patch: Partial<CreateGoalInput>) =>
     req<{ goal: Goal }>(`/goals/${id}`, { method: 'PATCH', body: JSON.stringify(patch) }).then((r) => r.goal),
   deleteGoal: (id: string) => req<void>(`/goals/${id}`, { method: 'DELETE' }),
-  getGoalTree: (id: string) => req<{ goal: Goal; tasks: Task[] }>(`/goals/${id}/tree`),
+  getGoalTree: (id: string) => req<{ goal: Goal; tasks: Task[]; scheduleInsights: GoalTaskScheduleInsight[] }>(`/goals/${id}/tree`),
   createGoalTask: (
     id: string,
     input: {
@@ -563,7 +564,8 @@ export const api = {
     req<{ proposal: ScheduleProposal }>(`/schedule-proposals/${id}/discard`, { method: 'POST' }).then((r) => r.proposal),
 
   // personal schedule rules
-  listScheduleRules: () => req<{ rules: PersonalScheduleRule[] }>('/schedule-rules').then((r) => r.rules),
+  listScheduleRules: (options: { includeDeleted?: boolean } = {}) =>
+    req<{ rules: PersonalScheduleRule[] }>(`/schedule-rules${options.includeDeleted ? '?includeDeleted=1' : ''}`).then((r) => r.rules),
   listScheduleRuleTemplates: () => req<{ templates: ScheduleRuleTemplate[] }>('/schedule-rules/templates').then((r) => r.templates),
   createScheduleRule: (input: CreateScheduleRuleInput) =>
     req<{ rule: PersonalScheduleRule }>('/schedule-rules', { method: 'POST', body: JSON.stringify(input) }).then((r) => r.rule),
@@ -830,4 +832,3 @@ export const api = {
   restoreNote: (id: string) => req<{ note: StickyNote }>(`/notes/${id}/restore`, { method: 'POST' }).then((r) => r.note),
   convertNoteToTask: (id: string) => req<{ note: StickyNote; task: Task }>(`/notes/${id}/convert-to-task`, { method: 'POST' }),
 };
-

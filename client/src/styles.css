@@ -4261,6 +4261,7 @@ html[data-animations='off'] * {
 
 .goal-create,
 .goal-task-form,
+.goal-edit-form,
 .goal-rule-form {
   display: grid;
   gap: 8px;
@@ -4268,7 +4269,11 @@ html[data-animations='off'] * {
 
 .goal-create input,
 .goal-create textarea,
+.goal-edit-form input,
+.goal-edit-form textarea,
 .goal-task-form input,
+.goal-task-edit-form input,
+.goal-task-edit-form select,
 .goal-task-form select,
 .goal-rule-natural input,
 .goal-rule-form input,
@@ -4288,9 +4293,12 @@ html[data-animations='off'] * {
 }
 
 .goal-create button,
+.goal-edit-form button,
 .goal-task-form button,
+.goal-task-edit-form button,
 .goal-primary,
 .goal-secondary,
+.goal-danger,
 .goal-ai-actions button,
 .goal-ai-schedule li button,
 .goal-rule-natural button,
@@ -4314,6 +4322,12 @@ html[data-animations='off'] * {
 .goal-weekdays button {
   background: var(--surface);
   color: var(--accent);
+}
+
+.goal-danger {
+  border-color: #c0392b;
+  background: #c0392b;
+  color: #fff;
 }
 
 .goal-secondary:disabled,
@@ -4388,9 +4402,122 @@ html[data-animations='off'] * {
   flex-wrap: wrap;
 }
 
-.goal-task-form {
-  grid-template-columns: minmax(220px, 1fr) 110px 120px minmax(120px, 0.5fr) 180px auto;
+.goal-summary {
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--surface);
   margin-bottom: 18px;
+  padding: 12px;
+}
+
+.goal-summary p {
+  color: var(--muted);
+  line-height: 1.5;
+  margin: 0;
+}
+
+.goal-detail-metrics {
+  display: grid;
+  gap: 10px;
+  grid-template-columns: repeat(4, minmax(130px, 1fr));
+  margin-top: 12px;
+}
+
+.goal-detail-metrics > div {
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  display: grid;
+  gap: 3px;
+  min-width: 0;
+  padding: 10px;
+}
+
+.goal-detail-metrics strong {
+  color: var(--text);
+  font-size: 20px;
+}
+
+.goal-detail-metrics span,
+.goal-detail-metrics em {
+  color: var(--muted);
+  font-size: 12px;
+  font-style: normal;
+}
+
+.goal-detail-metrics .is-risk {
+  border-color: color-mix(in srgb, #c0392b 38%, var(--border));
+  background: color-mix(in srgb, #c0392b 8%, var(--surface));
+}
+
+.goal-edit-form {
+  grid-template-columns: minmax(180px, 1fr) minmax(220px, 1.4fr) 150px auto;
+}
+
+.goal-edit-form textarea {
+  min-height: 40px;
+  resize: vertical;
+}
+
+.goal-edit-form > div {
+  display: flex;
+  gap: 8px;
+}
+
+.goal-task-form {
+  grid-template-columns: minmax(220px, 1fr) 90px 110px minmax(120px, 0.5fr) 96px 120px 170px auto;
+  margin-bottom: 18px;
+}
+
+.goal-task-split {
+  align-items: center;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  color: var(--muted);
+  display: flex;
+  font-size: 13px;
+  gap: 6px;
+  min-width: 0;
+  padding: 0 10px;
+}
+
+.goal-task-split input {
+  margin: 0;
+  padding: 0;
+}
+
+.goal-rule-delete-preview {
+  border-color: color-mix(in srgb, #c0392b 38%, var(--border));
+  background: color-mix(in srgb, #c0392b 8%, var(--surface));
+}
+
+.goal-rule-delete-actions,
+.goal-rule-deleted-row {
+  align-items: center;
+  display: flex;
+  gap: 8px;
+  justify-content: flex-end;
+}
+
+.goal-rule-deleted {
+  border-top: 1px solid var(--border);
+  display: grid;
+  gap: 8px;
+  margin-top: 12px;
+  padding-top: 12px;
+}
+
+.goal-rule-deleted > small {
+  color: var(--muted);
+  font-weight: 700;
+}
+
+.goal-rule-deleted-row {
+  justify-content: space-between;
+}
+
+.goal-rule-deleted-row span {
+  color: var(--muted);
+  font-size: 13px;
 }
 
 .goal-task-list {
@@ -4412,9 +4539,60 @@ html[data-animations='off'] * {
   font-weight: 700;
 }
 
+.goal-task-title-row {
+  align-items: center;
+  display: flex;
+  gap: 8px;
+  min-width: 0;
+}
+
+.goal-task-title-row button {
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  background: var(--surface);
+  color: var(--accent);
+  cursor: pointer;
+  font-size: 12px;
+  padding: 3px 8px;
+}
+
 .goal-task > small {
   justify-self: end;
   text-align: right;
+}
+
+.goal-task-edit-form {
+  display: grid;
+  gap: 8px;
+  grid-column: 1 / -1;
+  grid-template-columns: minmax(180px, 1fr) 90px 90px 130px 110px minmax(110px, 0.6fr) 96px 120px auto;
+}
+
+.goal-task-edit-form > div {
+  display: flex;
+  gap: 8px;
+}
+
+.goal-task-insight {
+  border: 1px solid color-mix(in srgb, var(--accent) 22%, var(--border));
+  border-radius: 8px;
+  background: color-mix(in srgb, var(--accent) 6%, var(--surface));
+  display: grid;
+  gap: 4px;
+  grid-column: 1 / -1;
+  padding: 9px 10px;
+}
+
+.goal-task-insight strong {
+  font-size: 13px;
+}
+
+.goal-task-insight span,
+.goal-task-insight em {
+  color: var(--muted);
+  font-size: 12px;
+  font-style: normal;
+  line-height: 1.45;
 }
 
 .goal-task-dependencies {
@@ -4914,6 +5092,8 @@ html[data-animations='off'] * {
   }
 
   .goal-task-form,
+  .goal-edit-form,
+  .goal-task-edit-form,
   .goal-rule-natural,
   .goal-rule-form {
     grid-template-columns: 1fr;
@@ -4929,6 +5109,10 @@ html[data-animations='off'] * {
 
   .goal-dashboard-grid {
     grid-template-columns: 1fr;
+  }
+
+  .goal-detail-metrics {
+    grid-template-columns: 1fr 1fr;
   }
 }
 

@@ -146,6 +146,7 @@ async function main() {
       cookie,
       body: JSON.stringify({
         title: 'Content launch checklist',
+        description: 'Coordinate launch content and handoff.',
         deadlineAt: deadline.toISOString(),
         availableTimeRule: JSON.stringify({ startHour: 9, endHour: 18 }),
         tasksText: 'Research audience\n\n- Draft outline\n[ ] Publish recap',
@@ -160,17 +161,155 @@ async function main() {
     );
     const bulkTree = await req(base, `/api/goals/${bulkGoal.body.goal.id}/tree`, { cookie });
     assert(bulkTree.body.tasks.length === 3, `bulk goal tree should expose three created tasks, got ${bulkTree.body.tasks.length}`);
+    assert(bulkTree.body.goal.description === 'Coordinate launch content and handoff.', 'goal create should persist the goal description');
+    const updatedDeadline = new Date(deadline.getTime() + 24 * 3600_000);
+    const editedGoal = await req(base, `/api/goals/${bulkGoal.body.goal.id}`, {
+      method: 'PATCH',
+      cookie,
+      body: JSON.stringify({
+        title: 'Content launch operating plan',
+        description: 'Updated positioning and launch operating notes.',
+        deadlineAt: updatedDeadline.toISOString(),
+      }),
+    });
+    assert(editedGoal.res.status === 200, `goal edit failed: ${editedGoal.res.status} ${JSON.stringify(editedGoal.body)}`);
+    assert(editedGoal.body.goal.title === 'Content launch operating plan', 'goal edit should update the title');
+    assert(editedGoal.body.goal.description === 'Updated positioning and launch operating notes.', 'goal edit should update the description');
+    assert(editedGoal.body.goal.deadlineAt === updatedDeadline.toISOString(), 'goal edit should update the deadline');
+    const goalsAfterEdit = await req(base, '/api/goals', { cookie });
+    assert(
+      goalsAfterEdit.body.goals.some(
+        (goal: any) =>
+          goal.id === bulkGoal.body.goal.id &&
+          goal.title === 'Content launch operating plan' &&
+          goal.description === 'Updated positioning and launch operating notes.' &&
+          goal.deadlineAt === updatedDeadline.toISOString(),
+      ),
+      'goal list should expose edited title, description and deadline',
+    );
+    const bulkTreeAfterEdit = await req(base, `/api/goals/${bulkGoal.body.goal.id}/tree`, { cookie });
+    assert(bulkTreeAfterEdit.body.goal.title === 'Content launch operating plan', 'goal tree should expose edited title');
+    assert(bulkTreeAfterEdit.body.goal.description === 'Updated positioning and launch operating notes.', 'goal tree should expose edited description');
+    const [bulkCompletedTask, bulkScheduledTask, bulkOverdueTask] = bulkTreeAfterEdit.body.tasks;
+    const bulkScheduleStart = new Date(start.getTime() + 2 * 3600_000).toISOString();
+    const bulkScheduleEnd = new Date(start.getTime() + 3 * 3600_000).toISOString();
+    const bulkPastDue = new Date(Date.now() - 3600_000).toISOString();
+    await req(base, `/api/tasks/${bulkCompletedTask.id}`, {
+      method: 'PATCH',
+      cookie,
+      body: JSON.stringify({ completed: true }),
+    });
+    await req(base, `/api/tasks/${bulkScheduledTask.id}`, {
+      method: 'PATCH',
+      cookie,
+      body: JSON.stringify({
+        startDate: bulkScheduleStart,
+        dueDate: bulkScheduleEnd,
+        plannedStartAt: bulkScheduleStart,
+        plannedEndAt: bulkScheduleEnd,
+        isAllDay: false,
+      }),
+    });
+    await req(base, `/api/tasks/${bulkOverdueTask.id}`, {
+      method: 'PATCH',
+      cookie,
+      body: JSON.stringify({ dueDate: bulkPastDue, isAllDay: true }),
+    });
+    const bulkTreeForSummary = await req(base, `/api/goals/${bulkGoal.body.goal.id}/tree`, { cookie });
+    const summaryTasks = new Map(bulkTreeForSummary.body.tasks.map((task: any) => [task.id, task]));
+    assert((summaryTasks.get(bulkCompletedTask.id) as any).completed === true, 'goal tree should expose completed task state for progress summary');
+    assert((summaryTasks.get(bulkScheduledTask.id) as any).plannedStartAt === bulkScheduleStart, 'goal tree should expose scheduled task time blocks');
+    assert((summaryTasks.get(bulkOverdueTask.id) as any).dueDate === bulkPastDue, 'goal tree should expose overdue task deadline data');
     const dbAfterBulkGoal = new DatabaseSync(dbPath);
     try {
       const linkedTasks = dbAfterBulkGoal
         .prepare('SELECT COUNT(*) c FROM tasks WHERE goal_id = ? AND deleted_at IS NULL')
         .get(bulkGoal.body.goal.id) as { c: number };
       assert(linkedTasks.c === 3, `expected three DB tasks linked to bulk goal, got ${linkedTasks.c}`);
+      const goalRow = dbAfterBulkGoal
+        .prepare('SELECT title, description, deadline_at FROM goals WHERE id = ?')
+        .get(bulkGoal.body.goal.id) as { title: string; description: string | null; deadline_at: string | null };
+      assert(goalRow.title === 'Content launch operating plan', 'DB should persist edited goal title');
+      assert(goalRow.description === 'Updated positioning and launch operating notes.', 'DB should persist edited goal description');
+      assert(goalRow.deadline_at === updatedDeadline.toISOString(), 'DB should persist edited goal deadline');
     } finally {
       dbAfterBulkGoal.close();
     }
     const deleteBulkGoal = await req(base, `/api/goals/${bulkGoal.body.goal.id}`, { method: 'DELETE', cookie });
     assert(deleteBulkGoal.res.status === 204, `delete bulk goal failed: ${deleteBulkGoal.res.status}`);
+
+    const statusGoal = await req(base, '/api/goals', {
+      method: 'POST',
+      cookie,
+      body: JSON.stringify({
+        title: 'Status managed plan',
+        startAt: start.toISOString(),
+        deadlineAt: deadline.toISOString(),
+        availableTimeRule: JSON.stringify({ startHour: 9, endHour: 18 }),
+      }),
+    });
+    assert(statusGoal.res.status === 201, `status goal create failed: ${statusGoal.res.status} ${JSON.stringify(statusGoal.body)}`);
+    const statusTask = await req(base, `/api/goals/${statusGoal.body.goal.id}/tasks`, {
+      method: 'POST',
+      cookie,
+      body: JSON.stringify({ title: 'Schedulable while active', estimatedMinutes: 30 }),
+    });
+    assert(statusTask.res.status === 201, `status goal task create failed: ${statusTask.res.status} ${JSON.stringify(statusTask.body)}`);
+    const pauseGoal = await req(base, `/api/goals/${statusGoal.body.goal.id}`, {
+      method: 'PATCH',
+      cookie,
+      body: JSON.stringify({ status: 'paused' }),
+    });
+    assert(pauseGoal.res.status === 200, `pause goal failed: ${pauseGoal.res.status} ${JSON.stringify(pauseGoal.body)}`);
+    assert(pauseGoal.body.goal.status === 'paused', 'goal status should update to paused');
+    const pausedDashboard = await req(base, `/api/goals/daypilot-dashboard?date=${encodeURIComponent(start.toISOString())}`, { cookie });
+    assert(
+      !pausedDashboard.body.dashboard.activeGoals.some((goal: any) => goal.id === statusGoal.body.goal.id),
+      'paused goals should not appear in the active DayPilot dashboard',
+    );
+    const pausedProposal = await req(base, `/api/goals/${statusGoal.body.goal.id}/schedule-proposals`, {
+      method: 'POST',
+      cookie,
+      body: JSON.stringify({ from: start.toISOString(), to: deadline.toISOString() }),
+    });
+    assert(pausedProposal.res.status === 409, `paused proposal should be rejected with 409, got ${pausedProposal.res.status}`);
+    assert(pausedProposal.body.error.code === 'goal_not_schedulable', 'paused proposal should return goal_not_schedulable');
+    const pausedAuto = await req(base, `/api/goals/${statusGoal.body.goal.id}/auto-schedule`, { method: 'POST', cookie });
+    assert(pausedAuto.res.status === 409, `paused auto schedule should be rejected with 409, got ${pausedAuto.res.status}`);
+    assert(pausedAuto.body.error.code === 'goal_not_schedulable', 'paused auto schedule should return goal_not_schedulable');
+    const archiveGoal = await req(base, `/api/goals/${statusGoal.body.goal.id}`, {
+      method: 'PATCH',
+      cookie,
+      body: JSON.stringify({ status: 'archived' }),
+    });
+    assert(archiveGoal.res.status === 200 && archiveGoal.body.goal.status === 'archived', 'goal should update to archived');
+    const resumeGoal = await req(base, `/api/goals/${statusGoal.body.goal.id}`, {
+      method: 'PATCH',
+      cookie,
+      body: JSON.stringify({ status: 'active' }),
+    });
+    assert(resumeGoal.res.status === 200 && resumeGoal.body.goal.status === 'active', 'goal should restore to active');
+    const activeProposal = await req(base, `/api/goals/${statusGoal.body.goal.id}/schedule-proposals`, {
+      method: 'POST',
+      cookie,
+      body: JSON.stringify({ from: start.toISOString(), to: deadline.toISOString() }),
+    });
+    assert(activeProposal.res.status === 201, `active proposal should be allowed after restore: ${activeProposal.res.status} ${JSON.stringify(activeProposal.body)}`);
+    const deleteStatusGoal = await req(base, `/api/goals/${statusGoal.body.goal.id}`, { method: 'DELETE', cookie });
+    assert(deleteStatusGoal.res.status === 204, `delete status goal failed: ${deleteStatusGoal.res.status}`);
+    const statusGoalTreeAfterDelete = await req(base, `/api/goals/${statusGoal.body.goal.id}/tree`, { cookie });
+    assert(statusGoalTreeAfterDelete.res.status === 404, 'deleted goal should no longer have a tree');
+    const dbAfterStatusDelete = new DatabaseSync(dbPath);
+    try {
+      const detached = dbAfterStatusDelete.prepare('SELECT goal_id, root_task_id, level FROM tasks WHERE id = ?').get(statusTask.body.task.id) as {
+        goal_id: string | null;
+        root_task_id: string | null;
+        level: number;
+      };
+      assert(detached.goal_id === null && detached.root_task_id === null && detached.level === 1, 'deleting a goal should detach its tasks without deleting them');
+    } finally {
+      dbAfterStatusDelete.close();
+    }
 
     const goalRes = await req(base, '/api/goals', {
       method: 'POST',
@@ -206,6 +345,55 @@ async function main() {
       body: JSON.stringify({ title: 'Locked review', parentId: parent.body.task.id, estimatedMinutes: 30 }),
     });
     assert(read.body.task.level === 2 && build.body.task.level === 2, 'child goal tasks should be level 2');
+
+    const editedTaskDue = new Date(start.getTime() + 24 * 3600_000).toISOString();
+    const editedTask = await req(base, `/api/tasks/${locked.body.task.id}`, {
+      method: 'PATCH',
+      cookie,
+      body: JSON.stringify({
+        title: 'Review launch checklist',
+        priority: 3,
+        dueDate: editedTaskDue,
+        isAllDay: true,
+        estimatedMinutes: 45,
+        scheduleEnergyType: 'medium',
+        scheduleTaskType: 'review',
+        isSplittable: true,
+        minScheduleMinutes: 15,
+      }),
+    });
+    assert(editedTask.res.status === 200, `goal task edit failed: ${editedTask.res.status} ${JSON.stringify(editedTask.body)}`);
+    assert(editedTask.body.task.title === 'Review launch checklist', 'goal task edit should update title');
+    assert(editedTask.body.task.priority === 3, 'goal task edit should update priority');
+    assert(editedTask.body.task.dueDate === editedTaskDue, 'goal task edit should update due date');
+    assert(editedTask.body.task.estimatedMinutes === 45, 'goal task edit should update estimate');
+    assert(editedTask.body.task.scheduleEnergyType === 'medium', 'goal task edit should update energy type');
+    assert(editedTask.body.task.scheduleTaskType === 'review', 'goal task edit should update task type');
+    assert(editedTask.body.task.isSplittable === true && editedTask.body.task.minScheduleMinutes === 15, 'goal task edit should update split settings');
+    const dbAfterTaskEdit = new DatabaseSync(dbPath);
+    try {
+      const editedRow = dbAfterTaskEdit
+        .prepare('SELECT title, priority, due_date, estimated_minutes, schedule_energy_type, schedule_task_type, is_splittable, min_schedule_minutes FROM tasks WHERE id = ?')
+        .get(locked.body.task.id) as {
+          title: string;
+          priority: number;
+          due_date: string | null;
+          estimated_minutes: number | null;
+          schedule_energy_type: string | null;
+          schedule_task_type: string | null;
+          is_splittable: number;
+          min_schedule_minutes: number | null;
+        };
+      assert(editedRow.title === 'Review launch checklist', 'DB should persist edited task title');
+      assert(editedRow.priority === 3, 'DB should persist edited task priority');
+      assert(editedRow.due_date === editedTaskDue, 'DB should persist edited task due date');
+      assert(editedRow.estimated_minutes === 45, 'DB should persist edited task estimate');
+      assert(editedRow.schedule_energy_type === 'medium', 'DB should persist edited task energy type');
+      assert(editedRow.schedule_task_type === 'review', 'DB should persist edited task type');
+      assert(editedRow.is_splittable === 1 && editedRow.min_schedule_minutes === 15, 'DB should persist edited split settings');
+    } finally {
+      dbAfterTaskEdit.close();
+    }
 
     const dep = await req(base, `/api/tasks/${build.body.task.id}/dependencies`, {
       method: 'POST',
@@ -303,6 +491,18 @@ async function main() {
         (change: any) => change.taskId === urgentUnscheduled.body.task.id && change.ruleIds.includes(impactRule.body.rule.id),
       ),
       'dashboard setup proposal should persist a rule-affected change',
+    );
+    const treeWithScheduleInsights = await req(base, `/api/goals/${goalId}/tree`, { cookie });
+    assert(
+      treeWithScheduleInsights.body.scheduleInsights.some(
+        (insight: any) =>
+          insight.taskId === urgentUnscheduled.body.task.id &&
+          insight.ruleIds.includes(impactRule.body.rule.id) &&
+          insight.rules.some((rule: any) => rule.name === 'High energy tasks first') &&
+          typeof insight.explanation === 'string' &&
+          insight.explanation.length > 0,
+      ),
+      'goal tree should expose task-level schedule explanation and related rules from real proposals',
     );
     const blockingRule = await req(base, '/api/schedule-rules', {
       method: 'POST',
