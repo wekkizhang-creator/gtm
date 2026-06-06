@@ -8,6 +8,9 @@ import { getSettings } from './settingsRepo';
 import {
   AppError,
   type AttachmentDTO,
+  type DayPilotDashboardDTO,
+  type DayPilotDashboardRiskDTO,
+  type DayPilotDashboardTaskDTO,
   type ListFolderDTO,
   type GoalDTO,
   type ListDTO,
@@ -229,6 +232,19 @@ function assertManualProgress(value: unknown): asserts value is number | null | 
   }
 }
 
+function assertScheduleEnergyType(value: unknown): void {
+  if (value != null && !['high', 'medium', 'low'].includes(String(value))) {
+    throw new AppError(400, 'invalid', 'scheduleEnergyType must be high, medium or low');
+  }
+}
+
+function assertScheduleMinutes(value: unknown, field: string): void {
+  if (value == null) return;
+  if (!Number.isInteger(value) || Number(value) < 15 || Number(value) > 1440) {
+    throw new AppError(400, 'invalid', `${field} must be an integer from 15 to 1440`);
+  }
+}
+
 function recordTaskActivity(
   userId: string,
   taskId: string,
@@ -265,6 +281,10 @@ const ACTIVITY_FIELD_LABELS: Record<string, string> = {
   autoScheduleEnabled: 'auto schedule setting',
   isLockedSchedule: 'schedule lock',
   estimatedMinutes: 'estimate',
+  scheduleEnergyType: 'schedule energy type',
+  scheduleTaskType: 'schedule task type',
+  isSplittable: 'schedule split setting',
+  minScheduleMinutes: 'minimum schedule block',
   recurrenceRule: 'recurrence',
   manualProgress: 'manual progress',
   pinned: 'pin state',
@@ -311,6 +331,10 @@ function mapTask(r: any): TaskDTO {
     autoScheduleEnabled: r.auto_schedule_enabled == null ? true : !!r.auto_schedule_enabled,
     isLockedSchedule: !!r.is_locked_schedule,
     estimatedMinutes: r.estimated_minutes ?? null,
+    scheduleEnergyType: r.schedule_energy_type ?? null,
+    scheduleTaskType: r.schedule_task_type ?? null,
+    isSplittable: !!r.is_splittable,
+    minScheduleMinutes: r.min_schedule_minutes ?? null,
     subtaskConfig: parseConfig(r.subtask_config),
     recurrenceRule: r.recurrence_rule ?? null,
     source: r.source ?? 'manual',
@@ -349,6 +373,42 @@ function endOfDayOffsetISO(days: number): string {
   d.setDate(d.getDate() + days);
   d.setHours(23, 59, 59, 999);
   return d.toISOString();
+}
+
+function dashboardDayRange(input?: string | null): { from: string; to: string; date: string } {
+  const base = input ? new Date(input) : new Date();
+  if (Number.isNaN(base.getTime())) throw new AppError(400, 'invalid', 'date must be a valid ISO date');
+  const from = new Date(base);
+  from.setHours(0, 0, 0, 0);
+  const to = new Date(base);
+  to.setHours(23, 59, 59, 999);
+  return { from: from.toISOString(), to: to.toISOString(), date: from.toISOString().slice(0, 10) };
+}
+
+function mapDashboardTask(row: any): DayPilotDashboardTaskDTO {
+  return {
+    id: row.id,
+    title: row.title,
+    goalId: row.goal_id,
+    goalTitle: row.goal_title,
+    priority: row.priority,
+    startDate: row.start_date ?? null,
+    dueDate: row.due_date ?? null,
+    estimatedMinutes: row.estimated_minutes ?? null,
+    scheduleEnergyType: row.schedule_energy_type ?? null,
+    scheduleTaskType: row.schedule_task_type ?? null,
+    status: row.status ?? (row.completed ? 'done' : 'todo'),
+  };
+}
+
+function parseJsonArraySafe(raw: unknown): any[] {
+  if (!raw) return [];
+  try {
+    const value = typeof raw === 'string' ? JSON.parse(raw) : raw;
+    return Array.isArray(value) ? value : [];
+  } catch {
+    return [];
+  }
 }
 
 const LIST_WITH_COUNT = `
@@ -962,6 +1022,10 @@ export function createTask(
     isUrgent?: boolean | null;
     parentId?: string | null;
     estimatedMinutes?: number | null;
+    scheduleEnergyType?: 'high' | 'medium' | 'low' | null;
+    scheduleTaskType?: string | null;
+    isSplittable?: boolean;
+    minScheduleMinutes?: number | null;
     recurrenceRule?: string | null;
     source?: string | null;
     manualProgress?: number | null;
@@ -971,6 +1035,9 @@ export function createTask(
 ): TaskDTO {
   assertTaskStatus(input.status);
   assertManualProgress(input.manualProgress);
+  assertScheduleEnergyType(input.scheduleEnergyType);
+  assertScheduleMinutes(input.estimatedMinutes, 'estimatedMinutes');
+  assertScheduleMinutes(input.minScheduleMinutes, 'minScheduleMinutes');
   const id = randomUUID();
   const ts = nowISO();
   const defaults = getSettings(userId).taskDefaults;
@@ -1007,10 +1074,11 @@ export function createTask(
     throw new AppError(400, 'note_list_no_completion', 'note lists only store records and cannot contain completed tasks');
   }
   if (!parentId) sortOrder = nextTopLevelSortOrder(userId, listId, defaults.addPosition);
+  const scheduleTaskType = input.scheduleTaskType == null ? null : String(input.scheduleTaskType).trim() || null;
   db.prepare(
     `INSERT INTO tasks
-       (id, user_id, title, note, list_id, parent_id, priority, due_date, start_date, is_all_day, is_important, is_urgent, estimated_minutes, subtask_config, recurrence_rule, source, manual_progress, pinned, status, completed, completed_at, deleted_at, sort_order, created_at, updated_at)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, ?, ?, ?, ?, ?, ?, ?, NULL, ?, ?, ?)`,
+       (id, user_id, title, note, list_id, parent_id, priority, due_date, start_date, is_all_day, is_important, is_urgent, estimated_minutes, schedule_energy_type, schedule_task_type, is_splittable, min_schedule_minutes, subtask_config, recurrence_rule, source, manual_progress, pinned, status, completed, completed_at, deleted_at, sort_order, created_at, updated_at)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, ?, ?, ?, ?, ?, ?, ?, NULL, ?, ?, ?)`,
   ).run(
     id,
     userId,
@@ -1025,6 +1093,10 @@ export function createTask(
     input.isImportant == null ? null : input.isImportant ? 1 : 0,
     input.isUrgent == null ? null : input.isUrgent ? 1 : 0,
     input.estimatedMinutes ?? null,
+    input.scheduleEnergyType ?? null,
+    scheduleTaskType,
+    input.isSplittable ? 1 : 0,
+    input.minScheduleMinutes ?? null,
     input.recurrenceRule ?? null,
     input.source ?? 'manual',
     input.manualProgress ?? null,
@@ -1097,6 +1169,10 @@ function createNextRecurringTaskInstance(userId: string, row: any, completedTask
     isUrgent: row.is_urgent == null ? null : !!row.is_urgent,
     parentId: row.parent_id ?? null,
     estimatedMinutes: row.estimated_minutes ?? null,
+    scheduleEnergyType: row.schedule_energy_type ?? null,
+    scheduleTaskType: row.schedule_task_type ?? null,
+    isSplittable: !!row.is_splittable,
+    minScheduleMinutes: row.min_schedule_minutes ?? null,
     recurrenceRule,
     source: 'recurrence',
     manualProgress: null,
@@ -1125,6 +1201,9 @@ function createNextRecurringTaskInstance(userId: string, row: any, completedTask
 export function updateTask(userId: string, id: string, patch: Record<string, unknown>): TaskDTO | null {
   if ('status' in patch) assertTaskStatus(patch.status);
   if ('manualProgress' in patch) assertManualProgress(patch.manualProgress);
+  if ('scheduleEnergyType' in patch) assertScheduleEnergyType(patch.scheduleEnergyType);
+  if ('estimatedMinutes' in patch) assertScheduleMinutes(patch.estimatedMinutes, 'estimatedMinutes');
+  if ('minScheduleMinutes' in patch) assertScheduleMinutes(patch.minScheduleMinutes, 'minScheduleMinutes');
   if ('completed' in patch && 'status' in patch && Boolean(patch.completed) !== (patch.status === 'done')) {
     throw new AppError(400, 'invalid', 'completed and status disagree');
   }
@@ -1186,6 +1265,10 @@ export function updateTask(userId: string, id: string, patch: Record<string, unk
     autoScheduleEnabled: 'auto_schedule_enabled',
     isLockedSchedule: 'is_locked_schedule',
     estimatedMinutes: 'estimated_minutes',
+    scheduleEnergyType: 'schedule_energy_type',
+    scheduleTaskType: 'schedule_task_type',
+    isSplittable: 'is_splittable',
+    minScheduleMinutes: 'min_schedule_minutes',
     recurrenceRule: 'recurrence_rule',
     source: 'source',
     manualProgress: 'manual_progress',
@@ -1199,9 +1282,18 @@ export function updateTask(userId: string, id: string, patch: Record<string, unk
   for (const [k, col] of Object.entries(map)) {
     if (k in patch) {
       let v = patch[k];
-      if (k === 'isAllDay' || k === 'completed' || k === 'pinned' || k === 'autoScheduleEnabled' || k === 'isLockedSchedule') v = v ? 1 : 0;
+      if (
+        k === 'isAllDay' ||
+        k === 'completed' ||
+        k === 'pinned' ||
+        k === 'autoScheduleEnabled' ||
+        k === 'isLockedSchedule' ||
+        k === 'isSplittable'
+      )
+        v = v ? 1 : 0;
       else if (k === 'isImportant' || k === 'isUrgent') v = v == null ? null : v ? 1 : 0;
       else if (k === 'dependencyTaskIds') v = JSON.stringify(Array.isArray(v) ? v.filter((x) => typeof x === 'string') : []);
+      else if (k === 'scheduleTaskType') v = v == null ? null : String(v).trim() || null;
       cols.push(`${col} = ?`);
       vals.push(v ?? null);
     }
@@ -2015,6 +2107,253 @@ export function getGoal(userId: string, id: string): GoalDTO | null {
   return row ? mapGoal(row) : null;
 }
 
+export function getDayPilotDashboard(userId: string, input: { date?: string | null } = {}): DayPilotDashboardDTO {
+  const range = dashboardDayRange(input.date);
+  const activeGoalRows = db
+    .prepare(
+      `SELECT
+         g.*,
+         (SELECT COUNT(*) FROM tasks t
+          WHERE t.user_id = g.user_id AND t.goal_id = g.id AND t.completed = 0 AND t.deleted_at IS NULL AND t.status <> 'skipped') open_task_count,
+         (SELECT COUNT(*) FROM tasks t
+          WHERE t.user_id = g.user_id AND t.goal_id = g.id AND t.completed = 0 AND t.deleted_at IS NULL AND t.status <> 'skipped'
+            AND t.is_all_day = 0 AND t.start_date IS NOT NULL AND t.due_date IS NOT NULL AND t.start_date <= ? AND t.due_date >= ?) scheduled_today_count,
+         (SELECT COUNT(*) FROM tasks t
+          WHERE t.user_id = g.user_id AND t.goal_id = g.id AND t.completed = 0 AND t.deleted_at IS NULL AND t.status <> 'skipped'
+            AND t.auto_schedule_enabled = 1 AND t.is_locked_schedule = 0
+            AND (t.start_date IS NULL OR t.is_all_day = 1) AND t.planned_start_at IS NULL) unscheduled_task_count
+       FROM goals g
+       WHERE g.user_id = ? AND g.status IN ('active','not_started')
+       ORDER BY
+         CASE WHEN g.deadline_at IS NULL THEN 1 ELSE 0 END ASC,
+         g.deadline_at ASC,
+         g.created_at DESC
+       LIMIT 8`,
+    )
+    .all(range.to, range.from, userId) as Array<any & { open_task_count: number; scheduled_today_count: number; unscheduled_task_count: number }>;
+  const activeGoals = activeGoalRows.map((row) => ({
+    id: row.id,
+    title: row.title,
+    deadlineAt: row.deadline_at ?? null,
+    status: row.status ?? 'not_started',
+    scheduledTodayCount: row.scheduled_today_count ?? 0,
+    unscheduledTaskCount: row.unscheduled_task_count ?? 0,
+    openTaskCount: row.open_task_count ?? 0,
+  }));
+
+  const baseTaskWhere = `
+    FROM tasks t
+    JOIN goals g ON g.user_id = t.user_id AND g.id = t.goal_id
+    WHERE t.user_id = ?
+      AND g.status IN ('active','not_started')
+      AND t.completed = 0
+      AND t.deleted_at IS NULL
+      AND t.status <> 'skipped'
+      AND NOT EXISTS (
+        SELECT 1 FROM tasks child
+        WHERE child.user_id = t.user_id AND child.parent_id = t.id AND child.deleted_at IS NULL AND child.status <> 'skipped'
+      )`;
+  const topTasks = (
+    db
+      .prepare(
+        `SELECT t.*, g.title goal_title
+         ${baseTaskWhere}
+         ORDER BY
+           CASE
+             WHEN t.due_date IS NOT NULL AND t.due_date < ? THEN 0
+             WHEN t.due_date IS NOT NULL AND t.due_date <= ? THEN 1
+             ELSE 2
+           END ASC,
+           t.priority DESC,
+           COALESCE(t.due_date, g.deadline_at, '9999-12-31T23:59:59.999Z') ASC,
+           t.created_at ASC
+         LIMIT 3`,
+      )
+      .all(userId, range.from, range.to) as any[]
+  ).map(mapDashboardTask);
+  const scheduledTasks = (
+    db
+      .prepare(
+        `SELECT t.*, g.title goal_title
+         ${baseTaskWhere}
+           AND t.is_all_day = 0
+           AND t.start_date IS NOT NULL
+           AND t.due_date IS NOT NULL
+           AND t.start_date <= ?
+           AND t.due_date >= ?
+         ORDER BY t.start_date ASC, t.priority DESC
+         LIMIT 8`,
+      )
+      .all(userId, range.to, range.from) as any[]
+  ).map(mapDashboardTask);
+  const unscheduledTasks = (
+    db
+      .prepare(
+        `SELECT t.*, g.title goal_title
+         ${baseTaskWhere}
+           AND t.auto_schedule_enabled = 1
+           AND t.is_locked_schedule = 0
+           AND (t.start_date IS NULL OR t.is_all_day = 1)
+           AND t.planned_start_at IS NULL
+         ORDER BY
+           CASE WHEN t.due_date IS NOT NULL AND t.due_date <= ? THEN 0 ELSE 1 END ASC,
+           t.priority DESC,
+           COALESCE(t.due_date, g.deadline_at, '9999-12-31T23:59:59.999Z') ASC,
+           t.created_at ASC
+         LIMIT 8`,
+      )
+      .all(userId, range.to) as any[]
+  ).map(mapDashboardTask);
+
+  const ruleRows = db
+    .prepare('SELECT id, name, priority, status FROM personal_schedule_rules WHERE user_id = ?')
+    .all(userId) as Array<{ id: string; name: string; priority: 'hard' | 'normal' | 'preference'; status: 'enabled' | 'disabled' }>;
+  const ruleMap = new Map(ruleRows.map((rule) => [rule.id, rule]));
+  const relatedRules = (ruleIds: string[]) =>
+    Array.from(new Set(ruleIds.filter((id) => typeof id === 'string' && id)))
+      .map((id) => ruleMap.get(id))
+      .filter((rule): rule is NonNullable<typeof rule> => !!rule);
+  const proposalRows = db
+    .prepare(
+      `SELECT p.goal_id, g.title goal_title, p.conflicts_json
+       FROM schedule_proposals p
+       LEFT JOIN goals g ON g.user_id = p.user_id AND g.id = p.goal_id
+       WHERE p.user_id = ?
+       ORDER BY p.created_at DESC
+       LIMIT 20`,
+    )
+    .all(userId) as Array<{ goal_id: string | null; goal_title: string | null; conflicts_json: string }>;
+  const proposalConflicts: Array<{
+    goalId: string | null;
+    goalTitle: string | null;
+    type: string;
+    severity: 'warning' | 'blocking';
+    taskId: string | null;
+    ruleIds: string[];
+    message: string;
+    suggestions: string[];
+  }> = [];
+  for (const proposal of proposalRows) {
+    for (const conflict of parseJsonArraySafe(proposal.conflicts_json)) {
+      if (!conflict || typeof conflict !== 'object') continue;
+      const row = conflict as { type?: string; severity?: string; taskId?: string | null; ruleIds?: unknown; message?: string; suggestions?: unknown };
+      if (row.severity !== 'blocking' && row.severity !== 'warning') continue;
+      proposalConflicts.push({
+        goalId: proposal.goal_id,
+        goalTitle: proposal.goal_title,
+        type: typeof row.type === 'string' ? row.type : 'rule_conflict',
+        severity: row.severity,
+        taskId: row.taskId ?? null,
+        ruleIds: Array.isArray(row.ruleIds) ? row.ruleIds.filter((id): id is string => typeof id === 'string') : [],
+        message: typeof row.message === 'string' ? row.message : '最近排期方案存在规则或日程冲突。',
+        suggestions: Array.isArray(row.suggestions) ? row.suggestions.filter((item): item is string => typeof item === 'string').slice(0, 4) : [],
+      });
+    }
+  }
+  const conflictForTask = (task: DayPilotDashboardTaskDTO) =>
+    proposalConflicts.find((conflict) => conflict.taskId === task.id) ??
+    proposalConflicts.find((conflict) => conflict.goalId === task.goalId && conflict.ruleIds.length > 0);
+
+  const risks: DayPilotDashboardRiskDTO[] = [];
+  const deadlineRows = db
+    .prepare(
+      `SELECT
+         g.id goal_id,
+         g.title goal_title,
+         g.deadline_at,
+         COUNT(t.id) open_count,
+         SUM(CASE WHEN (t.start_date IS NULL OR t.is_all_day = 1) AND t.planned_start_at IS NULL THEN 1 ELSE 0 END) unscheduled_count
+       FROM goals g
+       JOIN tasks t ON t.user_id = g.user_id AND t.goal_id = g.id
+       WHERE g.user_id = ?
+         AND g.status IN ('active','not_started')
+         AND g.deadline_at IS NOT NULL
+         AND g.deadline_at <= ?
+         AND t.completed = 0
+         AND t.deleted_at IS NULL
+         AND t.status <> 'skipped'
+       GROUP BY g.id
+       ORDER BY g.deadline_at ASC
+       LIMIT 5`,
+    )
+    .all(userId, range.to) as Array<{ goal_id: string; goal_title: string; deadline_at: string; open_count: number; unscheduled_count: number | null }>;
+  for (const row of deadlineRows) {
+    risks.push({
+      type: 'deadline_risk',
+      severity: row.deadline_at < range.from ? 'blocking' : 'warning',
+      goalId: row.goal_id,
+      goalTitle: row.goal_title,
+      taskId: null,
+      taskTitle: null,
+      ruleIds: [],
+      rules: [],
+      message: `计划「${row.goal_title}」截止前仍有 ${row.open_count} 个未完成任务，其中 ${row.unscheduled_count ?? 0} 个还未进入日程。`,
+      suggestions: ['生成今日排期方案', '放宽个人规则或调整计划截止时间'],
+    });
+  }
+  for (const task of unscheduledTasks.filter((item) => item.dueDate && item.dueDate <= range.to).slice(0, 3)) {
+    const conflict = conflictForTask(task);
+    const ruleIds = conflict?.ruleIds ?? [];
+    const rules = relatedRules(ruleIds);
+    risks.push({
+      type: 'unscheduled_today',
+      severity: conflict?.severity ?? 'warning',
+      goalId: task.goalId,
+      goalTitle: task.goalTitle,
+      taskId: task.id,
+      taskTitle: task.title,
+      ruleIds,
+      rules,
+      message: conflict
+        ? `任务「${task.title}」今天到期但未排入日程；最近排期提示：${conflict.message}`
+        : `任务「${task.title}」今天到期，但还没有明确时间块。`,
+      suggestions: conflict?.suggestions.length ? conflict.suggestions : ['把任务加入今日排期方案', '修改任务截止时间或预计耗时'],
+    });
+  }
+  const taskTitleCache = new Map<string, string | null>();
+  const taskTitle = (taskId: string | null | undefined): string | null => {
+    if (!taskId) return null;
+    if (!taskTitleCache.has(taskId)) {
+      const row = db.prepare('SELECT title FROM tasks WHERE user_id = ? AND id = ?').get(userId, taskId) as { title: string } | undefined;
+      taskTitleCache.set(taskId, row?.title ?? null);
+    }
+    return taskTitleCache.get(taskId) ?? null;
+  };
+  for (const conflict of proposalConflicts) {
+      if (risks.length >= 10) break;
+      const rules = relatedRules(conflict.ruleIds);
+      risks.push({
+        type: 'rule_conflict',
+        severity: conflict.severity,
+        goalId: conflict.goalId,
+        goalTitle: conflict.goalTitle,
+        taskId: conflict.taskId,
+        taskTitle: taskTitle(conflict.taskId),
+        ruleIds: conflict.ruleIds,
+        rules,
+        message: rules.length ? `${conflict.message} 相关规则：${rules.map((rule) => rule.name).join('、')}。` : conflict.message,
+        suggestions: conflict.suggestions,
+      });
+  }
+  const finalRisks = risks.slice(0, 10);
+  return {
+    date: range.date,
+    range: { from: range.from, to: range.to },
+    summary: {
+      topTaskCount: topTasks.length,
+      activeGoalCount: activeGoals.length,
+      scheduledTodayCount: scheduledTasks.length,
+      unscheduledTaskCount: unscheduledTasks.length,
+      riskCount: finalRisks.length,
+    },
+    topTasks,
+    activeGoals,
+    scheduledTasks,
+    unscheduledTasks,
+    risks: finalRisks,
+  };
+}
+
 export function createGoal(
   userId: string,
   input: {
@@ -2053,6 +2392,98 @@ export function createGoal(
     ts,
   );
   return getGoal(userId, id)!;
+}
+
+const MAX_INITIAL_GOAL_TASKS = 100;
+const MAX_INITIAL_GOAL_TASK_TITLE_LENGTH = 200;
+
+type InitialGoalTaskInput = {
+  title: string;
+  estimatedMinutes?: number | null;
+  scheduleEnergyType?: 'high' | 'medium' | 'low' | null;
+  scheduleTaskType?: string | null;
+  isSplittable?: boolean;
+  minScheduleMinutes?: number | null;
+};
+
+function cleanInitialTaskTitle(value: unknown): string {
+  if (typeof value !== 'string') return '';
+  return value
+    .replace(/^\s*(?:[-*•]+|\d+[.)]|[[(]?\s?[xX ]\s?[\])])\s*/, '')
+    .trim();
+}
+
+function parseInitialGoalTasks(input: {
+  tasksText?: unknown;
+  initialTasks?: unknown;
+}): InitialGoalTaskInput[] {
+  const tasks: InitialGoalTaskInput[] = [];
+  if (typeof input.tasksText === 'string') {
+    for (const line of input.tasksText.split(/\r?\n/)) {
+      const title = cleanInitialTaskTitle(line);
+      if (title) tasks.push({ title });
+    }
+  }
+  if (Array.isArray(input.initialTasks)) {
+    for (const item of input.initialTasks) {
+      if (!item || typeof item !== 'object' || Array.isArray(item)) {
+        throw new AppError(400, 'invalid_goal_tasks', 'initialTasks must contain objects');
+      }
+      const raw = item as Record<string, unknown>;
+      const title = cleanInitialTaskTitle(raw.title);
+      if (!title) throw new AppError(400, 'invalid_goal_tasks', 'initial task title is required');
+      tasks.push({
+        title,
+        estimatedMinutes: raw.estimatedMinutes == null ? null : Number(raw.estimatedMinutes),
+        scheduleEnergyType: raw.scheduleEnergyType as InitialGoalTaskInput['scheduleEnergyType'],
+        scheduleTaskType: typeof raw.scheduleTaskType === 'string' ? raw.scheduleTaskType : null,
+        isSplittable: raw.isSplittable === true,
+        minScheduleMinutes: raw.minScheduleMinutes == null ? null : Number(raw.minScheduleMinutes),
+      });
+    }
+  }
+  if (tasks.length > MAX_INITIAL_GOAL_TASKS) {
+    throw new AppError(400, 'too_many_goal_tasks', `a goal can be created with at most ${MAX_INITIAL_GOAL_TASKS} tasks`);
+  }
+  for (const task of tasks) {
+    if (task.title.length > MAX_INITIAL_GOAL_TASK_TITLE_LENGTH) {
+      throw new AppError(400, 'invalid_goal_tasks', `initial task title can contain at most ${MAX_INITIAL_GOAL_TASK_TITLE_LENGTH} characters`);
+    }
+    assertScheduleEnergyType(task.scheduleEnergyType);
+    assertScheduleMinutes(task.estimatedMinutes, 'estimatedMinutes');
+    assertScheduleMinutes(task.minScheduleMinutes, 'minScheduleMinutes');
+  }
+  return tasks;
+}
+
+export function createGoalWithInitialTasks(
+  userId: string,
+  input: Parameters<typeof createGoal>[1] & {
+    tasksText?: unknown;
+    initialTasks?: unknown;
+  },
+): { goal: GoalDTO; tasks: TaskDTO[] } {
+  const initialTasks = parseInitialGoalTasks(input);
+  db.exec('BEGIN');
+  try {
+    const goal = createGoal(userId, input);
+    const tasks = initialTasks.map((task) =>
+      createGoalTask(userId, goal.id, {
+        title: task.title,
+        estimatedMinutes: task.estimatedMinutes ?? null,
+        scheduleEnergyType: task.scheduleEnergyType ?? null,
+        scheduleTaskType: task.scheduleTaskType ?? null,
+        isSplittable: task.isSplittable ?? false,
+        minScheduleMinutes: task.minScheduleMinutes ?? null,
+        source: 'manual',
+      }),
+    );
+    db.exec('COMMIT');
+    return { goal, tasks };
+  } catch (err) {
+    db.exec('ROLLBACK');
+    throw err;
+  }
 }
 
 export function updateGoal(userId: string, id: string, patch: Record<string, unknown>): GoalDTO | null {
@@ -2114,7 +2545,15 @@ export function createGoalTask(
     note?: string | null;
     parentId?: string | null;
     priority?: number;
+    startDate?: string | null;
+    dueDate?: string | null;
+    isAllDay?: boolean;
     estimatedMinutes?: number | null;
+    scheduleEnergyType?: 'high' | 'medium' | 'low' | null;
+    scheduleTaskType?: string | null;
+    isSplittable?: boolean;
+    minScheduleMinutes?: number | null;
+    source?: string | null;
   },
 ): TaskDTO {
   const goal = getGoal(userId, goalId);
@@ -2135,11 +2574,16 @@ export function createGoalTask(
     note: input.note ?? null,
     listId: null,
     priority: input.priority ?? 0,
-    dueDate: null,
-    startDate: null,
-    isAllDay: true,
+    dueDate: input.dueDate ?? null,
+    startDate: input.startDate ?? null,
+    isAllDay: input.isAllDay ?? true,
     parentId: input.parentId ?? null,
     estimatedMinutes: input.estimatedMinutes ?? null,
+    scheduleEnergyType: input.scheduleEnergyType ?? null,
+    scheduleTaskType: input.scheduleTaskType ?? null,
+    isSplittable: input.isSplittable ?? false,
+    minScheduleMinutes: input.minScheduleMinutes ?? null,
+    source: input.source ?? 'manual',
   });
   const root = rootTaskId ?? task.id;
   db.prepare('UPDATE tasks SET goal_id = ?, root_task_id = ?, level = ?, updated_at = ? WHERE user_id = ? AND id = ?').run(

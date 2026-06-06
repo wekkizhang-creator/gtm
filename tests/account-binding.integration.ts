@@ -1,3 +1,4 @@
+import { loginByEmailPassword } from './auth-test-helper';
 import { DatabaseSync } from 'node:sqlite';
 import net from 'node:net';
 import http from 'node:http';
@@ -161,37 +162,12 @@ async function requestSmsCode(base: string, phone: string, purpose: string, smsM
 }
 
 async function login(base: string, email: string, smtpMessages: string[]): Promise<{ cookie: string; userId: string }> {
-  const challenge = await requestCode(base, email, 'login', smtpMessages);
-  const loginRes = await fetch(`${base}/api/auth/login`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({
-      challengeId: challenge.challengeId,
-      code: challenge.code,
-      agreedToTerms: true,
-      device: { deviceId: `account-bind-${email}`, deviceName: 'Account binding test', platform: 'Web', appVersion: 'test' },
-    }),
+  return loginByEmailPassword(base, email, smtpMessages, {
+    deviceId: `account-bind-${email}`,
+    deviceName: 'Account binding test',
+    platform: 'Web',
+    appVersion: 'test',
   });
-  const body = await json(loginRes);
-  assert(loginRes.status === 201 || loginRes.status === 200, `login failed: ${loginRes.status}`);
-  return { cookie: cookiesFrom(loginRes), userId: body.user.id };
-}
-
-async function loginWithPhone(base: string, phone: string, smsMessages: any[]): Promise<{ cookie: string; userId: string }> {
-  const challenge = await requestSmsCode(base, phone, 'login', smsMessages);
-  const loginRes = await fetch(`${base}/api/auth/login`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({
-      challengeId: challenge.challengeId,
-      code: challenge.code,
-      agreedToTerms: true,
-      device: { deviceId: `account-bind-phone-${phone}`, deviceName: 'Account binding phone test', platform: 'Web', appVersion: 'test' },
-    }),
-  });
-  const body = await json(loginRes);
-  assert(loginRes.status === 201 || loginRes.status === 200, `phone login failed: ${loginRes.status}`);
-  return { cookie: cookiesFrom(loginRes), userId: body.user.id };
 }
 
 async function main() {
@@ -265,7 +241,7 @@ async function main() {
       body: JSON.stringify({ type: 'phone', identifier: '+15551230000', purpose: 'login' }),
     });
     assert(phoneLoginAttempt.res.status === 400, `phone login should be blocked by email-only policy, got ${phoneLoginAttempt.res.status}`);
-    assert(phoneLoginAttempt.body.error.code === 'email_login_only', 'phone login should return email_login_only');
+    assert(phoneLoginAttempt.body.error.code === 'password_login_required', 'phone login should return password_login_required');
     assert(sms.messages.length === smsBeforeLoginAttempt, 'blocked phone login must not send an SMS code');
 
     const bobPhoneCode = await requestSmsCode(base, '+15551230000', 'account_bind', sms.messages);

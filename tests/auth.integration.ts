@@ -1,5 +1,7 @@
+import { TEST_PASSWORD, loginCookie, waitForEmailCode } from './auth-test-helper';
 import { DatabaseSync } from 'node:sqlite';
 import net from 'node:net';
+import { createHmac, randomUUID } from 'node:crypto';
 import { existsSync, unlinkSync } from 'node:fs';
 import { dirname, resolve } from 'node:path';
 import { pathToFileURL } from 'node:url';
@@ -109,6 +111,60 @@ async function req(base: string, path: string, init: RequestInit & { cookie?: st
   return { res, body: await json(res) };
 }
 
+async function requestRegistrationCode(base: string, email: string, smtpMessages: string[]): Promise<{ challengeId: string; code: string }> {
+  const start = smtpMessages.length;
+  const challenge = await req(base, '/api/auth/register/start', {
+    method: 'POST',
+    body: JSON.stringify({ email }),
+  });
+  assert(challenge.res.status === 201, `registration code failed: ${challenge.res.status} ${JSON.stringify(challenge.body)}`);
+  return { challengeId: challenge.body.challengeId, code: await waitForEmailCode(smtpMessages, start) };
+}
+
+async function requestPasswordResetCode(base: string, email: string, smtpMessages: string[]): Promise<{ challengeId: string; code: string }> {
+  const start = smtpMessages.length;
+  const challenge = await req(base, '/api/auth/password-reset/start', {
+    method: 'POST',
+    body: JSON.stringify({ email }),
+  });
+  assert(challenge.res.status === 201, `password reset code failed: ${challenge.res.status} ${JSON.stringify(challenge.body)}`);
+  return { challengeId: challenge.body.challengeId, code: await waitForEmailCode(smtpMessages, start) };
+}
+
+function identifierHash(type: string, identifier: string): string {
+  return createHmac('sha256', process.env.AUTH_IDENTIFIER_SECRET ?? process.env.AUTH_TOKEN_SECRET ?? 'development-auth-token-secret-change-me')
+    .update(`${type}:${identifier}`)
+    .digest('hex');
+}
+
+function maskEmail(email: string): string {
+  const [name, domain] = email.split('@');
+  const visible = name.slice(0, Math.min(2, name.length));
+  return `${visible}${'*'.repeat(Math.max(2, name.length - visible.length))}@${domain}`;
+}
+
+function insertLegacyEmailAccount(dbPath: string, email: string): string {
+  const normalized = email.trim().toLowerCase();
+  const masked = maskEmail(normalized);
+  const userId = randomUUID();
+  const identityId = randomUUID();
+  const ts = new Date().toISOString();
+  const db = new DatabaseSync(dbPath);
+  try {
+    db.prepare(
+      `INSERT INTO users (id, nickname, avatar_url, phone_masked, email_masked, status, registered_at, last_login_at)
+       VALUES (?, NULL, NULL, NULL, ?, 'normal', ?, ?)`,
+    ).run(userId, masked, ts, ts);
+    db.prepare(
+      `INSERT INTO auth_identities (id, user_id, type, provider, identifier_hash, display_identifier, is_primary, verified_at, bound_at, unbound_at)
+       VALUES (?, ?, 'email', NULL, ?, ?, 1, ?, ?, NULL)`,
+    ).run(identityId, userId, identifierHash('email', normalized), masked, ts, ts);
+    return userId;
+  } finally {
+    db.close();
+  }
+}
+
 async function login(
   base: string,
   email: string,
@@ -120,31 +176,7 @@ async function login(
     appVersion: 'test',
   },
 ): Promise<string> {
-  const codeStart = smtpMessages.length;
-  const challenge = await req(base, '/api/auth/verification-codes', {
-    method: 'POST',
-    body: JSON.stringify({ type: 'email', identifier: email, purpose: 'login' }),
-  });
-  assert(challenge.res.status === 201, `verification code failed: ${challenge.res.status} ${JSON.stringify(challenge.body)}`);
-  for (let i = 0; i < 20 && smtpMessages.length === codeStart; i++) {
-    await new Promise((resolvePromise) => setTimeout(resolvePromise, 50));
-  }
-  const message = smtpMessages.at(-1) ?? '';
-  const code = message.match(/\b\d{6}\b/)?.[0];
-  assert(code, `SMTP message did not include a code: ${message}`);
-  const loginRes = await fetch(`${base}/api/auth/login`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({
-      challengeId: challenge.body.challengeId,
-      code,
-      agreedToTerms: true,
-      device,
-    }),
-  });
-  const body = await json(loginRes);
-  assert(loginRes.status === 201 || loginRes.status === 200, `login failed: ${loginRes.status} ${JSON.stringify(body)}`);
-  return cookiesFrom(loginRes);
+  return loginCookie(base, email, smtpMessages, device);
 }
 
 async function main() {
@@ -179,12 +211,24 @@ async function main() {
       body: JSON.stringify({ type: 'phone', identifier: '+15550001111', purpose: 'login' }),
     });
     assert(phoneLogin.res.status === 400, `phone login should be blocked by email-only policy, got ${phoneLogin.res.status}`);
-    assert(phoneLogin.body.error.code === 'email_login_only', 'phone login should return email_login_only');
+    assert(phoneLogin.body.error.code === 'password_login_required', 'phone login should return password_login_required');
+
+    const legacyLogin = await req(base, '/api/auth/login', {
+      method: 'POST',
+      body: JSON.stringify({
+        challengeId: 'legacy-login-disabled',
+        code: '000000',
+        agreedToTerms: true,
+        device: { deviceId: 'legacy-login-device', platform: 'Web' },
+      }),
+    });
+    assert(legacyLogin.res.status === 400, `legacy code login should be blocked, got ${legacyLogin.res.status}`);
+    assert(legacyLogin.body.error.code === 'password_login_required', 'legacy code login should return password_login_required');
 
     const riskMessages = smtp.messages.length;
-    const blockedIdentifier = await req(base, '/api/auth/verification-codes', {
+    const blockedIdentifier = await req(base, '/api/auth/register/start', {
       method: 'POST',
-      body: JSON.stringify({ type: 'email', identifier: 'risk-blocked@example.com', purpose: 'login' }),
+      body: JSON.stringify({ email: 'risk-blocked@example.com' }),
     });
     assert(blockedIdentifier.res.status === 423, `blocked identifier should be 423, got ${blockedIdentifier.res.status}`);
     assert(blockedIdentifier.body.error.code === 'auth_risk_restricted', 'blocked identifier should return auth_risk_restricted');
@@ -192,29 +236,57 @@ async function main() {
     assert(smtp.messages.length === riskMessages, 'blocked identifier must not send a verification email');
 
     const deviceChallengeStart = smtp.messages.length;
-    const deviceChallenge = await req(base, '/api/auth/verification-codes', {
+    const deviceChallenge = await req(base, '/api/auth/register/start', {
       method: 'POST',
-      body: JSON.stringify({ type: 'email', identifier: 'device-risk@example.com', purpose: 'login' }),
+      body: JSON.stringify({ email: 'device-risk@example.com' }),
     });
     assert(deviceChallenge.res.status === 201, `device risk challenge should be created, got ${deviceChallenge.res.status}`);
-    for (let i = 0; i < 20 && smtp.messages.length === deviceChallengeStart; i++) {
-      await new Promise((resolvePromise) => setTimeout(resolvePromise, 50));
-    }
-    const deviceCode = (smtp.messages.at(-1) ?? '').match(/\b\d{6}\b/)?.[0];
-    assert(deviceCode, 'device risk SMTP message did not include a code');
-    const blockedDeviceLogin = await req(base, '/api/auth/login', {
+    const deviceCode = await waitForEmailCode(smtp.messages, deviceChallengeStart);
+    const blockedDeviceLogin = await req(base, '/api/auth/register/complete', {
       method: 'POST',
       body: JSON.stringify({
         challengeId: deviceChallenge.body.challengeId,
         code: deviceCode,
+        password: TEST_PASSWORD,
         agreedToTerms: true,
         device: { deviceId: 'blocked-device', deviceName: 'Blocked device', platform: 'Web', appVersion: 'test' },
       }),
     });
-    assert(blockedDeviceLogin.res.status === 423, `blocked device login should be 423, got ${blockedDeviceLogin.res.status}`);
-    assert(blockedDeviceLogin.body.error.code === 'auth_risk_restricted', 'blocked device login should return auth_risk_restricted');
+    assert(blockedDeviceLogin.res.status === 423, `blocked device registration should be 423, got ${blockedDeviceLogin.res.status}`);
+    assert(blockedDeviceLogin.body.error.code === 'auth_risk_restricted', 'blocked device registration should return auth_risk_restricted');
 
     let userACookie = await login(base, 'alice@example.com', smtp.messages);
+    const duplicateRegistration = await req(base, '/api/auth/register/start', {
+      method: 'POST',
+      body: JSON.stringify({ email: 'alice@example.com' }),
+    });
+    assert(duplicateRegistration.res.status === 409, `duplicate registration should be 409, got ${duplicateRegistration.res.status}`);
+    assert(duplicateRegistration.body.error.code === 'email_already_registered', 'duplicate registration should return email_already_registered');
+
+    const weakPasswordChallenge = await requestRegistrationCode(base, 'weak-password@example.com', smtp.messages);
+    const weakPasswordComplete = await req(base, '/api/auth/register/complete', {
+      method: 'POST',
+      body: JSON.stringify({
+        ...weakPasswordChallenge,
+        password: 'short',
+        agreedToTerms: true,
+        device: { deviceId: 'weak-password-device', platform: 'Web' },
+      }),
+    });
+    assert(weakPasswordComplete.res.status === 400, `weak password should fail, got ${weakPasswordComplete.res.status}`);
+    assert(weakPasswordComplete.body.error.code === 'invalid_password', 'weak password should return invalid_password');
+
+    const wrongPassword = await req(base, '/api/auth/login/password', {
+      method: 'POST',
+      body: JSON.stringify({
+        email: 'alice@example.com',
+        password: 'WrongPass123!',
+        device: { deviceId: 'alice-wrong-password', platform: 'Web' },
+      }),
+    });
+    assert(wrongPassword.res.status === 401, `wrong password should fail, got ${wrongPassword.res.status}`);
+    assert(wrongPassword.body.error.code === 'invalid_credentials', 'wrong password should return invalid_credentials');
+
     const refresh = await req(base, '/api/auth/refresh', { method: 'POST', cookie: userACookie });
     assert(refresh.res.status === 200 && refresh.body.user.emailMasked, `refresh failed: ${refresh.res.status}`);
     userACookie = cookiesFrom(refresh.res);
@@ -278,6 +350,69 @@ async function main() {
     assert(exportA.body.tasks.length === 1, `expected Alice export to include one task`);
     assert(exportB.body.tasks.length === 0, `expected Bob export to include zero tasks`);
 
+    const legacyEmail = 'legacy-code-account@example.com';
+    const legacyUserId = insertLegacyEmailAccount(dbPath, legacyEmail);
+    const legacyPasswordLoginBefore = await req(base, '/api/auth/login/password', {
+      method: 'POST',
+      body: JSON.stringify({
+        email: legacyEmail,
+        password: TEST_PASSWORD,
+        device: { deviceId: 'legacy-before-password', platform: 'Web' },
+      }),
+    });
+    assert(legacyPasswordLoginBefore.res.status === 409, `legacy account without password should be 409, got ${legacyPasswordLoginBefore.res.status}`);
+    assert(legacyPasswordLoginBefore.body.error.code === 'password_not_set', 'legacy account should return password_not_set before migration');
+    const legacyChallenge = await requestRegistrationCode(base, legacyEmail, smtp.messages);
+    const legacyComplete = await req(base, '/api/auth/register/complete', {
+      method: 'POST',
+      body: JSON.stringify({
+        ...legacyChallenge,
+        password: TEST_PASSWORD,
+        agreedToTerms: true,
+        device: { deviceId: 'legacy-password-set', deviceName: 'Legacy Password Set', platform: 'Web' },
+      }),
+    });
+    assert(legacyComplete.res.status === 200, `legacy password set should return 200, got ${legacyComplete.res.status} ${JSON.stringify(legacyComplete.body)}`);
+    assert(legacyComplete.body.user.id === legacyUserId, 'legacy password setup should keep the original user id');
+    cookiesFrom(legacyComplete.res);
+
+    const unknownReset = await req(base, '/api/auth/password-reset/start', {
+      method: 'POST',
+      body: JSON.stringify({ email: 'unknown-reset@example.com' }),
+    });
+    assert(unknownReset.res.status === 404, `unknown password reset should be 404, got ${unknownReset.res.status}`);
+    assert(unknownReset.body.error.code === 'email_not_registered', 'unknown password reset should return email_not_registered');
+    const resetChallenge = await requestPasswordResetCode(base, 'alice@example.com', smtp.messages);
+    const reset = await req(base, '/api/auth/password-reset/complete', {
+      method: 'POST',
+      body: JSON.stringify({
+        ...resetChallenge,
+        password: 'NewPassword123!',
+        device: { deviceId: 'alice-reset-device', deviceName: 'Alice Reset', platform: 'Web' },
+      }),
+    });
+    assert(reset.res.status === 200, `password reset failed: ${reset.res.status} ${JSON.stringify(reset.body)}`);
+    cookiesFrom(reset.res);
+    const oldPasswordAfterReset = await req(base, '/api/auth/login/password', {
+      method: 'POST',
+      body: JSON.stringify({
+        email: 'alice@example.com',
+        password: TEST_PASSWORD,
+        device: { deviceId: 'alice-old-password-after-reset', platform: 'Web' },
+      }),
+    });
+    assert(oldPasswordAfterReset.res.status === 401, `old password should fail after reset, got ${oldPasswordAfterReset.res.status}`);
+    const newPasswordAfterReset = await req(base, '/api/auth/login/password', {
+      method: 'POST',
+      body: JSON.stringify({
+        email: 'alice@example.com',
+        password: 'NewPassword123!',
+        device: { deviceId: 'alice-new-password-after-reset', deviceName: 'Alice New Password', platform: 'Web' },
+      }),
+    });
+    assert(newPasswordAfterReset.res.status === 200, `new password should login after reset, got ${newPasswordAfterReset.res.status}`);
+    cookiesFrom(newPasswordAfterReset.res);
+
     const logout = await req(base, '/api/auth/logout', { method: 'POST', cookie: userACookie });
     assert(logout.res.status === 204, `logout failed: ${logout.res.status}`);
     const afterLogout = await req(base, '/api/tasks?view=active', { cookie: userACookie });
@@ -290,15 +425,17 @@ async function main() {
       const consumedCodes = db.prepare('SELECT COUNT(*) c FROM verification_codes WHERE consumed_at IS NOT NULL').get() as { c: number };
       const sessions = db.prepare('SELECT COUNT(*) c FROM login_sessions').get() as { c: number };
       const revokedSessions = db.prepare('SELECT COUNT(*) c FROM login_sessions WHERE revoked_at IS NOT NULL').get() as { c: number };
+      const passwordCredentials = db.prepare('SELECT COUNT(*) c FROM auth_password_credentials').get() as { c: number };
       const blockedIdentifierRows = db
         .prepare("SELECT COUNT(*) c FROM verification_codes WHERE display_identifier = 'ri**********@example.com'")
         .get() as { c: number };
       const auditRiskRows = db.prepare("SELECT COUNT(*) c FROM security_audit_logs WHERE action LIKE 'auth_risk_%'").get() as { c: number };
-      assert(users.c === 2, `expected 2 users in DB, got ${users.c}`);
+      assert(users.c === 3, `expected 3 users in DB, got ${users.c}`);
       assert(tasks.c === 1, `expected 1 task in DB, got ${tasks.c}`);
-      assert(consumedCodes.c === 3, `expected 3 consumed codes, got ${consumedCodes.c}`);
-      assert(sessions.c === 3, `expected 3 login sessions, got ${sessions.c}`);
+      assert(consumedCodes.c === 4, `expected 4 consumed codes, got ${consumedCodes.c}`);
+      assert(sessions.c === 6, `expected 6 login sessions, got ${sessions.c}`);
       assert(revokedSessions.c === 2, `expected 2 revoked sessions, got ${revokedSessions.c}`);
+      assert(passwordCredentials.c === 3, `expected 3 password credentials, got ${passwordCredentials.c}`);
       assert(blockedIdentifierRows.c === 0, 'blocked identifier should not create verification code rows');
       assert(auditRiskRows.c === 2, `expected 2 risk audit rows, got ${auditRiskRows.c}`);
     } finally {

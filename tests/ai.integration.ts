@@ -1,3 +1,4 @@
+import { loginCookie } from './auth-test-helper';
 import { DatabaseSync } from 'node:sqlite';
 import net from 'node:net';
 import http from 'node:http';
@@ -91,7 +92,37 @@ async function startAiProvider(): Promise<{
       if (req.url === '/v1/chat/completions') {
         const userContent = String(body?.messages?.find((m: any) => m.role === 'user')?.content ?? '');
         let content: string;
-        if (userContent.includes('scheduleRange')) {
+        if (userContent.includes('ruleParseRequest')) {
+          content = JSON.stringify({
+            rule: {
+              name: '午间休息不排任务',
+              description: '工作日中午保留休息时间',
+              type: 'time_boundary',
+              status: 'enabled',
+              priority: 'hard',
+              condition: { startTime: '12:00', endTime: '13:30', daysOfWeek: [1, 2, 3, 4, 5] },
+              action: { effect: 'block' },
+              scope: {},
+            },
+            explanation: '识别为工作日固定时间边界，会阻止自动排期占用午休。',
+            confidence: 0.91,
+          });
+        } else if (userContent.includes('taskStructureRequest')) {
+          const parsed = JSON.parse(userContent);
+          const tasks = parsed.taskStructureRequest.tasks;
+          content = JSON.stringify({
+            tasks: tasks.map((task: any) => ({
+              taskId: task.id,
+              title: task.title,
+              estimatedMinutes: task.title.includes('prototype') ? 120 : 45,
+              scheduleEnergyType: task.title.includes('prototype') ? 'high' : 'medium',
+              scheduleTaskType: task.title.includes('prototype') ? 'engineering' : 'writing',
+              isSplittable: task.title.includes('prototype'),
+              minScheduleMinutes: task.title.includes('prototype') ? 60 : null,
+              reason: task.title.includes('prototype') ? 'Implementation work needs a high-energy block.' : 'Copy work fits a medium-energy writing slot.',
+            })),
+          });
+        } else if (userContent.includes('scheduleRange')) {
           const parsed = JSON.parse(userContent);
           const firstTask = parsed.schedulableTasks[0];
           content = JSON.stringify({
@@ -196,30 +227,7 @@ async function req(base: string, path: string, init: RequestInit & { cookie?: st
 }
 
 async function login(base: string, email: string, smtpMessages: string[]): Promise<string> {
-  const codeStart = smtpMessages.length;
-  const challenge = await req(base, '/api/auth/verification-codes', {
-    method: 'POST',
-    body: JSON.stringify({ type: 'email', identifier: email, purpose: 'login' }),
-  });
-  assert(challenge.res.status === 201, `verification code failed: ${challenge.res.status}`);
-  for (let i = 0; i < 20 && smtpMessages.length === codeStart; i++) {
-    await new Promise((resolvePromise) => setTimeout(resolvePromise, 50));
-  }
-  const code = (smtpMessages.at(-1) ?? '').match(/\b\d{6}\b/)?.[0];
-  assert(code, 'SMTP message did not include a code');
-  const loginRes = await fetch(`${base}/api/auth/login`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({
-      challengeId: challenge.body.challengeId,
-      code,
-      agreedToTerms: true,
-      device: { deviceId: `ai-${email}`, deviceName: 'AI integration test', platform: 'Web', appVersion: 'test' },
-    }),
-  });
-  await json(loginRes);
-  assert(loginRes.status === 201 || loginRes.status === 200, `login failed: ${loginRes.status}`);
-  return cookiesFrom(loginRes);
+  return loginCookie(base, email, smtpMessages);
 }
 
 async function main() {
@@ -252,6 +260,18 @@ async function main() {
     });
     assert(task.res.status === 201, `task create failed: ${task.res.status}`);
 
+    const structureGoal = await req(base, '/api/goals', {
+      method: 'POST',
+      cookie,
+      body: JSON.stringify({
+        title: 'Structured launch plan',
+        deadlineAt: '2030-01-06T18:00:00.000Z',
+        tasksText: 'Write landing copy\nImplement prototype',
+      }),
+    });
+    assert(structureGoal.res.status === 201, `structure goal create failed: ${structureGoal.res.status} ${JSON.stringify(structureGoal.body)}`);
+    assert(structureGoal.body.tasks.length === 2, 'structure goal should create two initial tasks');
+
     const notConfigured = await req(base, '/api/ai/task-breakdown', {
       method: 'POST',
       cookie,
@@ -260,6 +280,20 @@ async function main() {
     assert(notConfigured.res.status === 409, `unconfigured AI should be 409, got ${notConfigured.res.status}`);
     assert(notConfigured.body.error.code === 'ai_disabled', `unconfigured AI should return ai_disabled, got ${notConfigured.body.error.code}`);
     assert(ai.requests.length === 0, 'unconfigured AI must not call the provider');
+
+    const structureDisabled = await req(base, `/api/goals/${structureGoal.body.goal.id}/tasks/structure`, { method: 'POST', cookie });
+    assert(structureDisabled.res.status === 409, `disabled task structure should be 409, got ${structureDisabled.res.status}`);
+    assert(structureDisabled.body.error.code === 'ai_disabled', `disabled task structure should return ai_disabled, got ${structureDisabled.body.error.code}`);
+    assert(ai.requests.length === 0, 'disabled task structure must not call the provider');
+
+    const ruleParseDisabled = await req(base, '/api/schedule-rules/parse-natural-language', {
+      method: 'POST',
+      cookie,
+      body: JSON.stringify({ text: '工作日 12:00 到 13:30 不要安排任务' }),
+    });
+    assert(ruleParseDisabled.res.status === 409, `disabled rule parse should be 409, got ${ruleParseDisabled.res.status}`);
+    assert(ruleParseDisabled.body.error.code === 'ai_disabled', `disabled rule parse should return ai_disabled, got ${ruleParseDisabled.body.error.code}`);
+    assert(ai.requests.length === 0, 'disabled rule parse must not call the provider');
 
     const missingKeyPatch = await req(base, '/api/settings', {
       method: 'PATCH',
@@ -306,6 +340,60 @@ async function main() {
     assert(result.body.suggestions.length === 2, `expected 2 suggestions, got ${result.body.suggestions.length}`);
     assert(result.body.suggestions[0].title === 'Draft outline', 'AI suggestion title did not parse');
     assert(ai.requests.some((r) => r.url === '/v1/chat/completions' && r.auth === 'Bearer test-secret-key'), 'AI provider was not called with bearer key');
+
+    const parsedRule = await req(base, '/api/schedule-rules/parse-natural-language', {
+      method: 'POST',
+      cookie,
+      body: JSON.stringify({ text: '工作日 12:00 到 13:30 不要安排任务' }),
+    });
+    assert(parsedRule.res.status === 200, `AI rule parse failed: ${parsedRule.res.status} ${JSON.stringify(parsedRule.body)}`);
+    assert(parsedRule.body.rule.name === '午间休息不排任务', 'rule parse should return the provider rule name');
+    assert(parsedRule.body.rule.type === 'time_boundary' && parsedRule.body.rule.priority === 'hard', 'rule parse should normalize type and priority');
+    assert(parsedRule.body.rule.condition.startTime === '12:00' && parsedRule.body.rule.condition.endTime === '13:30', 'rule parse should keep time condition');
+    assert(parsedRule.body.confidence === 0.91, 'rule parse should expose provider confidence');
+    assert(
+      ai.requests.some((r) => String(r.body?.messages?.find((m: any) => m.role === 'user')?.content ?? '').includes('ruleParseRequest')),
+      'AI rule parse request should call the provider with ruleParseRequest',
+    );
+    const rulesAfterParse = await req(base, '/api/schedule-rules', { cookie });
+    assert(
+      !rulesAfterParse.body.rules.some((rule: any) => rule.name === parsedRule.body.rule.name),
+      'AI rule parse should not persist a rule before user confirmation',
+    );
+    const createdParsedRule = await req(base, '/api/schedule-rules', {
+      method: 'POST',
+      cookie,
+      body: JSON.stringify(parsedRule.body.rule),
+    });
+    assert(createdParsedRule.res.status === 201, `parsed rule create failed: ${createdParsedRule.res.status} ${JSON.stringify(createdParsedRule.body)}`);
+    assert(createdParsedRule.body.rule.name === parsedRule.body.rule.name, 'confirmed parsed rule should persist with the parsed name');
+
+    const structure = await req(base, `/api/goals/${structureGoal.body.goal.id}/tasks/structure`, { method: 'POST', cookie });
+    assert(structure.res.status === 200, `AI task structure failed: ${structure.res.status} ${JSON.stringify(structure.body)}`);
+    assert(structure.body.goalId === structureGoal.body.goal.id, 'task structure should echo goal id');
+    assert(structure.body.updates.length === 2, `expected two task structure updates, got ${structure.body.updates.length}`);
+    const prototypeUpdate = structure.body.updates.find((update: any) => update.title === 'Implement prototype');
+    assert(prototypeUpdate?.estimatedMinutes === 120, 'prototype task estimate should come from AI structure');
+    assert(prototypeUpdate?.scheduleEnergyType === 'high', 'prototype task energy should come from AI structure');
+    assert(prototypeUpdate?.isSplittable === true && prototypeUpdate?.minScheduleMinutes === 60, 'prototype task split metadata should come from AI structure');
+    assert(
+      ai.requests.some((r) => String(r.body?.messages?.find((m: any) => m.role === 'user')?.content ?? '').includes('taskStructureRequest')),
+      'AI task structure request should call the provider with task context',
+    );
+
+    const structureTree = await req(base, `/api/goals/${structureGoal.body.goal.id}/tree`, { cookie });
+    const structuredByTitle = new Map(structureTree.body.tasks.map((item: any) => [item.title, item]));
+    const copyTask = structuredByTitle.get('Write landing copy') as any;
+    const prototypeTask = structuredByTitle.get('Implement prototype') as any;
+    assert(copyTask.estimatedMinutes === 45 && copyTask.scheduleEnergyType === 'medium' && copyTask.scheduleTaskType === 'writing', 'copy task structure should persist');
+    assert(
+      prototypeTask.estimatedMinutes === 120 &&
+        prototypeTask.scheduleEnergyType === 'high' &&
+        prototypeTask.scheduleTaskType === 'engineering' &&
+        prototypeTask.isSplittable === true &&
+        prototypeTask.minScheduleMinutes === 60,
+      'prototype task structure should persist',
+    );
 
     for (const suggestion of result.body.suggestions) {
       await req(base, '/api/tasks', {
@@ -469,6 +557,51 @@ END:VCALENDAR`;
       assert(scheduleLog?.status === 'success', 'AI schedule generation log was not written');
       assert(JSON.parse(scheduleLog.request_json).externalEvents.length === 1, 'schedule log should include external calendar context');
       assert(JSON.parse(scheduleLog.response_json).suggestions[0].taskId === scheduleTask.body.task.id, 'schedule log response mismatch');
+      const structureLog = db.prepare("SELECT request_json, response_json, status FROM ai_generation_logs WHERE scenario = 'goal_task_structure'").get() as
+        | { request_json: string; response_json: string; status: string }
+        | undefined;
+      assert(structureLog?.status === 'success', 'AI task structure generation log was not written');
+      assert(!structureLog.request_json.includes('test-secret-key'), 'task structure log must not store raw API key');
+      assert(JSON.parse(structureLog.request_json).tasks.length === 2, 'task structure log should include goal tasks');
+      assert(JSON.parse(structureLog.response_json).updates.length === 2, 'task structure log response mismatch');
+      const ruleParseLog = db.prepare("SELECT request_json, response_json, status FROM ai_generation_logs WHERE scenario = 'schedule_rule_parse'").get() as
+        | { request_json: string; response_json: string; status: string }
+        | undefined;
+      assert(ruleParseLog?.status === 'success', 'AI rule parse generation log was not written');
+      assert(!ruleParseLog.request_json.includes('test-secret-key'), 'rule parse log must not store raw API key');
+      assert(JSON.parse(ruleParseLog.request_json).text.includes('12:00'), 'rule parse log should include the source text');
+      assert(JSON.parse(ruleParseLog.response_json).rule.name === '午间休息不排任务', 'rule parse log response mismatch');
+      const parsedRuleRow = db.prepare('SELECT name, type, priority, condition_json FROM personal_schedule_rules WHERE id = ?').get(createdParsedRule.body.rule.id) as
+        | { name: string; type: string; priority: string; condition_json: string }
+        | undefined;
+      assert(parsedRuleRow?.name === '午间休息不排任务', 'confirmed parsed rule was not written to SQLite');
+      assert(parsedRuleRow.type === 'time_boundary' && parsedRuleRow.priority === 'hard', 'confirmed parsed rule type/priority mismatch');
+      assert(JSON.parse(parsedRuleRow.condition_json).startTime === '12:00', 'confirmed parsed rule condition mismatch');
+      const structuredRows = db
+        .prepare(
+          `SELECT title, estimated_minutes, schedule_energy_type, schedule_task_type, is_splittable, min_schedule_minutes
+           FROM tasks
+           WHERE goal_id = ?
+           ORDER BY title ASC`,
+        )
+        .all(structureGoal.body.goal.id) as Array<{
+        title: string;
+        estimated_minutes: number | null;
+        schedule_energy_type: string | null;
+        schedule_task_type: string | null;
+        is_splittable: number;
+        min_schedule_minutes: number | null;
+      }>;
+      assert(structuredRows.length === 2, `expected two structured task rows, got ${structuredRows.length}`);
+      const prototypeRow = structuredRows.find((row) => row.title === 'Implement prototype');
+      assert(
+        prototypeRow?.estimated_minutes === 120 &&
+          prototypeRow.schedule_energy_type === 'high' &&
+          prototypeRow.schedule_task_type === 'engineering' &&
+          prototypeRow.is_splittable === 1 &&
+          prototypeRow.min_schedule_minutes === 60,
+        'structured task metadata was not written to SQLite',
+      );
       const scheduledRow = db.prepare('SELECT planned_start_at, planned_end_at FROM tasks WHERE id = ?').get(scheduleTask.body.task.id) as
         | { planned_start_at: string | null; planned_end_at: string | null }
         | undefined;

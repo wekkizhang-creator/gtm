@@ -1,3 +1,4 @@
+import { loginCookie } from './auth-test-helper';
 import { DatabaseSync } from 'node:sqlite';
 import net from 'node:net';
 import { existsSync, unlinkSync } from 'node:fs';
@@ -117,20 +118,7 @@ async function requestCode(base: string, email: string, purpose: string, smtpMes
 }
 
 async function login(base: string, email: string, smtpMessages: string[]): Promise<string> {
-  const challenge = await requestCode(base, email, 'login', smtpMessages);
-  const loginRes = await fetch(`${base}/api/auth/login`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({
-      challengeId: challenge.challengeId,
-      code: challenge.code,
-      agreedToTerms: true,
-      device: { deviceId: `account-delete-${email}`, deviceName: 'Account deletion test', platform: 'Web', appVersion: 'test' },
-    }),
-  });
-  await json(loginRes);
-  assert(loginRes.status === 201 || loginRes.status === 200, `login failed: ${loginRes.status}`);
-  return cookiesFrom(loginRes);
+  return loginCookie(base, email, smtpMessages);
 }
 
 async function main() {
@@ -233,9 +221,9 @@ async function main() {
     });
     assert(finalized.body.finalized === 1, `expected one finalized account, got ${finalized.body.finalized}`);
 
-    const blockedReRegistration = await req(base, '/api/auth/verification-codes', {
+    const blockedReRegistration = await req(base, '/api/auth/register/start', {
       method: 'POST',
-      body: JSON.stringify({ type: 'email', identifier: email, purpose: 'login' }),
+      body: JSON.stringify({ email }),
     });
     assert(
       blockedReRegistration.res.status === 423 && blockedReRegistration.body.error.code === 'identity_re_registration_blocked',

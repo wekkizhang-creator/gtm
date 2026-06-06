@@ -163,6 +163,261 @@ export interface Goal {
   updatedAt: string;
 }
 
+export interface DayPilotDashboardTask {
+  id: string;
+  title: string;
+  goalId: string;
+  goalTitle: string;
+  priority: Priority;
+  startDate: string | null;
+  dueDate: string | null;
+  estimatedMinutes: number | null;
+  scheduleEnergyType: ScheduleEnergyType | null;
+  scheduleTaskType: string | null;
+  status: TaskStatus;
+}
+
+export interface DayPilotDashboardGoal {
+  id: string;
+  title: string;
+  deadlineAt: string | null;
+  status: Goal['status'];
+  scheduledTodayCount: number;
+  unscheduledTaskCount: number;
+  openTaskCount: number;
+}
+
+export interface DayPilotDashboardRisk {
+  type: 'deadline_risk' | 'rule_conflict' | 'unscheduled_today';
+  severity: 'info' | 'warning' | 'blocking';
+  goalId: string | null;
+  goalTitle: string | null;
+  taskId: string | null;
+  taskTitle: string | null;
+  ruleIds: string[];
+  rules: Array<{ id: string; name: string; priority: ScheduleRulePriority; status: ScheduleRuleStatus }>;
+  message: string;
+  suggestions: string[];
+}
+
+export interface DayPilotDashboard {
+  date: string;
+  range: { from: string; to: string };
+  summary: {
+    topTaskCount: number;
+    activeGoalCount: number;
+    scheduledTodayCount: number;
+    unscheduledTaskCount: number;
+    riskCount: number;
+  };
+  topTasks: DayPilotDashboardTask[];
+  activeGoals: DayPilotDashboardGoal[];
+  scheduledTasks: DayPilotDashboardTask[];
+  unscheduledTasks: DayPilotDashboardTask[];
+  risks: DayPilotDashboardRisk[];
+}
+
+export type ScheduleRuleType =
+  | 'time_boundary'
+  | 'energy_preference'
+  | 'fixed_habit'
+  | 'buffer'
+  | 'task_category'
+  | 'reminder'
+  | 'plan_priority';
+
+export type ScheduleRuleStatus = 'enabled' | 'disabled';
+export type ScheduleRulePriority = 'hard' | 'normal' | 'preference';
+export type ScheduleEnergyType = 'high' | 'medium' | 'low';
+
+export interface PersonalScheduleRule {
+  id: string;
+  name: string;
+  description: string | null;
+  type: ScheduleRuleType;
+  status: ScheduleRuleStatus;
+  priority: ScheduleRulePriority;
+  condition: Record<string, unknown>;
+  action: Record<string, unknown>;
+  scope: Record<string, unknown>;
+  deletedAt: string | null;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface ScheduleRuleDraft {
+  name: string;
+  description: string | null;
+  type: ScheduleRuleType;
+  status: ScheduleRuleStatus;
+  priority: ScheduleRulePriority;
+  condition: Record<string, unknown>;
+  action: Record<string, unknown>;
+  scope: Record<string, unknown>;
+}
+
+export interface ScheduleRuleTemplate extends ScheduleRuleDraft {
+  id: string;
+  sortOrder: number;
+}
+
+export interface ScheduleProposalAvoidedBlock {
+  source: 'task' | 'external' | 'rule' | 'scheduled';
+  title: string;
+  start: string;
+  end: string;
+  ruleId?: string | null;
+}
+
+export interface ScheduleProposalChange {
+  changeKey: string;
+  taskId: string;
+  title: string;
+  operation: 'schedule_task' | 'create_split_segment';
+  segmentIndex: number | null;
+  segmentTotal: number | null;
+  createdTaskId: string | null;
+  oldStartDate: string | null;
+  oldDueDate: string | null;
+  oldPlannedStartAt: string | null;
+  oldPlannedEndAt: string | null;
+  oldIsAllDay: boolean;
+  plannedStartAt: string;
+  plannedEndAt: string;
+  durationMinutes: number;
+  ruleIds: string[];
+  avoidedBlocks: ScheduleProposalAvoidedBlock[];
+  reason: string;
+  conflict: boolean;
+  confirmed: boolean;
+}
+
+export interface ScheduleProposalExplanation {
+  taskId: string;
+  ruleIds: string[];
+  message: string;
+}
+
+export interface ScheduleProposalConflict {
+  type:
+    | 'rule_conflict'
+    | 'schedule_overflow'
+    | 'dependency_cycle'
+    | 'invalid_rule'
+    | 'task_blocked'
+    | 'reschedule_impact'
+    | 'manual_adjustment_conflict';
+  severity: 'info' | 'warning' | 'blocking';
+  taskId?: string | null;
+  ruleIds: string[];
+  message: string;
+  suggestions: string[];
+}
+
+export interface ScheduleProposal {
+  id: string;
+  goalId: string;
+  status: 'draft' | 'confirmed' | 'discarded' | 'undone';
+  range: { from: string; to: string };
+  changes: ScheduleProposalChange[];
+  explanations: ScheduleProposalExplanation[];
+  conflicts: ScheduleProposalConflict[];
+  riskScore: number;
+  createdAt: string;
+  confirmedAt: string | null;
+}
+
+export interface ScheduleRulePreviewBlock {
+  start: string;
+  end: string;
+  ruleId: string | null;
+  ruleName: string;
+}
+
+export interface ScheduleRulePreviewAffectedTask {
+  taskId: string;
+  title: string;
+  startDate: string;
+  dueDate: string;
+  ruleBlockStart: string;
+  ruleBlockEnd: string;
+}
+
+export interface ScheduleRulePreview {
+  range: { from: string; to: string };
+  blockedSlots: ScheduleRulePreviewBlock[];
+  affectedTasks: ScheduleRulePreviewAffectedTask[];
+  summary: {
+    blockedSlotCount: number;
+    affectedTaskCount: number;
+  };
+}
+
+export interface ScheduleRuleDetailImpact {
+  proposalId: string;
+  proposalStatus: ScheduleProposal['status'];
+  taskId: string;
+  title: string;
+  operation: ScheduleProposalChange['operation'];
+  plannedStartAt: string;
+  plannedEndAt: string;
+  durationMinutes: number;
+  reason: string;
+  createdAt: string;
+}
+
+export interface ScheduleRuleDetailConflict {
+  proposalId: string;
+  proposalStatus: ScheduleProposal['status'];
+  type: ScheduleProposalConflict['type'];
+  severity: ScheduleProposalConflict['severity'];
+  taskId: string | null;
+  message: string;
+  suggestions: string[];
+  createdAt: string;
+}
+
+export interface ScheduleRuleDetails {
+  rule: PersonalScheduleRule;
+  hitCount: number;
+  conflictCount: number;
+  recentImpacts: ScheduleRuleDetailImpact[];
+  recentConflicts: ScheduleRuleDetailConflict[];
+}
+
+export interface ScheduleRuleConflictRule {
+  id: string;
+  name: string;
+  priority: ScheduleRulePriority;
+  status: ScheduleRuleStatus;
+}
+
+export interface ScheduleRuleConflictItem {
+  id: string;
+  proposalId: string;
+  proposalStatus: ScheduleProposal['status'];
+  goalId: string;
+  createdAt: string;
+  type: ScheduleProposalConflict['type'];
+  severity: ScheduleProposalConflict['severity'];
+  taskId: string | null;
+  taskTitle: string | null;
+  ruleIds: string[];
+  rules: ScheduleRuleConflictRule[];
+  message: string;
+  suggestions: string[];
+}
+
+export interface ScheduleRuleConflictList {
+  conflicts: ScheduleRuleConflictItem[];
+  summary: {
+    total: number;
+    blocking: number;
+    warning: number;
+    info: number;
+  };
+}
+
 export interface Notification {
   id: string;
   type: string;
@@ -480,6 +735,32 @@ export interface AIScheduleResult {
   suggestions: AIScheduleSuggestion[];
 }
 
+export interface AITaskStructureUpdate {
+  taskId: string;
+  title: string;
+  estimatedMinutes: number | null;
+  scheduleEnergyType: ScheduleEnergyType | null;
+  scheduleTaskType: string | null;
+  isSplittable: boolean;
+  minScheduleMinutes: number | null;
+  reason: string | null;
+}
+
+export interface AITaskStructureResult {
+  logId: string;
+  goalId: string;
+  updates: AITaskStructureUpdate[];
+  tasks: Task[];
+}
+
+export interface AIScheduleRuleParseResult {
+  logId: string;
+  text: string;
+  rule: ScheduleRuleDraft;
+  explanation: string | null;
+  confidence: number;
+}
+
 export interface StickyNote {
   id: string;
   taskId: string | null;
@@ -520,6 +801,10 @@ export interface Task {
   autoScheduleEnabled: boolean;
   isLockedSchedule: boolean;
   estimatedMinutes: number | null;
+  scheduleEnergyType: ScheduleEnergyType | null;
+  scheduleTaskType: string | null;
+  isSplittable: boolean;
+  minScheduleMinutes: number | null;
   subtaskConfig: { progressMode: 'auto' | 'count' | 'estimate'; autoCompleteParent: boolean; collapsed: boolean };
   recurrenceRule: string | null;
   source: string;

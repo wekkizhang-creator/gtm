@@ -1,6 +1,8 @@
 import { Router } from 'express';
 import { requireUserId } from '../authMiddleware';
+import * as aiRepo from '../aiRepo';
 import * as repo from '../repo';
+import * as scheduleRulesRepo from '../scheduleRulesRepo';
 import { AppError } from '../types';
 
 const router = Router();
@@ -9,12 +11,16 @@ router.get('/', (req, res) => {
   res.json({ goals: repo.listGoals(requireUserId(req)) });
 });
 
+router.get('/daypilot-dashboard', (req, res) => {
+  res.json({ dashboard: repo.getDayPilotDashboard(requireUserId(req), { date: typeof req.query.date === 'string' ? req.query.date : null }) });
+});
+
 router.post('/', (req, res) => {
   const b = req.body ?? {};
   if (typeof b.title !== 'string' || !b.title.trim()) {
     throw new AppError(400, 'invalid', 'title is required');
   }
-  const goal = repo.createGoal(requireUserId(req), {
+  const result = repo.createGoalWithInitialTasks(requireUserId(req), {
     title: b.title,
     description: b.description ?? null,
     startAt: b.startAt ?? null,
@@ -23,8 +29,10 @@ router.post('/', (req, res) => {
     availableTimeRule: b.availableTimeRule ?? null,
     progressMode: b.progressMode ?? 'auto',
     status: b.status ?? 'active',
+    tasksText: b.tasksText ?? null,
+    initialTasks: b.initialTasks ?? null,
   });
-  res.status(201).json({ goal });
+  res.status(201).json(result);
 });
 
 router.get('/:id/tree', (req, res) => {
@@ -44,12 +52,33 @@ router.post('/:id/tasks', (req, res) => {
     parentId: b.parentId ?? null,
     priority: b.priority ?? 0,
     estimatedMinutes: b.estimatedMinutes ?? null,
+    scheduleEnergyType: b.scheduleEnergyType ?? null,
+    scheduleTaskType: b.scheduleTaskType ?? null,
+    isSplittable: b.isSplittable ?? false,
+    minScheduleMinutes: b.minScheduleMinutes ?? null,
   });
   res.status(201).json({ task });
 });
 
+router.post('/:id/tasks/structure', async (req, res, next) => {
+  try {
+    const result = await aiRepo.structureGoalTasks(requireUserId(req), {
+      goalId: req.params.id,
+      taskIds: Array.isArray(req.body?.taskIds) ? req.body.taskIds : null,
+    });
+    res.json(result);
+  } catch (e) {
+    next(e);
+  }
+});
+
 router.post('/:id/auto-schedule', (req, res) => {
   res.json(repo.autoScheduleGoal(requireUserId(req), req.params.id));
+});
+
+router.post('/:id/schedule-proposals', (req, res) => {
+  const proposal = scheduleRulesRepo.createScheduleProposal(requireUserId(req), req.params.id, req.body ?? {});
+  res.status(201).json({ proposal });
 });
 
 router.patch('/:id', (req, res) => {

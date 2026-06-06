@@ -1,6 +1,7 @@
 node_modules/
 dist/
 *.log
+.deploy-tmp/
 
 # real SQLite database files (do not commit user data)
 server/data/*.db

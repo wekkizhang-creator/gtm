@@ -1,6 +1,7 @@
 import { randomUUID } from 'node:crypto';
 import { db, nowISO } from './db';
 import * as repo from './repo';
+import * as scheduleRulesRepo from './scheduleRulesRepo';
 import * as settings from './settingsRepo';
 import {
   AppError,
@@ -9,9 +10,17 @@ import {
   type AIQuadrantSuggestionDTO,
   type AIQuadrantSuggestionResultDTO,
   type AIReviewResultDTO,
+  type AIScheduleRuleParseResultDTO,
   type AIScheduleResultDTO,
   type AIScheduleSuggestionDTO,
+  type AITaskStructureResultDTO,
+  type AITaskStructureUpdateDTO,
   type Priority,
+  type ScheduleEnergyType,
+  type ScheduleRuleDraftDTO,
+  type ScheduleRulePriority,
+  type ScheduleRuleStatus,
+  type ScheduleRuleType,
 } from './types';
 
 type OpenAIMessage = { role: 'system' | 'user'; content: string };
@@ -204,6 +213,120 @@ function parseScheduleSuggestions(content: string, allowedTaskIds: Set<string>):
     .slice(0, 20);
   if (!suggestions.length) throw new AppError(502, 'ai_invalid_response', 'AI did not return usable schedule suggestions');
   return suggestions;
+}
+
+function normalizeScheduleEnergyType(value: unknown): ScheduleEnergyType | null {
+  return value === 'high' || value === 'medium' || value === 'low' ? value : null;
+}
+
+function normalizeScheduleMinutes(value: unknown): number | null {
+  if (value == null) return null;
+  const n = Math.round(Number(value));
+  return Number.isInteger(n) && n >= 15 && n <= 1440 ? n : null;
+}
+
+function normalizeTaskStructureUpdate(value: unknown, allowedTaskIds: Set<string>): AITaskStructureUpdateDTO | null {
+  if (!value || typeof value !== 'object') return null;
+  const row = value as Record<string, unknown>;
+  if (typeof row.taskId !== 'string' || !allowedTaskIds.has(row.taskId)) return null;
+  const title = typeof row.title === 'string' && row.title.trim() ? row.title.trim().slice(0, 160) : row.taskId;
+  const isSplittable = row.isSplittable === true;
+  const estimatedMinutes = normalizeScheduleMinutes(row.estimatedMinutes);
+  const minScheduleMinutes = isSplittable ? normalizeScheduleMinutes(row.minScheduleMinutes) : null;
+  return {
+    taskId: row.taskId,
+    title,
+    estimatedMinutes,
+    scheduleEnergyType: normalizeScheduleEnergyType(row.scheduleEnergyType),
+    scheduleTaskType: typeof row.scheduleTaskType === 'string' && row.scheduleTaskType.trim() ? row.scheduleTaskType.trim().slice(0, 80) : null,
+    isSplittable,
+    minScheduleMinutes,
+    reason: typeof row.reason === 'string' && row.reason.trim() ? row.reason.trim().slice(0, 500) : null,
+  };
+}
+
+const SCHEDULE_RULE_TYPES: ScheduleRuleType[] = [
+  'time_boundary',
+  'energy_preference',
+  'fixed_habit',
+  'buffer',
+  'task_category',
+  'reminder',
+  'plan_priority',
+];
+const SCHEDULE_RULE_STATUSES: ScheduleRuleStatus[] = ['enabled', 'disabled'];
+const SCHEDULE_RULE_PRIORITIES: ScheduleRulePriority[] = ['hard', 'normal', 'preference'];
+
+function plainObject(value: unknown): Record<string, unknown> {
+  return value && typeof value === 'object' && !Array.isArray(value) ? { ...(value as Record<string, unknown>) } : {};
+}
+
+function normalizeScheduleRuleDraft(value: unknown): ScheduleRuleDraftDTO | null {
+  if (!value || typeof value !== 'object') return null;
+  const row = value as Record<string, unknown>;
+  const name = typeof row.name === 'string' && row.name.trim() ? row.name.trim().slice(0, 120) : '';
+  if (!name) return null;
+  const type = SCHEDULE_RULE_TYPES.includes(row.type as ScheduleRuleType) ? (row.type as ScheduleRuleType) : null;
+  if (!type) return null;
+  const status = SCHEDULE_RULE_STATUSES.includes(row.status as ScheduleRuleStatus) ? (row.status as ScheduleRuleStatus) : 'enabled';
+  const priority = SCHEDULE_RULE_PRIORITIES.includes(row.priority as ScheduleRulePriority) ? (row.priority as ScheduleRulePriority) : 'normal';
+  return {
+    name,
+    description: typeof row.description === 'string' && row.description.trim() ? row.description.trim().slice(0, 500) : null,
+    type,
+    status,
+    priority,
+    condition: plainObject(row.condition),
+    action: plainObject(row.action),
+    scope: plainObject(row.scope),
+  };
+}
+
+function parseScheduleRuleDraft(content: string): Omit<AIScheduleRuleParseResultDTO, 'logId' | 'text'> {
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(content);
+  } catch {
+    const match = content.match(/\{[\s\S]*\}/);
+    if (!match) throw new AppError(502, 'ai_invalid_response', 'AI response was not valid JSON');
+    parsed = JSON.parse(match[0]);
+  }
+  const row = parsed as Record<string, unknown>;
+  const rule = normalizeScheduleRuleDraft(row.rule ?? parsed);
+  if (!rule) throw new AppError(502, 'ai_invalid_response', 'AI did not return a usable schedule rule');
+  const confidenceRaw = Number(row.confidence ?? 0.7);
+  const confidence = Number.isFinite(confidenceRaw) ? Math.max(0, Math.min(1, confidenceRaw)) : 0.7;
+  return {
+    rule,
+    explanation: typeof row.explanation === 'string' && row.explanation.trim() ? row.explanation.trim().slice(0, 800) : null,
+    confidence,
+  };
+}
+
+function parseTaskStructureUpdates(content: string, allowedTaskIds: Set<string>): AITaskStructureUpdateDTO[] {
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(content);
+  } catch {
+    const match = content.match(/\{[\s\S]*\}/);
+    if (!match) throw new AppError(502, 'ai_invalid_response', 'AI response was not valid JSON');
+    parsed = JSON.parse(match[0]);
+  }
+  const rawList = Array.isArray(parsed)
+    ? parsed
+    : Array.isArray((parsed as Record<string, unknown>)?.tasks)
+      ? ((parsed as Record<string, unknown>).tasks as unknown[])
+      : [];
+  const seen = new Set<string>();
+  const updates: AITaskStructureUpdateDTO[] = [];
+  for (const item of rawList) {
+    const update = normalizeTaskStructureUpdate(item, allowedTaskIds);
+    if (!update || seen.has(update.taskId)) continue;
+    seen.add(update.taskId);
+    updates.push(update);
+  }
+  if (!updates.length) throw new AppError(502, 'ai_invalid_response', 'AI did not return usable task structure updates');
+  return updates;
 }
 
 function defaultReviewRange(): { from: string; to: string } {
@@ -530,6 +653,185 @@ export async function weeklyReview(userId: string, input: { from?: string | null
     });
     if (e instanceof AppError) throw new AppError(e.status, e.code, `${e.message}; logId=${logId}`);
     throw new AppError(502, 'ai_provider_error', `AI weekly review failed; logId=${logId}`);
+  }
+}
+
+export async function parseScheduleRuleNaturalLanguage(
+  userId: string,
+  input: { text?: string | null },
+): Promise<AIScheduleRuleParseResultDTO> {
+  const cfg = requireConfigured(userId);
+  const text = typeof input.text === 'string' ? input.text.trim() : '';
+  if (!text) throw new AppError(400, 'invalid', 'text is required');
+  if (text.length > 500) throw new AppError(400, 'invalid', 'text must be at most 500 characters');
+  const request = {
+    text,
+    supportedTypes: SCHEDULE_RULE_TYPES,
+    supportedPriorities: SCHEDULE_RULE_PRIORITIES,
+  };
+  const messages: OpenAIMessage[] = [
+    {
+      role: 'system',
+      content:
+        'You parse a personal scheduling rule into a structured rule draft. Return only JSON with keys rule, explanation, and confidence. Do not create or save anything. Supported rule.type values are time_boundary, energy_preference, fixed_habit, buffer, task_category, reminder, plan_priority. For time_boundary and fixed_habit include condition.startTime, condition.endTime as HH:mm and optional condition.daysOfWeek numbers 0-6, with action.effect="block". For buffer include action.minutes. For reminder include action.minutesBefore. For energy_preference include condition.energyType high|medium|low and action.effect="prefer". Use priority hard|normal|preference and status enabled|disabled.',
+    },
+    {
+      role: 'user',
+      content: JSON.stringify({
+        ruleParseRequest: request,
+        outputSchema: {
+          rule: {
+            name: 'string',
+            description: 'string|null',
+            type: 'time_boundary|energy_preference|fixed_habit|buffer|task_category|reminder|plan_priority',
+            status: 'enabled|disabled',
+            priority: 'hard|normal|preference',
+            condition: 'object',
+            action: 'object',
+            scope: 'object',
+          },
+          explanation: 'string|null',
+          confidence: 'number 0..1',
+        },
+      }),
+    },
+  ];
+  try {
+    const response = await callChatCompletions({ ...cfg, messages });
+    const parsed = parseScheduleRuleDraft(contentFromChatResponse(response));
+    const from = new Date();
+    from.setHours(0, 0, 0, 0);
+    const to = new Date(from);
+    to.setDate(to.getDate() + 7);
+    scheduleRulesRepo.previewScheduleRule(userId, { ...parsed.rule, from: from.toISOString(), to: to.toISOString() });
+    const logId = logGeneration({
+      userId,
+      scenario: 'schedule_rule_parse',
+      provider: cfg.provider,
+      model: cfg.model,
+      request,
+      response: { ...parsed, providerResponse: response },
+      status: 'success',
+    });
+    return { logId, text, ...parsed };
+  } catch (e) {
+    if (e instanceof AppError && (e.code === 'ai_disabled' || e.code === 'ai_not_configured')) throw e;
+    const logId = logGeneration({
+      userId,
+      scenario: 'schedule_rule_parse',
+      provider: cfg.provider,
+      model: cfg.model,
+      request,
+      status: 'failed',
+      error: e instanceof Error ? e.message : String(e),
+    });
+    if (e instanceof AppError) throw new AppError(e.status, e.code, `${e.message}; logId=${logId}`);
+    throw new AppError(502, 'ai_provider_error', `AI schedule rule parsing failed; logId=${logId}`);
+  }
+}
+
+export async function structureGoalTasks(
+  userId: string,
+  input: { goalId?: string | null; taskIds?: string[] | null },
+): Promise<AITaskStructureResultDTO> {
+  const cfg = requireConfigured(userId);
+  if (!input.goalId) throw new AppError(400, 'invalid', 'goalId is required');
+  const tree = repo.getGoalTree(userId, input.goalId);
+  if (!tree) throw new AppError(404, 'not_found', 'goal not found');
+  const requestedIds = Array.isArray(input.taskIds) && input.taskIds.length > 0
+    ? new Set(input.taskIds.filter((id): id is string => typeof id === 'string' && !!id))
+    : null;
+  let tasks = tree.tasks.filter((task) => task.status !== 'done' && task.status !== 'skipped');
+  if (requestedIds) {
+    tasks = tasks.filter((task) => requestedIds.has(task.id));
+    if (tasks.length !== requestedIds.size) throw new AppError(404, 'not_found', 'one or more tasks were not found in the goal');
+  }
+  tasks = tasks.slice(0, 30);
+  if (!tasks.length) throw new AppError(400, 'invalid', 'no goal tasks found to structure');
+  const taskPayload = tasks.map((task) => ({
+    id: task.id,
+    title: task.title,
+    note: task.note,
+    priority: task.priority,
+    dueDate: task.dueDate,
+    estimatedMinutes: task.estimatedMinutes,
+    scheduleEnergyType: task.scheduleEnergyType,
+    scheduleTaskType: task.scheduleTaskType,
+    isSplittable: task.isSplittable,
+    minScheduleMinutes: task.minScheduleMinutes,
+  }));
+  const request = {
+    goal: {
+      id: tree.goal.id,
+      title: tree.goal.title,
+      description: tree.goal.description,
+      startAt: tree.goal.startAt,
+      deadlineAt: tree.goal.deadlineAt,
+    },
+    tasks: taskPayload,
+  };
+  const messages: OpenAIMessage[] = [
+    {
+      role: 'system',
+      content:
+        'You structure plan tasks for calendar scheduling. Return only JSON with key "tasks". For each task include taskId, title, estimatedMinutes, scheduleEnergyType (high|medium|low|null), scheduleTaskType, isSplittable, minScheduleMinutes, and reason. Do not invent task IDs.',
+    },
+    {
+      role: 'user',
+      content: JSON.stringify({
+        taskStructureRequest: request,
+        outputSchema: {
+          tasks: [
+            {
+              taskId: 'string from input',
+              title: 'string',
+              estimatedMinutes: 'integer 15..1440|null',
+              scheduleEnergyType: 'high|medium|low|null',
+              scheduleTaskType: 'string|null',
+              isSplittable: 'boolean',
+              minScheduleMinutes: 'integer 15..1440|null',
+              reason: 'string|null',
+            },
+          ],
+        },
+      }),
+    },
+  ];
+  try {
+    const response = await callChatCompletions({ ...cfg, messages });
+    const updates = parseTaskStructureUpdates(contentFromChatResponse(response), new Set(tasks.map((task) => task.id)));
+    const updatedTasks = updates.map((update) =>
+      repo.updateTask(userId, update.taskId, {
+        estimatedMinutes: update.estimatedMinutes,
+        scheduleEnergyType: update.scheduleEnergyType,
+        scheduleTaskType: update.scheduleTaskType,
+        isSplittable: update.isSplittable,
+        minScheduleMinutes: update.minScheduleMinutes,
+      }),
+    ).filter((task): task is NonNullable<typeof task> => !!task);
+    const logId = logGeneration({
+      userId,
+      scenario: 'goal_task_structure',
+      provider: cfg.provider,
+      model: cfg.model,
+      request,
+      response: { updates, providerResponse: response },
+      status: 'success',
+    });
+    return { logId, goalId: tree.goal.id, updates, tasks: updatedTasks };
+  } catch (e) {
+    if (e instanceof AppError && (e.code === 'ai_disabled' || e.code === 'ai_not_configured' || e.code === 'not_found')) throw e;
+    const logId = logGeneration({
+      userId,
+      scenario: 'goal_task_structure',
+      provider: cfg.provider,
+      model: cfg.model,
+      request,
+      status: 'failed',
+      error: e instanceof Error ? e.message : String(e),
+    });
+    if (e instanceof AppError) throw new AppError(e.status, e.code, `${e.message}; logId=${logId}`);
+    throw new AppError(502, 'ai_provider_error', `AI task structure failed; logId=${logId}`);
   }
 }
 

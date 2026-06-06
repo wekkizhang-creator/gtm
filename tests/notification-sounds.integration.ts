@@ -1,3 +1,4 @@
+import { loginCookie } from './auth-test-helper';
 import net from 'node:net';
 import { DatabaseSync } from 'node:sqlite';
 import { existsSync, rmSync, unlinkSync } from 'node:fs';
@@ -110,28 +111,7 @@ function latestCode(messages: string[]): string {
 }
 
 async function login(base: string, email: string, messages: string[]): Promise<string> {
-  const codeStart = messages.length;
-  const challenge = await req(base, '/api/auth/verification-codes', {
-    method: 'POST',
-    body: JSON.stringify({ type: 'email', identifier: email, purpose: 'login' }),
-  });
-  assert(challenge.res.status === 201, `verification code failed: ${challenge.res.status} ${JSON.stringify(challenge.body)}`);
-  for (let i = 0; i < 20 && messages.length === codeStart; i++) {
-    await new Promise((resolvePromise) => setTimeout(resolvePromise, 50));
-  }
-  const complete = await fetch(`${base}/api/auth/login`, {
-    method: 'POST',
-    headers: { 'content-type': 'application/json' },
-    body: JSON.stringify({
-      challengeId: challenge.body.challengeId,
-      code: latestCode(messages),
-      agreedToTerms: true,
-      device: { deviceId: `sound-${email}`, deviceName: 'Sound test', platform: 'Web' },
-    }),
-  });
-  const body = await json(complete);
-  assert(complete.status === 201 || complete.status === 200, `login failed: ${complete.status} ${JSON.stringify(body)}`);
-  return cookiesFrom(complete);
+  return loginCookie(base, email, messages);
 }
 
 async function main() {

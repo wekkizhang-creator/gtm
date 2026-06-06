@@ -1,3 +1,4 @@
+import { TEST_PASSWORD, waitForEmailCode } from './auth-test-helper';
 import { DatabaseSync } from 'node:sqlite';
 import net from 'node:net';
 import { existsSync, unlinkSync } from 'node:fs';
@@ -101,16 +102,14 @@ async function req(base: string, path: string, init: RequestInit & { cookie?: st
   return { res, body: await json(res) };
 }
 
-async function requestEmailCode(base: string, email: string, smtpMessages: string[]): Promise<{ challengeId: string; code: string }> {
+async function requestRegistrationCode(base: string, email: string, smtpMessages: string[]): Promise<{ challengeId: string; code: string }> {
   const start = smtpMessages.length;
-  const challenge = await req(base, '/api/auth/verification-codes', {
+  const challenge = await req(base, '/api/auth/register/start', {
     method: 'POST',
-    body: JSON.stringify({ type: 'email', identifier: email, purpose: 'login' }),
+    body: JSON.stringify({ email }),
   });
-  assert(challenge.res.status === 201, `verification code failed: ${challenge.res.status}`);
-  for (let i = 0; i < 20 && smtpMessages.length === start; i++) await new Promise((r) => setTimeout(r, 50));
-  const code = (smtpMessages.at(-1) ?? '').match(/\b\d{6}\b/)?.[0];
-  assert(code, 'SMTP message did not include code');
+  assert(challenge.res.status === 201, `registration code failed: ${challenge.res.status}`);
+  const code = await waitForEmailCode(smtpMessages, start);
   return { challengeId: challenge.body.challengeId, code };
 }
 
@@ -159,23 +158,25 @@ async function main() {
     });
     assert(pageView.res.status === 202 && pageView.body.accepted === 1, 'unauth analytics event was not accepted');
 
-    const challenge = await requestEmailCode(base, 'analytics-user@example.com', smtp.messages);
-    const badLogin = await req(base, '/api/auth/login', {
+    const challenge = await requestRegistrationCode(base, 'analytics-user@example.com', smtp.messages);
+    const badRegistration = await req(base, '/api/auth/register/complete', {
       method: 'POST',
       body: JSON.stringify({
         challengeId: challenge.challengeId,
         code: '000000',
+        password: TEST_PASSWORD,
         agreedToTerms: true,
         device: { deviceId: 'analytics-device', platform: 'Web' },
       }),
     });
-    assert(badLogin.res.status === 400, `bad code should fail, got ${badLogin.res.status}`);
+    assert(badRegistration.res.status === 400, `bad code should fail, got ${badRegistration.res.status}`);
 
-    const login = await req(base, '/api/auth/login', {
+    const login = await req(base, '/api/auth/register/complete', {
       method: 'POST',
       body: JSON.stringify({
         challengeId: challenge.challengeId,
         code: challenge.code,
+        password: TEST_PASSWORD,
         agreedToTerms: true,
         device: { deviceId: 'analytics-device', deviceName: 'Analytics test', platform: 'Web' },
       }),
@@ -183,6 +184,16 @@ async function main() {
     assert(login.res.status === 201, `login failed: ${login.res.status} ${JSON.stringify(login.body)}`);
     const cookie = cookiesFrom(login.res);
     const userId = login.body.user.id;
+
+    const badPasswordLogin = await req(base, '/api/auth/login/password', {
+      method: 'POST',
+      body: JSON.stringify({
+        email: 'analytics-user@example.com',
+        password: 'WrongPass123!',
+        device: { deviceId: 'analytics-device-wrong', platform: 'Web' },
+      }),
+    });
+    assert(badPasswordLogin.res.status === 401, `bad password should fail, got ${badPasswordLogin.res.status}`);
 
     const authed = await req(base, '/api/analytics/events', {
       method: 'POST',
@@ -219,7 +230,16 @@ async function main() {
         properties_json: string;
       }>;
       const names = events.map((event) => event.event_name);
-      for (const name of ['auth_page_view', 'auth_code_send', 'auth_code_verify', 'auth_login_success', 'auth_register_success', 'setting_page_view', 'auth_logout_success']) {
+      for (const name of [
+        'auth_page_view',
+        'auth_code_send',
+        'auth_register_result',
+        'auth_register_success',
+        'auth_login_result',
+        'auth_login_success',
+        'setting_page_view',
+        'auth_logout_success',
+      ]) {
         assert(names.includes(name), `missing analytics event ${name}; saw ${names.join(',')}`);
       }
       const first = events.find((event) => event.event_name === 'auth_page_view')!;
@@ -233,11 +253,15 @@ async function main() {
 
       const send = events.find((event) => event.event_name === 'auth_code_send')!;
       const sendProps = JSON.parse(send.properties_json);
-      assert(sendProps.method === 'email' && sendProps.success === true && sendProps.is_new_identifier === true, 'auth_code_send props mismatch');
+      assert(
+        sendProps.method === 'email' && sendProps.success === true && sendProps.purpose === 'register' && sendProps.is_new_identifier === true,
+        'auth_code_send props mismatch',
+      );
 
-      const verifyEvents = events.filter((event) => event.event_name === 'auth_code_verify').map((event) => JSON.parse(event.properties_json));
-      assert(verifyEvents.some((event) => event.success === false && event.fail_reason === 'invalid_code'), 'missing failed code verification event');
-      assert(verifyEvents.some((event) => event.success === true), 'missing successful code verification event');
+      const failedRegistration = events.find((event) => event.event_name === 'auth_register_result')!;
+      assert(JSON.parse(failedRegistration.properties_json).fail_reason === 'invalid_code', 'missing failed registration event');
+      const failedLogin = events.find((event) => event.event_name === 'auth_login_result')!;
+      assert(JSON.parse(failedLogin.properties_json).fail_reason === 'invalid_credentials', 'missing failed password login event');
 
       const loginEvent = events.find((event) => event.event_name === 'auth_login_success')!;
       assert(loginEvent.user_id === userId && !!loginEvent.session_id, 'login analytics should be user/session scoped');

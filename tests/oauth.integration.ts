@@ -1,3 +1,4 @@
+import { loginByEmailPassword } from './auth-test-helper';
 import { DatabaseSync } from 'node:sqlite';
 import net from 'node:net';
 import http from 'node:http';
@@ -163,15 +164,6 @@ async function waitForHealth(base: string): Promise<void> {
   throw new Error('server did not become healthy');
 }
 
-function cookiesFrom(res: Response): string {
-  const h: any = res.headers as any;
-  const all: string[] = typeof h.getSetCookie === 'function' ? h.getSetCookie() : [res.headers.get('set-cookie') ?? ''];
-  const joined = all.join(', ');
-  const found = joined.match(/el_(?:access|refresh)=[^;,\s]+/g) ?? [];
-  assert(found.length >= 2, `expected auth cookies, got ${joined}`);
-  return found.join('; ');
-}
-
 async function json(res: Response): Promise<any> {
   const body = await res.text();
   return body ? JSON.parse(body) : null;
@@ -184,33 +176,13 @@ async function req(base: string, path: string, init: RequestInit & { cookie?: st
   return { res, body: await json(res) };
 }
 
-async function requestEmailCode(base: string, email: string, smtpMessages: string[]): Promise<{ challengeId: string; code: string }> {
-  const start = smtpMessages.length;
-  const challenge = await req(base, '/api/auth/verification-codes', {
-    method: 'POST',
-    body: JSON.stringify({ type: 'email', identifier: email, purpose: 'login' }),
-  });
-  assert(challenge.res.status === 201, `verification code failed: ${challenge.res.status}`);
-  for (let i = 0; i < 20 && smtpMessages.length === start; i++) await new Promise((r) => setTimeout(r, 50));
-  const code = (smtpMessages.at(-1) ?? '').match(/\b\d{6}\b/)?.[0];
-  assert(code, 'SMTP message did not include code');
-  return { challengeId: challenge.body.challengeId, code };
-}
-
 async function loginEmail(base: string, email: string, smtpMessages: string[]): Promise<{ cookie: string; userId: string }> {
-  const challenge = await requestEmailCode(base, email, smtpMessages);
-  const loginRes = await fetch(`${base}/api/auth/login`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({
-      ...challenge,
-      agreedToTerms: true,
-      device: { deviceId: `oauth-email-${email}`, deviceName: 'OAuth integration test', platform: 'Web', appVersion: 'test' },
-    }),
+  return loginByEmailPassword(base, email, smtpMessages, {
+    deviceId: `oauth-email-${email}`,
+    deviceName: 'OAuth integration test',
+    platform: 'Web',
+    appVersion: 'test',
   });
-  const body = await json(loginRes);
-  assert(loginRes.status === 201 || loginRes.status === 200, `email login failed: ${loginRes.status}`);
-  return { cookie: cookiesFrom(loginRes), userId: body.user.id };
 }
 
 async function main() {
@@ -249,7 +221,7 @@ async function main() {
       }),
     });
     assert(oauthLogin.res.status === 400, `OAuth login should be blocked by email-only policy, got ${oauthLogin.res.status}`);
-    assert(oauthLogin.body.error.code === 'email_login_only', 'OAuth login should return email_login_only');
+    assert(oauthLogin.body.error.code === 'email_password_only', 'OAuth login should return email_password_only');
 
     const redirectUri = 'http://127.0.0.1/oauth/callback';
     const authorization = await req(base, '/api/auth/oauth/test/authorize', {
@@ -257,7 +229,7 @@ async function main() {
       body: JSON.stringify({ redirectUri }),
     });
     assert(authorization.res.status === 400, `OAuth authorization login should be blocked, got ${authorization.res.status}`);
-    assert(authorization.body.error.code === 'email_login_only', 'OAuth authorization login should return email_login_only');
+    assert(authorization.body.error.code === 'email_password_only', 'OAuth authorization login should return email_password_only');
 
     const codeLogin = await req(base, '/api/auth/oauth/test/callback', {
       method: 'POST',
@@ -270,7 +242,7 @@ async function main() {
       }),
     });
     assert(codeLogin.res.status === 400, `OAuth code login should be blocked, got ${codeLogin.res.status}`);
-    assert(codeLogin.body.error.code === 'email_login_only', 'OAuth code login should return email_login_only');
+    assert(codeLogin.body.error.code === 'email_password_only', 'OAuth code login should return email_password_only');
     assert(oauth.requests.length === 0, 'blocked OAuth login must not call the OAuth provider');
     assert(oauth.tokenRequests.length === 0, 'blocked OAuth login must not call the token endpoint');
 

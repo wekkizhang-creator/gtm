@@ -113,6 +113,261 @@ export interface GoalDTO {
   updatedAt: string;
 }
 
+export interface DayPilotDashboardTaskDTO {
+  id: string;
+  title: string;
+  goalId: string;
+  goalTitle: string;
+  priority: Priority;
+  startDate: string | null;
+  dueDate: string | null;
+  estimatedMinutes: number | null;
+  scheduleEnergyType: ScheduleEnergyType | null;
+  scheduleTaskType: string | null;
+  status: TaskStatus;
+}
+
+export interface DayPilotDashboardGoalDTO {
+  id: string;
+  title: string;
+  deadlineAt: string | null;
+  status: GoalDTO['status'];
+  scheduledTodayCount: number;
+  unscheduledTaskCount: number;
+  openTaskCount: number;
+}
+
+export interface DayPilotDashboardRiskDTO {
+  type: 'deadline_risk' | 'rule_conflict' | 'unscheduled_today';
+  severity: 'info' | 'warning' | 'blocking';
+  goalId: string | null;
+  goalTitle: string | null;
+  taskId: string | null;
+  taskTitle: string | null;
+  ruleIds: string[];
+  rules: Array<{ id: string; name: string; priority: ScheduleRulePriority; status: ScheduleRuleStatus }>;
+  message: string;
+  suggestions: string[];
+}
+
+export interface DayPilotDashboardDTO {
+  date: string;
+  range: { from: string; to: string };
+  summary: {
+    topTaskCount: number;
+    activeGoalCount: number;
+    scheduledTodayCount: number;
+    unscheduledTaskCount: number;
+    riskCount: number;
+  };
+  topTasks: DayPilotDashboardTaskDTO[];
+  activeGoals: DayPilotDashboardGoalDTO[];
+  scheduledTasks: DayPilotDashboardTaskDTO[];
+  unscheduledTasks: DayPilotDashboardTaskDTO[];
+  risks: DayPilotDashboardRiskDTO[];
+}
+
+export type ScheduleRuleType =
+  | 'time_boundary'
+  | 'energy_preference'
+  | 'fixed_habit'
+  | 'buffer'
+  | 'task_category'
+  | 'reminder'
+  | 'plan_priority';
+
+export type ScheduleRuleStatus = 'enabled' | 'disabled';
+export type ScheduleRulePriority = 'hard' | 'normal' | 'preference';
+export type ScheduleEnergyType = 'high' | 'medium' | 'low';
+
+export interface PersonalScheduleRuleDTO {
+  id: string;
+  name: string;
+  description: string | null;
+  type: ScheduleRuleType;
+  status: ScheduleRuleStatus;
+  priority: ScheduleRulePriority;
+  condition: Record<string, unknown>;
+  action: Record<string, unknown>;
+  scope: Record<string, unknown>;
+  deletedAt: string | null;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface ScheduleRuleDraftDTO {
+  name: string;
+  description: string | null;
+  type: ScheduleRuleType;
+  status: ScheduleRuleStatus;
+  priority: ScheduleRulePriority;
+  condition: Record<string, unknown>;
+  action: Record<string, unknown>;
+  scope: Record<string, unknown>;
+}
+
+export interface ScheduleRuleTemplateDTO extends ScheduleRuleDraftDTO {
+  id: string;
+  sortOrder: number;
+}
+
+export interface ScheduleProposalAvoidedBlockDTO {
+  source: 'task' | 'external' | 'rule' | 'scheduled';
+  title: string;
+  start: string;
+  end: string;
+  ruleId?: string | null;
+}
+
+export interface ScheduleProposalChangeDTO {
+  changeKey: string;
+  taskId: string;
+  title: string;
+  operation: 'schedule_task' | 'create_split_segment';
+  segmentIndex: number | null;
+  segmentTotal: number | null;
+  createdTaskId: string | null;
+  oldStartDate: string | null;
+  oldDueDate: string | null;
+  oldPlannedStartAt: string | null;
+  oldPlannedEndAt: string | null;
+  oldIsAllDay: boolean;
+  plannedStartAt: string;
+  plannedEndAt: string;
+  durationMinutes: number;
+  ruleIds: string[];
+  avoidedBlocks: ScheduleProposalAvoidedBlockDTO[];
+  reason: string;
+  conflict: boolean;
+  confirmed: boolean;
+}
+
+export interface ScheduleProposalExplanationDTO {
+  taskId: string;
+  ruleIds: string[];
+  message: string;
+}
+
+export interface ScheduleProposalConflictDTO {
+  type:
+    | 'rule_conflict'
+    | 'schedule_overflow'
+    | 'dependency_cycle'
+    | 'invalid_rule'
+    | 'task_blocked'
+    | 'reschedule_impact'
+    | 'manual_adjustment_conflict';
+  severity: 'info' | 'warning' | 'blocking';
+  taskId?: string | null;
+  ruleIds: string[];
+  message: string;
+  suggestions: string[];
+}
+
+export interface ScheduleProposalDTO {
+  id: string;
+  goalId: string;
+  status: 'draft' | 'confirmed' | 'discarded' | 'undone';
+  range: { from: string; to: string };
+  changes: ScheduleProposalChangeDTO[];
+  explanations: ScheduleProposalExplanationDTO[];
+  conflicts: ScheduleProposalConflictDTO[];
+  riskScore: number;
+  createdAt: string;
+  confirmedAt: string | null;
+}
+
+export interface ScheduleRulePreviewBlockDTO {
+  start: string;
+  end: string;
+  ruleId: string | null;
+  ruleName: string;
+}
+
+export interface ScheduleRulePreviewAffectedTaskDTO {
+  taskId: string;
+  title: string;
+  startDate: string;
+  dueDate: string;
+  ruleBlockStart: string;
+  ruleBlockEnd: string;
+}
+
+export interface ScheduleRulePreviewDTO {
+  range: { from: string; to: string };
+  blockedSlots: ScheduleRulePreviewBlockDTO[];
+  affectedTasks: ScheduleRulePreviewAffectedTaskDTO[];
+  summary: {
+    blockedSlotCount: number;
+    affectedTaskCount: number;
+  };
+}
+
+export interface ScheduleRuleDetailImpactDTO {
+  proposalId: string;
+  proposalStatus: ScheduleProposalDTO['status'];
+  taskId: string;
+  title: string;
+  operation: ScheduleProposalChangeDTO['operation'];
+  plannedStartAt: string;
+  plannedEndAt: string;
+  durationMinutes: number;
+  reason: string;
+  createdAt: string;
+}
+
+export interface ScheduleRuleDetailConflictDTO {
+  proposalId: string;
+  proposalStatus: ScheduleProposalDTO['status'];
+  type: ScheduleProposalConflictDTO['type'];
+  severity: ScheduleProposalConflictDTO['severity'];
+  taskId: string | null;
+  message: string;
+  suggestions: string[];
+  createdAt: string;
+}
+
+export interface ScheduleRuleDetailsDTO {
+  rule: PersonalScheduleRuleDTO;
+  hitCount: number;
+  conflictCount: number;
+  recentImpacts: ScheduleRuleDetailImpactDTO[];
+  recentConflicts: ScheduleRuleDetailConflictDTO[];
+}
+
+export interface ScheduleRuleConflictRuleDTO {
+  id: string;
+  name: string;
+  priority: ScheduleRulePriority;
+  status: ScheduleRuleStatus;
+}
+
+export interface ScheduleRuleConflictItemDTO {
+  id: string;
+  proposalId: string;
+  proposalStatus: ScheduleProposalDTO['status'];
+  goalId: string;
+  createdAt: string;
+  type: ScheduleProposalConflictDTO['type'];
+  severity: ScheduleProposalConflictDTO['severity'];
+  taskId: string | null;
+  taskTitle: string | null;
+  ruleIds: string[];
+  rules: ScheduleRuleConflictRuleDTO[];
+  message: string;
+  suggestions: string[];
+}
+
+export interface ScheduleRuleConflictListDTO {
+  conflicts: ScheduleRuleConflictItemDTO[];
+  summary: {
+    total: number;
+    blocking: number;
+    warning: number;
+    info: number;
+  };
+}
+
 export interface NotificationDTO {
   id: string;
   type: string;
@@ -430,6 +685,32 @@ export interface AIScheduleResultDTO {
   suggestions: AIScheduleSuggestionDTO[];
 }
 
+export interface AITaskStructureUpdateDTO {
+  taskId: string;
+  title: string;
+  estimatedMinutes: number | null;
+  scheduleEnergyType: ScheduleEnergyType | null;
+  scheduleTaskType: string | null;
+  isSplittable: boolean;
+  minScheduleMinutes: number | null;
+  reason: string | null;
+}
+
+export interface AITaskStructureResultDTO {
+  logId: string;
+  goalId: string;
+  updates: AITaskStructureUpdateDTO[];
+  tasks: TaskDTO[];
+}
+
+export interface AIScheduleRuleParseResultDTO {
+  logId: string;
+  text: string;
+  rule: ScheduleRuleDraftDTO;
+  explanation: string | null;
+  confidence: number;
+}
+
 export interface StickyNoteDTO {
   id: string;
   taskId: string | null;
@@ -470,6 +751,10 @@ export interface TaskDTO {
   autoScheduleEnabled: boolean;
   isLockedSchedule: boolean;
   estimatedMinutes: number | null;
+  scheduleEnergyType: ScheduleEnergyType | null;
+  scheduleTaskType: string | null;
+  isSplittable: boolean;
+  minScheduleMinutes: number | null;
   subtaskConfig: { progressMode: 'auto' | 'count' | 'estimate'; autoCompleteParent: boolean; collapsed: boolean };
   recurrenceRule: string | null;
   source: string;

@@ -1,4 +1,4 @@
-import { createHmac, createHash, randomBytes, randomInt, randomUUID } from 'node:crypto';
+import { createHmac, createHash, randomBytes, randomInt, randomUUID, scryptSync, timingSafeEqual } from 'node:crypto';
 import type { Response } from 'express';
 import { db, getInboxId, nowISO } from './db';
 import { sendVerificationEmail } from './smtp';
@@ -58,6 +58,26 @@ function hmac(value: string, secret = tokenSecret()): string {
 
 function sha(value: string): string {
   return createHash('sha256').update(value).digest('hex');
+}
+
+function assertPassword(value: unknown): asserts value is string {
+  if (typeof value !== 'string' || value.length < 8 || value.length > 128) {
+    throw new AppError(400, 'invalid_password', 'password must be 8 to 128 characters');
+  }
+}
+
+function hashPassword(password: string): string {
+  const salt = randomBytes(16).toString('hex');
+  const key = scryptSync(password, salt, 64).toString('hex');
+  return `scrypt:${salt}:${key}`;
+}
+
+function verifyPassword(password: string, encoded: string): boolean {
+  const [, salt, key] = encoded.split(':');
+  if (!salt || !key) return false;
+  const expected = Buffer.from(key, 'hex');
+  const actual = scryptSync(password, salt, expected.length);
+  return expected.length === actual.length && timingSafeEqual(expected, actual);
 }
 
 function addSeconds(iso: string, seconds: number): string {
@@ -303,6 +323,69 @@ function setAuthCookies(res: Response, accessToken: string, refreshToken: string
   setCookie(res, REFRESH_COOKIE, refreshToken, REFRESH_TTL_SEC);
 }
 
+function emailIdentityForHash(idHash: string):
+  | { id: string; user_id: string; display_identifier: string; status: string; password_hash: string | null }
+  | undefined {
+  return db
+    .prepare(
+      `SELECT ai.id, ai.user_id, ai.display_identifier, u.status, pc.password_hash
+       FROM auth_identities ai
+       JOIN users u ON u.id = ai.user_id
+       LEFT JOIN auth_password_credentials pc ON pc.user_id = ai.user_id
+       WHERE ai.type = 'email' AND ai.identifier_hash = ? AND ai.unbound_at IS NULL
+       LIMIT 1`,
+    )
+    .get(idHash) as
+    | { id: string; user_id: string; display_identifier: string; status: string; password_hash: string | null }
+    | undefined;
+}
+
+function setPasswordCredential(userId: string, password: string, ts = nowISO()): void {
+  db.prepare(
+    `INSERT INTO auth_password_credentials (user_id, password_hash, created_at, updated_at)
+     VALUES (?, ?, ?, ?)
+     ON CONFLICT(user_id) DO UPDATE SET password_hash = excluded.password_hash, updated_at = excluded.updated_at`,
+  ).run(userId, hashPassword(password), ts, ts);
+}
+
+function normalizeDeviceInput(device: { deviceId: string; deviceName?: string | null; platform?: string | null; appVersion?: string | null }) {
+  if (typeof device.deviceId !== 'string' || !device.deviceId.trim()) {
+    throw new AppError(400, 'invalid', 'device.deviceId is required');
+  }
+  return {
+    deviceId: device.deviceId.trim(),
+    deviceName: typeof device.deviceName === 'string' ? device.deviceName : null,
+    platform: typeof device.platform === 'string' ? device.platform : null,
+    appVersion: typeof device.appVersion === 'string' ? device.appVersion : null,
+  };
+}
+
+export async function startEmailRegistration(input: {
+  email: string;
+  risk?: AuthRiskContext;
+}): Promise<{ challengeId: string; maskedIdentifier: string; expiresAt: string; resendAfterSec: number; isNewIdentifier: boolean }> {
+  const { normalized } = normalizeIdentifier('email', input.email);
+  const idHash = identifierHash('email', normalized);
+  assertIdentifierRiskAllowed('email', normalized, idHash, input.risk);
+  const existing = emailIdentityForHash(idHash);
+  if (existing?.password_hash) throw new AppError(409, 'email_already_registered', 'email is already registered');
+  if (!existing) assertIdentityReusable('email', idHash);
+  return createVerificationCode({ type: 'email', identifier: normalized, purpose: 'register', risk: input.risk });
+}
+
+export async function startPasswordReset(input: {
+  email: string;
+  risk?: AuthRiskContext;
+}): Promise<{ challengeId: string; maskedIdentifier: string; expiresAt: string; resendAfterSec: number; isNewIdentifier: boolean }> {
+  const { normalized } = normalizeIdentifier('email', input.email);
+  const idHash = identifierHash('email', normalized);
+  assertIdentifierRiskAllowed('email', normalized, idHash, input.risk);
+  const existing = emailIdentityForHash(idHash);
+  if (!existing) throw new AppError(404, 'email_not_registered', 'email is not registered');
+  if (!existing.password_hash) throw new AppError(409, 'password_not_set', 'email account has not set a password');
+  return createVerificationCode({ type: 'email', identifier: normalized, purpose: 'password_reset', risk: input.risk });
+}
+
 export async function createVerificationCode(input: {
   type: 'email' | 'phone';
   identifier: string;
@@ -396,41 +479,106 @@ function createOrLoadUserForIdentity(
   return { user: userById(userId)!, isNewUser: true };
 }
 
-export function loginWithCode(input: {
+export function completeEmailRegistration(input: {
   challengeId: string;
   code: string;
+  password: unknown;
   agreedToTerms: boolean;
   device: { deviceId: string; deviceName?: string | null; platform?: string | null; appVersion?: string | null };
   res: Response;
   risk?: AuthRiskContext;
-}): { user: UserDTO; session: SessionDTO; isNewUser: boolean; method: 'email' | 'phone' } {
-  assertDeviceRiskAllowed(input.device.deviceId, input.risk);
-  const row = db.prepare('SELECT * FROM verification_codes WHERE id = ?').get(input.challengeId) as any;
-  if (!row || row.consumed_at) throw new AppError(400, 'invalid_code', 'verification code is invalid');
-  const now = nowISO();
-  if (row.expires_at < now) throw new AppError(400, 'code_expired', 'verification code has expired');
-  if (row.attempts >= MAX_ATTEMPTS) throw new AppError(429, 'rate_limited', 'too many verification attempts');
-  if (row.code_hash !== codeHash(input.challengeId, input.code)) {
-    db.prepare('UPDATE verification_codes SET attempts = attempts + 1 WHERE id = ?').run(input.challengeId);
-    throw new AppError(400, 'invalid_code', 'verification code is invalid');
+}): { user: UserDTO; session: SessionDTO; isNewUser: boolean } {
+  assertPassword(input.password);
+  const device = normalizeDeviceInput(input.device);
+  assertDeviceRiskAllowed(device.deviceId, input.risk);
+  const codeRow = verifyPendingCode(input.challengeId, input.code, 'register');
+  if (codeRow.type !== 'email') throw new AppError(400, 'invalid_identity_type', 'registration requires an email verification code');
+  const existing = emailIdentityForHash(codeRow.identifier_hash);
+  if (existing?.password_hash) throw new AppError(409, 'email_already_registered', 'email is already registered');
+  const masked = existing?.display_identifier ?? codeRow.display_identifier ?? 'verified@email';
+  const ts = nowISO();
+  let user: UserDTO;
+  let isNewUser = false;
+  let session: SessionDTO;
+  db.exec('BEGIN');
+  try {
+    const result = createOrLoadUserForIdentity('email', codeRow.identifier_hash, masked, input.agreedToTerms);
+    user = result.user;
+    isNewUser = result.isNewUser;
+    assertSessionAllowedUser(user);
+    setPasswordCredential(user.id, input.password, ts);
+    db.prepare('UPDATE users SET last_login_at = ? WHERE id = ?').run(ts, user.id);
+    db.prepare('UPDATE verification_codes SET consumed_at = ? WHERE id = ?').run(ts, input.challengeId);
+    session = createSessionForUser(user.id, device, input.res, ts);
+    db.exec('COMMIT');
+  } catch (err) {
+    db.exec('ROLLBACK');
+    throw err;
   }
+  return { user: userById(user!.id)!, session: session!, isNewUser };
+}
 
-  db.prepare('UPDATE verification_codes SET consumed_at = ? WHERE id = ?').run(now, input.challengeId);
-  const identity = db.prepare('SELECT type, identifier_hash, display_identifier FROM verification_codes WHERE id = ?').get(input.challengeId) as {
-    type: 'email' | 'phone';
-    identifier_hash: string;
-    display_identifier: string | null;
-  };
-  const displayRow = db
-    .prepare('SELECT display_identifier FROM auth_identities WHERE type = ? AND identifier_hash = ? AND unbound_at IS NULL')
-    .get(identity.type, identity.identifier_hash) as { display_identifier: string } | undefined;
-  const masked = displayRow?.display_identifier ?? identity.display_identifier ?? (identity.type === 'email' ? 'verified@email' : 'verified phone');
-  const { user, isNewUser } = createOrLoadUserForIdentity(identity.type, identity.identifier_hash, masked, input.agreedToTerms);
+export function loginWithPassword(input: {
+  email: string;
+  password: unknown;
+  device: { deviceId: string; deviceName?: string | null; platform?: string | null; appVersion?: string | null };
+  res: Response;
+  risk?: AuthRiskContext;
+}): { user: UserDTO; session: SessionDTO; isNewUser: false } {
+  if (typeof input.password !== 'string') throw new AppError(401, 'invalid_credentials', 'email or password is incorrect');
+  const { normalized } = normalizeIdentifier('email', input.email);
+  const idHash = identifierHash('email', normalized);
+  assertIdentifierRiskAllowed('email', normalized, idHash, input.risk);
+  const device = normalizeDeviceInput(input.device);
+  assertDeviceRiskAllowed(device.deviceId, input.risk);
+  const identity = emailIdentityForHash(idHash);
+  if (!identity) throw new AppError(401, 'invalid_credentials', 'email or password is incorrect');
+  if (!identity.password_hash) throw new AppError(409, 'password_not_set', 'email account has not set a password');
+  if (!verifyPassword(input.password, identity.password_hash)) {
+    throw new AppError(401, 'invalid_credentials', 'email or password is incorrect');
+  }
+  const user = userById(identity.user_id);
+  if (!user) throw new AppError(401, 'invalid_credentials', 'email or password is incorrect');
   assertSessionAllowedUser(user);
-  db.prepare('UPDATE users SET last_login_at = ? WHERE id = ?').run(now, user.id);
+  const ts = nowISO();
+  db.prepare('UPDATE users SET last_login_at = ? WHERE id = ?').run(ts, user.id);
+  const session = createSessionForUser(user.id, device, input.res, ts);
+  return { user: userById(user.id)!, session, isNewUser: false };
+}
 
-  const session = createSessionForUser(user.id, input.device, input.res, now);
-  return { user: userById(user.id)!, session, isNewUser, method: identity.type };
+export function completePasswordReset(input: {
+  challengeId: string;
+  code: string;
+  password: unknown;
+  device: { deviceId: string; deviceName?: string | null; platform?: string | null; appVersion?: string | null };
+  res: Response;
+  risk?: AuthRiskContext;
+}): { user: UserDTO; session: SessionDTO; isNewUser: false } {
+  assertPassword(input.password);
+  const device = normalizeDeviceInput(input.device);
+  assertDeviceRiskAllowed(device.deviceId, input.risk);
+  const codeRow = verifyPendingCode(input.challengeId, input.code, 'password_reset');
+  if (codeRow.type !== 'email') throw new AppError(400, 'invalid_identity_type', 'password reset requires an email verification code');
+  const identity = emailIdentityForHash(codeRow.identifier_hash);
+  if (!identity) throw new AppError(404, 'email_not_registered', 'email is not registered');
+  if (!identity.password_hash) throw new AppError(409, 'password_not_set', 'email account has not set a password');
+  const user = userById(identity.user_id);
+  if (!user) throw new AppError(404, 'email_not_registered', 'email is not registered');
+  assertSessionAllowedUser(user);
+  const ts = nowISO();
+  let session: SessionDTO;
+  db.exec('BEGIN');
+  try {
+    setPasswordCredential(user.id, input.password, ts);
+    db.prepare('UPDATE users SET last_login_at = ? WHERE id = ?').run(ts, user.id);
+    db.prepare('UPDATE verification_codes SET consumed_at = ? WHERE id = ?').run(ts, input.challengeId);
+    session = createSessionForUser(user.id, device, input.res, ts);
+    db.exec('COMMIT');
+  } catch (err) {
+    db.exec('ROLLBACK');
+    throw err;
+  }
+  return { user: userById(user.id)!, session: session!, isNewUser: false };
 }
 
 export function authFromAccessToken(token: string | undefined): AuthContext | null {
@@ -928,6 +1076,7 @@ export function finalizeDueAccountDeletions(now = nowISO()): { finalized: number
     'verification_codes',
     'oauth_login_states',
     'auth_identities',
+    'auth_password_credentials',
     'analytics_events',
     'diagnostic_log_uploads',
     'sync_operations',

@@ -1,3 +1,4 @@
+import { loginCookie } from './auth-test-helper';
 import { DatabaseSync } from 'node:sqlite';
 import net from 'node:net';
 import { existsSync, unlinkSync } from 'node:fs';
@@ -101,36 +102,8 @@ async function req(base: string, path: string, init: RequestInit & { cookie?: st
   return { res, body: await json(res) };
 }
 
-async function requestCode(base: string, email: string, smtpMessages: string[]): Promise<{ challengeId: string; code: string }> {
-  const start = smtpMessages.length;
-  const challenge = await req(base, '/api/auth/verification-codes', {
-    method: 'POST',
-    body: JSON.stringify({ type: 'email', identifier: email, purpose: 'login' }),
-  });
-  assert(challenge.res.status === 201, `verification code failed: ${challenge.res.status}`);
-  for (let i = 0; i < 20 && smtpMessages.length === start; i++) {
-    await new Promise((resolvePromise) => setTimeout(resolvePromise, 50));
-  }
-  const code = (smtpMessages.at(-1) ?? '').match(/\b\d{6}\b/)?.[0];
-  assert(code, 'SMTP message did not include a code');
-  return { challengeId: challenge.body.challengeId, code };
-}
-
 async function login(base: string, email: string, smtpMessages: string[]): Promise<string> {
-  const challenge = await requestCode(base, email, smtpMessages);
-  const loginRes = await fetch(`${base}/api/auth/login`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({
-      challengeId: challenge.challengeId,
-      code: challenge.code,
-      agreedToTerms: true,
-      device: { deviceId: `list-batch-${email}`, deviceName: 'List batch test', platform: 'Web', appVersion: 'test' },
-    }),
-  });
-  await json(loginRes);
-  assert(loginRes.status === 201 || loginRes.status === 200, `login failed: ${loginRes.status}`);
-  return cookiesFrom(loginRes);
+  return loginCookie(base, email, smtpMessages);
 }
 
 async function main() {

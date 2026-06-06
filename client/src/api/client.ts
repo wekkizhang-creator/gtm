@@ -4,7 +4,9 @@ import type {
   AIBreakdownResult,
   AIQuadrantSuggestionResult,
   AIReviewResult,
+  AIScheduleRuleParseResult,
   AIScheduleResult,
+  AITaskStructureResult,
   AboutContact,
   AccountDeletionPreview,
   AccountDeletionRequest,
@@ -17,6 +19,7 @@ import type {
   CalendarDayInfo,
   CalendarSubscription,
   Countdown,
+  DayPilotDashboard,
   DesktopShellState,
   DesktopShortcut,
   DesktopShortcutTemplate,
@@ -48,10 +51,19 @@ import type {
   NotificationPermissionStatus,
   NotificationSound,
   OpenSourceLicenses,
+  PersonalScheduleRule,
   Priority,
   QuickCaptureResult,
   QuickCaptureSource,
   QuickParseResult,
+  ScheduleProposal,
+  ScheduleRuleConflictList,
+  ScheduleRuleDetails,
+  ScheduleRulePreview,
+  ScheduleRulePriority,
+  ScheduleRuleStatus,
+  ScheduleRuleTemplate,
+  ScheduleRuleType,
   SearchResult,
   SavedFilter,
   Settings,
@@ -72,7 +84,7 @@ import type {
   User,
 } from '../types';
 
-const BASE = '/api';
+const BASE = import.meta.env.VITE_API_BASE || '/api';
 
 export function isNetworkError(err: unknown): boolean {
   return !!err && typeof err === 'object' && (err as { isNetworkError?: boolean }).isNetworkError === true;
@@ -118,6 +130,10 @@ export interface CreateTaskInput {
   isUrgent?: boolean | null;
   parentId?: string | null;
   estimatedMinutes?: number | null;
+  scheduleEnergyType?: Task['scheduleEnergyType'];
+  scheduleTaskType?: string | null;
+  isSplittable?: boolean;
+  minScheduleMinutes?: number | null;
   note?: string | null;
   recurrenceRule?: string | null;
   source?: string | null;
@@ -161,6 +177,10 @@ export type UpdateTaskInput = Partial<{
   actualEndAt: string | null;
   autoScheduleEnabled: boolean;
   isLockedSchedule: boolean;
+  scheduleEnergyType: Task['scheduleEnergyType'];
+  scheduleTaskType: string | null;
+  isSplittable: boolean;
+  minScheduleMinutes: number | null;
   pinned: boolean;
   status: TaskStatus;
   completed: boolean;
@@ -198,6 +218,36 @@ export interface CreateGoalInput {
   availableTimeRule?: string | null;
   progressMode?: Goal['progressMode'];
   status?: Goal['status'];
+  tasksText?: string | null;
+  initialTasks?: Array<{
+    title: string;
+    estimatedMinutes?: number | null;
+    scheduleEnergyType?: Task['scheduleEnergyType'];
+    scheduleTaskType?: string | null;
+    isSplittable?: boolean;
+    minScheduleMinutes?: number | null;
+  }>;
+}
+
+export interface CreateScheduleRuleInput {
+  name: string;
+  description?: string | null;
+  type: ScheduleRuleType;
+  status?: ScheduleRuleStatus;
+  priority?: ScheduleRulePriority;
+  condition: Record<string, unknown>;
+  action: Record<string, unknown>;
+  scope?: Record<string, unknown>;
+}
+
+export type UpdateScheduleRuleInput = Partial<CreateScheduleRuleInput>;
+
+export interface CreateScheduleProposalInput {
+  from?: string | null;
+  to?: string | null;
+  taskIds?: string[];
+  mode?: 'initial_schedule' | 'reschedule';
+  trigger?: string | null;
 }
 
 export interface AnalyticsEventInput {
@@ -234,18 +284,48 @@ export interface SyncOperationResult {
 export const api = {
   // auth
   getSession: () => req<{ user: User; session: AuthSession }>('/auth/session'),
-  requestVerificationCode: (input: { type: 'email' | 'phone'; identifier: string; purpose?: 'login' | 'account_delete' | 'account_bind' }) =>
+  requestVerificationCode: (input: { type: 'email' | 'phone'; identifier: string; purpose?: 'account_delete' | 'account_bind' }) =>
     req<{ challengeId: string; maskedIdentifier: string; expiresAt: string; resendAfterSec: number; isNewIdentifier: boolean }>(
       '/auth/verification-codes',
       { method: 'POST', body: JSON.stringify(input) },
     ),
-  loginWithCode: (input: {
+  startRegistration: (input: { email: string }) =>
+    req<{ challengeId: string; maskedIdentifier: string; expiresAt: string; resendAfterSec: number; isNewIdentifier: boolean }>(
+      '/auth/register/start',
+      { method: 'POST', body: JSON.stringify(input) },
+    ),
+  completeRegistration: (input: {
     challengeId: string;
     code: string;
+    password: string;
     agreedToTerms: boolean;
     device: { deviceId: string; deviceName?: string; platform?: string; appVersion?: string };
   }) =>
-    req<{ user: User; session: AuthSession; isNewUser: boolean }>('/auth/login', {
+    req<{ user: User; session: AuthSession; isNewUser: boolean }>('/auth/register/complete', {
+      method: 'POST',
+      body: JSON.stringify(input),
+    }),
+  loginWithPassword: (input: {
+    email: string;
+    password: string;
+    device: { deviceId: string; deviceName?: string; platform?: string; appVersion?: string };
+  }) =>
+    req<{ user: User; session: AuthSession; isNewUser: false }>('/auth/login/password', {
+      method: 'POST',
+      body: JSON.stringify(input),
+    }),
+  startPasswordReset: (input: { email: string }) =>
+    req<{ challengeId: string; maskedIdentifier: string; expiresAt: string; resendAfterSec: number; isNewIdentifier: boolean }>(
+      '/auth/password-reset/start',
+      { method: 'POST', body: JSON.stringify(input) },
+    ),
+  completePasswordReset: (input: {
+    challengeId: string;
+    code: string;
+    password: string;
+    device: { deviceId: string; deviceName?: string; platform?: string; appVersion?: string };
+  }) =>
+    req<{ user: User; session: AuthSession; isNewUser: false }>('/auth/password-reset/complete', {
       method: 'POST',
       body: JSON.stringify(input),
     }),
@@ -430,6 +510,8 @@ export const api = {
 
   // goals
   listGoals: () => req<{ goals: Goal[] }>('/goals').then((r) => r.goals),
+  getDayPilotDashboard: (date?: string | null) =>
+    req<{ dashboard: DayPilotDashboard }>(`/goals/daypilot-dashboard${date ? `?date=${encodeURIComponent(date)}` : ''}`).then((r) => r.dashboard),
   createGoal: (input: CreateGoalInput) =>
     req<{ goal: Goal }>('/goals', { method: 'POST', body: JSON.stringify(input) }).then((r) => r.goal),
   updateGoal: (id: string, patch: Partial<CreateGoalInput>) =>
@@ -438,9 +520,61 @@ export const api = {
   getGoalTree: (id: string) => req<{ goal: Goal; tasks: Task[] }>(`/goals/${id}/tree`),
   createGoalTask: (
     id: string,
-    input: { title: string; note?: string | null; parentId?: string | null; priority?: Priority; estimatedMinutes?: number | null },
+    input: {
+      title: string;
+      note?: string | null;
+      parentId?: string | null;
+      priority?: Priority;
+      estimatedMinutes?: number | null;
+      scheduleEnergyType?: Task['scheduleEnergyType'];
+      scheduleTaskType?: string | null;
+      isSplittable?: boolean;
+      minScheduleMinutes?: number | null;
+    },
   ) => req<{ task: Task }>(`/goals/${id}/tasks`, { method: 'POST', body: JSON.stringify(input) }).then((r) => r.task),
+  structureGoalTasks: (id: string, input: { taskIds?: string[] | null } = {}) =>
+    req<AITaskStructureResult>(`/goals/${id}/tasks/structure`, { method: 'POST', body: JSON.stringify(input) }),
   autoScheduleGoal: (id: string) => req<{ goal: Goal; scheduled: Task[] }>(`/goals/${id}/auto-schedule`, { method: 'POST' }),
+  createScheduleProposal: (goalId: string, input: CreateScheduleProposalInput = {}) =>
+    req<{ proposal: ScheduleProposal }>(`/goals/${goalId}/schedule-proposals`, {
+      method: 'POST',
+      body: JSON.stringify(input),
+    }).then((r) => r.proposal),
+  getScheduleProposal: (id: string) =>
+    req<{ proposal: ScheduleProposal }>(`/schedule-proposals/${id}`).then((r) => r.proposal),
+  updateScheduleProposalChange: (id: string, changeKey: string, input: { plannedStartAt: string; plannedEndAt: string }) =>
+    req<{ proposal: ScheduleProposal }>(`/schedule-proposals/${id}/changes/${encodeURIComponent(changeKey)}`, {
+      method: 'PATCH',
+      body: JSON.stringify(input),
+    }).then((r) => r.proposal),
+  confirmScheduleProposal: (id: string, input: { changeKeys?: string[] } = {}) =>
+    req<{ proposal: ScheduleProposal; tasks: Task[] }>(`/schedule-proposals/${id}/confirm`, {
+      method: 'POST',
+      body: JSON.stringify(input),
+    }),
+  undoScheduleProposal: (id: string) =>
+    req<{ proposal: ScheduleProposal; tasks: Task[] }>(`/schedule-proposals/${id}/undo`, { method: 'POST' }),
+  discardScheduleProposal: (id: string) =>
+    req<{ proposal: ScheduleProposal }>(`/schedule-proposals/${id}/discard`, { method: 'POST' }).then((r) => r.proposal),
+
+  // personal schedule rules
+  listScheduleRules: () => req<{ rules: PersonalScheduleRule[] }>('/schedule-rules').then((r) => r.rules),
+  listScheduleRuleTemplates: () => req<{ templates: ScheduleRuleTemplate[] }>('/schedule-rules/templates').then((r) => r.templates),
+  createScheduleRule: (input: CreateScheduleRuleInput) =>
+    req<{ rule: PersonalScheduleRule }>('/schedule-rules', { method: 'POST', body: JSON.stringify(input) }).then((r) => r.rule),
+  previewScheduleRule: (input: CreateScheduleRuleInput & { from?: string | null; to?: string | null; goalId?: string | null; id?: string }) =>
+    req<{ preview: ScheduleRulePreview }>('/schedule-rules/preview', { method: 'POST', body: JSON.stringify(input) }).then((r) => r.preview),
+  listScheduleRuleConflicts: (limit = 50) =>
+    req<ScheduleRuleConflictList>(`/schedule-rules/conflicts?limit=${encodeURIComponent(String(limit))}`),
+  getScheduleRuleDetails: (id: string) =>
+    req<{ details: ScheduleRuleDetails }>(`/schedule-rules/${id}/details`).then((r) => r.details),
+  updateScheduleRule: (id: string, patch: UpdateScheduleRuleInput) =>
+    req<{ rule: PersonalScheduleRule }>(`/schedule-rules/${id}`, { method: 'PATCH', body: JSON.stringify(patch) }).then((r) => r.rule),
+  deleteScheduleRule: (id: string) => req<void>(`/schedule-rules/${id}`, { method: 'DELETE' }),
+  restoreScheduleRule: (id: string) =>
+    req<{ rule: PersonalScheduleRule }>(`/schedule-rules/${id}/restore`, { method: 'POST' }).then((r) => r.rule),
+  parseScheduleRuleNaturalLanguage: (text: string) =>
+    req<AIScheduleRuleParseResult>('/schedule-rules/parse-natural-language', { method: 'POST', body: JSON.stringify({ text }) }),
 
   // notifications
   listNotifications: (unreadOnly = false) =>

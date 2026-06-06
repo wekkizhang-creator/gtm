@@ -1,3 +1,4 @@
+import { loginCookie } from './auth-test-helper';
 import { DatabaseSync } from 'node:sqlite';
 import net from 'node:net';
 import { existsSync, unlinkSync } from 'node:fs';
@@ -102,28 +103,7 @@ async function req(base: string, path: string, init: RequestInit & { cookie?: st
 }
 
 async function login(base: string, email: string, smtpMessages: string[]): Promise<string> {
-  const start = smtpMessages.length;
-  const challenge = await req(base, '/api/auth/verification-codes', {
-    method: 'POST',
-    body: JSON.stringify({ type: 'email', identifier: email, purpose: 'login' }),
-  });
-  assert(challenge.res.status === 201, `verification code failed: ${challenge.res.status}`);
-  for (let i = 0; i < 20 && smtpMessages.length === start; i++) await new Promise((r) => setTimeout(r, 50));
-  const code = (smtpMessages.at(-1) ?? '').match(/\b\d{6}\b/)?.[0];
-  assert(code, 'SMTP message did not include code');
-  const loginRes = await fetch(`${base}/api/auth/login`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({
-      challengeId: challenge.body.challengeId,
-      code,
-      agreedToTerms: true,
-      device: { deviceId: `list-order-${email}`, deviceName: 'List order test', platform: 'Web', appVersion: 'test' },
-    }),
-  });
-  await json(loginRes);
-  assert(loginRes.status === 201 || loginRes.status === 200, `login failed: ${loginRes.status}`);
-  return cookiesFrom(loginRes);
+  return loginCookie(base, email, smtpMessages);
 }
 
 async function main() {

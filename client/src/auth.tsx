@@ -10,6 +10,8 @@ interface AuthCtx {
   logout: (opts?: { confirm?: boolean }) => Promise<void>;
 }
 
+type AuthMode = 'login' | 'register' | 'reset';
+
 const Ctx = createContext<AuthCtx | null>(null);
 
 export function useAuth() {
@@ -27,28 +29,62 @@ function devicePayload() {
   };
 }
 
-function LoginScreen({ onAuthed }: { onAuthed: (s: { user: User; session: AuthSession }) => void }) {
-  const [identifier, setIdentifier] = useState('');
+function PasswordAuthScreen({ onAuthed }: { onAuthed: (s: { user: User; session: AuthSession }) => void }) {
+  const [mode, setMode] = useState<AuthMode>('login');
+  const [email, setEmail] = useState('');
   const [challengeId, setChallengeId] = useState('');
   const [masked, setMasked] = useState('');
   const [code, setCode] = useState('');
+  const [password, setPassword] = useState('');
+  const [passwordConfirm, setPasswordConfirm] = useState('');
   const [agreed, setAgreed] = useState(false);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const isRiskRestricted = error?.includes('账号验证受限') ?? false;
+  const waitingForCode = mode !== 'login' && !!challengeId;
 
   useEffect(() => {
     trackEvent('auth_page_view', { entry: 'app_start', platform: 'web', is_offline: !navigator.onLine });
   }, []);
 
-  async function requestCode(e: FormEvent) {
+  function switchMode(next: AuthMode) {
+    setMode(next);
+    setChallengeId('');
+    setMasked('');
+    setCode('');
+    setPassword('');
+    setPasswordConfirm('');
+    setAgreed(false);
+    setError(null);
+  }
+
+  function validateNewPassword(): boolean {
+    if (password.length < 8 || password.length > 128) {
+      setError('密码需要 8 到 128 个字符');
+      return false;
+    }
+    if (password !== passwordConfirm) {
+      setError('两次输入的密码不一致');
+      return false;
+    }
+    if (mode === 'register' && !agreed) {
+      setError('请先同意用户协议与隐私政策');
+      return false;
+    }
+    return true;
+  }
+
+  async function submitLogin(e: FormEvent) {
     e.preventDefault();
     setBusy(true);
     setError(null);
     try {
-      const r = await api.requestVerificationCode({ type: 'email', identifier: identifier.trim(), purpose: 'login' });
-      setChallengeId(r.challengeId);
-      setMasked(r.maskedIdentifier);
+      const result = await api.loginWithPassword({
+        email: email.trim(),
+        password,
+        device: devicePayload(),
+      });
+      onAuthed({ user: result.user, session: result.session });
     } catch (err) {
       setError((err as Error).message);
     } finally {
@@ -56,24 +92,63 @@ function LoginScreen({ onAuthed }: { onAuthed: (s: { user: User; session: AuthSe
     }
   }
 
-  async function login(e: FormEvent) {
+  async function startCodeFlow(e: FormEvent) {
     e.preventDefault();
     setBusy(true);
     setError(null);
     try {
-      const r = await api.loginWithCode({
-        challengeId,
-        code: code.trim(),
-        agreedToTerms: agreed,
-        device: devicePayload(),
-      });
-      onAuthed({ user: r.user, session: r.session });
+      const result =
+        mode === 'register'
+          ? await api.startRegistration({ email: email.trim() })
+          : await api.startPasswordReset({ email: email.trim() });
+      setChallengeId(result.challengeId);
+      setMasked(result.maskedIdentifier);
     } catch (err) {
       setError((err as Error).message);
     } finally {
       setBusy(false);
     }
   }
+
+  async function completeCodeFlow(e: FormEvent) {
+    e.preventDefault();
+    if (!validateNewPassword()) return;
+    setBusy(true);
+    setError(null);
+    try {
+      const result =
+        mode === 'register'
+          ? await api.completeRegistration({
+              challengeId,
+              code: code.trim(),
+              password,
+              agreedToTerms: agreed,
+              device: devicePayload(),
+            })
+          : await api.completePasswordReset({
+              challengeId,
+              code: code.trim(),
+              password,
+              device: devicePayload(),
+            });
+      onAuthed({ user: result.user, session: result.session });
+    } catch (err) {
+      setError((err as Error).message);
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  const title =
+    mode === 'login' ? '邮箱密码登录' : mode === 'register' ? (waitingForCode ? '设置登录密码' : '邮箱注册') : waitingForCode ? '设置新密码' : '找回密码';
+  const intro =
+    mode === 'login'
+      ? '使用邮箱和密码进入效率清单。'
+      : waitingForCode
+        ? `验证码已发送至 ${masked}`
+        : mode === 'register'
+          ? '先验证邮箱，再设置你的登录密码。'
+          : '验证邮箱后即可重设密码。';
 
   return (
     <main className="auth-page">
@@ -82,31 +157,72 @@ function LoginScreen({ onAuthed }: { onAuthed: (s: { user: User; session: AuthSe
         <p>把今天整理清楚，再开始行动。</p>
       </div>
       <section className="auth-panel">
-        <div className="auth-kicker">邮箱验证码</div>
+        <div className="auth-kicker">邮箱账号</div>
         <div className="auth-brand">效率清单</div>
-        <h1>{challengeId ? '输入验证码' : '登录 / 注册'}</h1>
-        <p>{challengeId ? `验证码已发送至 ${masked}` : '使用邮箱接收验证码，首次登录会自动创建账号。'}</p>
+        <h1>{title}</h1>
+        <p>{intro}</p>
 
-        {!challengeId ? (
-          <form onSubmit={requestCode} className="auth-form">
+        <div className="auth-tabs" role="tablist" aria-label="认证方式">
+          <button className={mode === 'login' ? 'active' : ''} type="button" onClick={() => switchMode('login')}>
+            登录
+          </button>
+          <button className={mode === 'register' ? 'active' : ''} type="button" onClick={() => switchMode('register')}>
+            注册
+          </button>
+          <button className={mode === 'reset' ? 'active' : ''} type="button" onClick={() => switchMode('reset')}>
+            忘记密码
+          </button>
+        </div>
+
+        {mode === 'login' ? (
+          <form onSubmit={submitLogin} className="auth-form">
             <label>
               邮箱地址
               <input
                 autoFocus
                 type="email"
                 autoComplete="email"
-                value={identifier}
+                value={email}
                 placeholder="name@example.com"
-                onChange={(e) => setIdentifier(e.target.value)}
+                onChange={(e) => setEmail(e.target.value)}
                 disabled={busy}
               />
             </label>
-            <button className="btn-primary" disabled={busy || !identifier.trim()}>
+            <label>
+              密码
+              <input
+                type="password"
+                autoComplete="current-password"
+                value={password}
+                placeholder="输入密码"
+                onChange={(e) => setPassword(e.target.value)}
+                disabled={busy}
+              />
+            </label>
+            <button className="btn-primary" disabled={busy || !email.trim() || !password}>
+              {busy ? '登录中...' : '登录'}
+            </button>
+          </form>
+        ) : !waitingForCode ? (
+          <form onSubmit={startCodeFlow} className="auth-form">
+            <label>
+              邮箱地址
+              <input
+                autoFocus
+                type="email"
+                autoComplete="email"
+                value={email}
+                placeholder="name@example.com"
+                onChange={(e) => setEmail(e.target.value)}
+                disabled={busy}
+              />
+            </label>
+            <button className="btn-primary" disabled={busy || !email.trim()}>
               {busy ? '发送中...' : '获取邮箱验证码'}
             </button>
           </form>
         ) : (
-          <form onSubmit={login} className="auth-form">
+          <form onSubmit={completeCodeFlow} className="auth-form">
             <label>
               验证码
               <input
@@ -119,19 +235,43 @@ function LoginScreen({ onAuthed }: { onAuthed: (s: { user: User; session: AuthSe
                 disabled={busy}
               />
             </label>
-            <label className="auth-check">
+            <label>
+              {mode === 'register' ? '登录密码' : '新密码'}
               <input
-                type="checkbox"
-                checked={agreed}
-                onChange={(e) => {
-                  setAgreed(e.target.checked);
-                  trackEvent('auth_agreement_check', { checked: e.target.checked, entry: 'code_login' });
-                }}
+                type="password"
+                autoComplete="new-password"
+                value={password}
+                placeholder="至少 8 个字符"
+                onChange={(e) => setPassword(e.target.value)}
+                disabled={busy}
               />
-              我已阅读并同意用户协议与隐私政策
             </label>
-            <button className="btn-primary" disabled={busy || code.trim().length < 6 || !agreed}>
-              {busy ? '登录中...' : '登录 / 注册'}
+            <label>
+              确认密码
+              <input
+                type="password"
+                autoComplete="new-password"
+                value={passwordConfirm}
+                placeholder="再次输入密码"
+                onChange={(e) => setPasswordConfirm(e.target.value)}
+                disabled={busy}
+              />
+            </label>
+            {mode === 'register' && (
+              <label className="auth-check">
+                <input
+                  type="checkbox"
+                  checked={agreed}
+                  onChange={(e) => {
+                    setAgreed(e.target.checked);
+                    trackEvent('auth_agreement_check', { checked: e.target.checked, entry: 'email_password_register' });
+                  }}
+                />
+                我已阅读并同意用户协议与隐私政策
+              </label>
+            )}
+            <button className="btn-primary" disabled={busy || code.trim().length < 6 || password.length < 8 || (mode === 'register' && !agreed)}>
+              {busy ? '提交中...' : mode === 'register' ? '完成注册' : '重置并登录'}
             </button>
             <button type="button" className="auth-link" onClick={() => setChallengeId('')} disabled={busy}>
               更换邮箱
@@ -144,7 +284,9 @@ function LoginScreen({ onAuthed }: { onAuthed: (s: { user: User; session: AuthSe
             {error}
             {isRiskRestricted && (
               <div className="auth-muted">
-                <a className="auth-link" href="mailto:support@example.com">联系客服</a>
+                <a className="auth-link" href="mailto:support@example.com">
+                  联系客服
+                </a>
               </div>
             )}
           </div>
@@ -165,6 +307,7 @@ function AccountDeletingScreen({
 }) {
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const scheduledText = user.deleteScheduledAt ? new Date(user.deleteScheduledAt).toLocaleString() : '删除时间待确认';
 
   async function cancelDeletion() {
     setBusy(true);
@@ -187,12 +330,8 @@ function AccountDeletingScreen({
       <section className="auth-panel">
         <div className="auth-brand">效率清单</div>
         <h1>账号注销中</h1>
-        <p>
-          当前账号已进入注销冷静期，主功能暂不可使用。冷静期结束后会删除账号业务数据；撤销注销后可继续使用原账号数据。
-        </p>
-        <div className="auth-muted">
-          {user.deleteScheduledAt ? `预计删除时间：${new Date(user.deleteScheduledAt).toLocaleString()}` : '删除时间待确认'}
-        </div>
+        <p>当前账号已进入注销冷静期，主功能暂不可用。撤销注销后可继续使用原账号数据。</p>
+        <div className="auth-muted">预计删除时间：{scheduledText}</div>
         <div className="auth-form">
           <button className="btn-primary" type="button" onClick={() => void cancelDeletion()} disabled={busy}>
             {busy ? '撤销中...' : '撤销注销'}
@@ -268,7 +407,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       </main>
     );
   }
-  if (!state || !value) return <LoginScreen onAuthed={setState} />;
+  if (!state || !value) return <PasswordAuthScreen onAuthed={setState} />;
   if (state.user.status === 'deleting') {
     return (
       <AccountDeletingScreen

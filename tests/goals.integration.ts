@@ -1,3 +1,4 @@
+import { loginCookie } from './auth-test-helper';
 import { DatabaseSync } from 'node:sqlite';
 import net from 'node:net';
 import { existsSync, unlinkSync } from 'node:fs';
@@ -110,31 +111,7 @@ async function req(base: string, path: string, init: RequestInit & { cookie?: st
 }
 
 async function login(base: string, email: string, smtpMessages: string[]): Promise<string> {
-  const codeStart = smtpMessages.length;
-  const challenge = await req(base, '/api/auth/verification-codes', {
-    method: 'POST',
-    body: JSON.stringify({ type: 'email', identifier: email, purpose: 'login' }),
-  });
-  assert(challenge.res.status === 201, `verification code failed: ${challenge.res.status} ${JSON.stringify(challenge.body)}`);
-  for (let i = 0; i < 20 && smtpMessages.length === codeStart; i++) {
-    await new Promise((resolvePromise) => setTimeout(resolvePromise, 50));
-  }
-  const message = smtpMessages.at(-1) ?? '';
-  const code = message.match(/\b\d{6}\b/)?.[0];
-  assert(code, `SMTP message did not include a code: ${message}`);
-  const loginRes = await fetch(`${base}/api/auth/login`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({
-      challengeId: challenge.body.challengeId,
-      code,
-      agreedToTerms: true,
-      device: { deviceId: `goals-${email}`, deviceName: 'Goals integration test', platform: 'Web', appVersion: 'test' },
-    }),
-  });
-  const body = await json(loginRes);
-  assert(loginRes.status === 201 || loginRes.status === 200, `login failed: ${loginRes.status} ${JSON.stringify(body)}`);
-  return cookiesFrom(loginRes);
+  return loginCookie(base, email, smtpMessages);
 }
 
 async function main() {
@@ -163,6 +140,37 @@ async function main() {
     start.setHours(9, 0, 0, 0);
     const deadline = new Date(start.getTime() + 4 * 24 * 3600_000);
     deadline.setHours(18, 0, 0, 0);
+
+    const bulkGoal = await req(base, '/api/goals', {
+      method: 'POST',
+      cookie,
+      body: JSON.stringify({
+        title: 'Content launch checklist',
+        deadlineAt: deadline.toISOString(),
+        availableTimeRule: JSON.stringify({ startHour: 9, endHour: 18 }),
+        tasksText: 'Research audience\n\n- Draft outline\n[ ] Publish recap',
+      }),
+    });
+    assert(bulkGoal.res.status === 201, `bulk goal create failed: ${bulkGoal.res.status} ${JSON.stringify(bulkGoal.body)}`);
+    assert(bulkGoal.body.goal.title === 'Content launch checklist', 'bulk goal should return the created goal');
+    assert(bulkGoal.body.tasks.length === 3, `expected three initial tasks, got ${bulkGoal.body.tasks.length}`);
+    assert(
+      bulkGoal.body.tasks.map((task: any) => task.title).join('|') === 'Research audience|Draft outline|Publish recap',
+      'bulk goal should trim empty lines and common task bullets',
+    );
+    const bulkTree = await req(base, `/api/goals/${bulkGoal.body.goal.id}/tree`, { cookie });
+    assert(bulkTree.body.tasks.length === 3, `bulk goal tree should expose three created tasks, got ${bulkTree.body.tasks.length}`);
+    const dbAfterBulkGoal = new DatabaseSync(dbPath);
+    try {
+      const linkedTasks = dbAfterBulkGoal
+        .prepare('SELECT COUNT(*) c FROM tasks WHERE goal_id = ? AND deleted_at IS NULL')
+        .get(bulkGoal.body.goal.id) as { c: number };
+      assert(linkedTasks.c === 3, `expected three DB tasks linked to bulk goal, got ${linkedTasks.c}`);
+    } finally {
+      dbAfterBulkGoal.close();
+    }
+    const deleteBulkGoal = await req(base, `/api/goals/${bulkGoal.body.goal.id}`, { method: 'DELETE', cookie });
+    assert(deleteBulkGoal.res.status === 204, `delete bulk goal failed: ${deleteBulkGoal.res.status}`);
 
     const goalRes = await req(base, '/api/goals', {
       method: 'POST',
@@ -205,6 +213,17 @@ async function main() {
       body: JSON.stringify({ dependencyId: read.body.task.id }),
     });
     assert(dep.body.task.dependencyTaskIds.includes(read.body.task.id), 'dependency was not stored');
+    const depRemoved = await req(base, `/api/tasks/${build.body.task.id}/dependencies/${read.body.task.id}`, {
+      method: 'DELETE',
+      cookie,
+    });
+    assert(!depRemoved.body.task.dependencyTaskIds.includes(read.body.task.id), 'dependency was not removed');
+    const depRestored = await req(base, `/api/tasks/${build.body.task.id}/dependencies`, {
+      method: 'POST',
+      cookie,
+      body: JSON.stringify({ dependencyId: read.body.task.id }),
+    });
+    assert(depRestored.body.task.dependencyTaskIds.includes(read.body.task.id), 'dependency was not restored after removal');
 
     const lockedStart = new Date(start.getTime() + 6 * 3600_000).toISOString();
     const lockedEnd = new Date(start.getTime() + 7 * 3600_000).toISOString();
@@ -234,6 +253,67 @@ async function main() {
     assert(buildAfter.plannedStartAt && buildAfter.plannedEndAt, 'build task schedule missing');
     assert(new Date(readAfter.plannedEndAt) <= new Date(buildAfter.plannedStartAt), 'dependency order was not respected');
     assert(lockedAfter.startDate === lockedStart && lockedAfter.dueDate === lockedEnd, 'locked schedule was overwritten');
+
+    const urgentUnscheduled = await req(base, `/api/goals/${goalId}/tasks`, {
+      method: 'POST',
+      cookie,
+      body: JSON.stringify({ title: 'Urgent unscheduled task', estimatedMinutes: 45 }),
+    });
+    assert(urgentUnscheduled.res.status === 201, `urgent task create failed: ${urgentUnscheduled.res.status}`);
+    const urgentDue = new Date(start.getTime() + 8 * 3600_000).toISOString();
+    await req(base, `/api/tasks/${urgentUnscheduled.body.task.id}`, {
+      method: 'PATCH',
+      cookie,
+      body: JSON.stringify({ dueDate: urgentDue, isAllDay: true, priority: 3 }),
+    });
+    const blockingRule = await req(base, '/api/schedule-rules', {
+      method: 'POST',
+      cookie,
+      body: JSON.stringify({
+        name: 'Today is protected',
+        type: 'time_boundary',
+        status: 'enabled',
+        priority: 'hard',
+        condition: { daysOfWeek: [start.getDay()], startTime: '09:00', endTime: '18:00' },
+        action: { effect: 'block' },
+        scope: {},
+      }),
+    });
+    assert(blockingRule.res.status === 201, `dashboard blocking rule create failed: ${blockingRule.res.status} ${JSON.stringify(blockingRule.body)}`);
+    const blockedProposal = await req(base, `/api/goals/${goalId}/schedule-proposals`, {
+      method: 'POST',
+      cookie,
+      body: JSON.stringify({ from: start.toISOString(), to: urgentDue }),
+    });
+    assert(blockedProposal.res.status === 201, `dashboard blocked proposal failed: ${blockedProposal.res.status} ${JSON.stringify(blockedProposal.body)}`);
+    assert(
+      blockedProposal.body.proposal.conflicts.some((conflict: any) => conflict.ruleIds.includes(blockingRule.body.rule.id)),
+      'dashboard setup proposal should persist a rule-linked conflict',
+    );
+    const dashboard = await req(base, `/api/goals/daypilot-dashboard?date=${encodeURIComponent(start.toISOString())}`, { cookie });
+    assert(dashboard.res.status === 200, `daypilot dashboard failed: ${dashboard.res.status} ${JSON.stringify(dashboard.body)}`);
+    assert(dashboard.body.dashboard.range.from <= start.toISOString(), 'dashboard range should include the requested date');
+    assert(dashboard.body.dashboard.activeGoals.some((goal: any) => goal.id === goalId), 'dashboard should include the active goal');
+    assert(
+      dashboard.body.dashboard.scheduledTasks.some((task: any) => task.id === read.body.task.id || task.id === build.body.task.id),
+      'dashboard should include scheduled goal tasks',
+    );
+    assert(
+      dashboard.body.dashboard.unscheduledTasks.some((task: any) => task.id === urgentUnscheduled.body.task.id),
+      'dashboard should include the urgent unscheduled task',
+    );
+    assert(
+      dashboard.body.dashboard.topTasks.some((task: any) => task.id === urgentUnscheduled.body.task.id),
+      'dashboard top tasks should prioritize the urgent unscheduled task',
+    );
+    assert(
+      dashboard.body.dashboard.risks.some((risk: any) => risk.type === 'unscheduled_today' && risk.taskId === urgentUnscheduled.body.task.id),
+      'dashboard should expose an unscheduled-today risk',
+    );
+    const ruleRisk = dashboard.body.dashboard.risks.find(
+      (risk: any) => risk.ruleIds.includes(blockingRule.body.rule.id) && risk.rules.some((rule: any) => rule.name === 'Today is protected'),
+    );
+    assert(ruleRisk, 'dashboard should explain rule-linked risk with the related rule name');
 
     const bobCookie = await login(base, 'goals-bob@example.com', smtp.messages);
     const bobGoals = await req(base, '/api/goals', { cookie: bobCookie });
