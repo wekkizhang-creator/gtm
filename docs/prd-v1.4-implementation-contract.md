@@ -3042,3 +3042,38 @@ Response:
 ### Verification
 
 `npm run test:countdowns` now verifies the fixed date policy for 2026 and 2028, creates a real leap-day yearly countdown through `POST /api/countdowns`, checks the HTTP response uses the same policy, and checks SQLite persists `target_date = '2024-02-29'` plus `repeat_yearly = 1`.
+
+## Slice 118: Countdown Target Date Strict Validation
+
+CD-03 now rejects calendar dates that only match the `YYYY-MM-DD` shape but do not exist. This prevents JavaScript date overflow from silently accepting inputs like `2030-02-31` or `2026-02-29`.
+
+### API Contract
+
+`POST /api/countdowns` and `PATCH /api/countdowns/:id` validate `targetDate` as a real calendar date:
+
+```json
+{
+  "title": "Invalid date",
+  "targetDate": "2030-02-31"
+}
+```
+
+Invalid response:
+
+```json
+{
+  "error": {
+    "code": "invalid_countdown_date",
+    "message": "targetDate must be a real YYYY-MM-DD date"
+  }
+}
+```
+
+- Valid leap-day dates such as `2024-02-29` remain accepted.
+- Non-leap-year leap days such as `2026-02-29` are rejected.
+- Invalid months or impossible month days are rejected before any SQLite write.
+- The validation lives in the countdown repository as well as the route, so import flows that call the create path cannot bypass it.
+
+### Verification
+
+`npm run test:countdowns` now asserts the pure date policy, rejects `POST /api/countdowns` with `2030-02-31`, rejects `PATCH /api/countdowns/:id` with `2026-02-29`, and checks SQLite still contains only the original valid `target_date` values.

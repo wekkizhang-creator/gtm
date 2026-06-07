@@ -1,6 +1,6 @@
 // Countdown / anniversary days. Computes next occurrence + signed days remaining.
 import { randomUUID } from 'node:crypto';
-import { resolveCountdownOccurrence } from './countdownDates';
+import { isValidCountdownDate, resolveCountdownOccurrence } from './countdownDates';
 import { db, nowISO } from './db';
 import { AppError, type CountdownDTO } from './types';
 
@@ -12,6 +12,13 @@ function assertCountdownMode(value: unknown): CountdownMode {
   if (value === undefined || value === null) return 'countdown';
   if (COUNTDOWN_MODES.includes(value as CountdownMode)) return value as CountdownMode;
   throw new AppError(400, 'invalid_countdown_mode', 'mode must be countdown or countup');
+}
+
+function assertCountdownDate(value: unknown): string {
+  if (typeof value !== 'string' || !isValidCountdownDate(value)) {
+    throw new AppError(400, 'invalid_countdown_date', 'targetDate must be a real YYYY-MM-DD date');
+  }
+  return value;
 }
 
 function normalizeCountdownColor(value: unknown): string | null {
@@ -80,6 +87,7 @@ export function createCountdown(userId: string, input: {
   const id = randomUUID();
   const ts = nowISO();
   const mode = assertCountdownMode(input.mode);
+  const targetDate = assertCountdownDate(input.targetDate);
   const color = normalizeCountdownColor(input.color);
   const note = normalizeCountdownNote(input.note);
   const max = db.prepare('SELECT COALESCE(MAX(sort_order), 0) AS m FROM countdowns WHERE user_id = ?').get(userId) as { m: number };
@@ -90,7 +98,7 @@ export function createCountdown(userId: string, input: {
     id,
     userId,
     input.title,
-    input.targetDate,
+    targetDate,
     mode,
     input.icon,
     color,
@@ -151,6 +159,7 @@ export function updateCountdown(userId: string, id: string, patch: Record<string
       let v = patch[k];
       if (k === 'repeatYearly' || k === 'pinned') v = v ? 1 : 0;
       if (k === 'mode') v = assertCountdownMode(v);
+      if (k === 'targetDate') v = assertCountdownDate(v);
       if (k === 'color') v = normalizeCountdownColor(v);
       if (k === 'note') v = normalizeCountdownNote(v);
       cols.push(`${col} = ?`);

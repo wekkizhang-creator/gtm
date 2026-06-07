@@ -1,10 +1,10 @@
 import { Router } from 'express';
 import * as cd from '../countdownsRepo';
+import { isValidCountdownDate } from '../countdownDates';
 import { AppError } from '../types';
 import { requireUserId } from '../authMiddleware';
 
 const router = Router();
-const DATE_RE = /^\d{4}-\d{2}-\d{2}$/;
 
 // GET /api/countdowns
 router.get('/', (req, res) => {
@@ -17,8 +17,8 @@ router.post('/', (req, res) => {
   if (typeof b.title !== 'string' || !b.title.trim()) {
     throw new AppError(400, 'invalid', 'title is required');
   }
-  if (typeof b.targetDate !== 'string' || !DATE_RE.test(b.targetDate)) {
-    throw new AppError(400, 'invalid', 'targetDate must be YYYY-MM-DD');
+  if (typeof b.targetDate !== 'string' || !isValidCountdownDate(b.targetDate)) {
+    throw new AppError(400, 'invalid_countdown_date', 'targetDate must be a real YYYY-MM-DD date');
   }
   const countdown = cd.createCountdown(requireUserId(req), {
     title: b.title.trim(),
@@ -44,8 +44,8 @@ router.post('/reorder', (req, res) => {
 
 // PATCH /api/countdowns/:id
 router.patch('/:id', (req, res) => {
-  if (typeof req.body?.targetDate === 'string' && !DATE_RE.test(req.body.targetDate)) {
-    throw new AppError(400, 'invalid', 'targetDate must be YYYY-MM-DD');
+  if ('targetDate' in (req.body ?? {}) && !isValidCountdownDate(req.body.targetDate)) {
+    throw new AppError(400, 'invalid_countdown_date', 'targetDate must be a real YYYY-MM-DD date');
   }
   const countdown = cd.updateCountdown(requireUserId(req), req.params.id, req.body ?? {});
   if (!countdown) throw new AppError(404, 'not_found', 'countdown not found');

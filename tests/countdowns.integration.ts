@@ -1,5 +1,5 @@
 import { loginByEmailPassword } from './auth-test-helper';
-import { resolveCountdownOccurrence } from '../server/src/countdownDates';
+import { isValidCountdownDate, resolveCountdownOccurrence } from '../server/src/countdownDates';
 import { DatabaseSync } from 'node:sqlite';
 import net from 'node:net';
 import { existsSync, unlinkSync } from 'node:fs';
@@ -14,7 +14,11 @@ function assert(cond: unknown, msg: string): asserts cond {
   if (!cond) throw new Error(msg);
 }
 
-function assertLeapDayRepeatPolicy() {
+function assertCountdownDatePolicy() {
+  assert(isValidCountdownDate('2024-02-29'), 'leap-day target date should be valid in a leap year');
+  assert(!isValidCountdownDate('2026-02-29'), 'Feb 29 should be invalid in a non-leap year');
+  assert(!isValidCountdownDate('2030-02-31'), 'Feb 31 should be rejected as a real calendar date');
+  assert(!isValidCountdownDate('2030-13-01'), 'month 13 should be rejected as a real calendar date');
   assert(
     resolveCountdownOccurrence('2024-02-29', true, new Date(2026, 0, 10)).effectiveDate === '2026-02-28',
     'Feb 29 yearly repeat should resolve to Feb 28 in a non-leap year before occurrence',
@@ -136,7 +140,7 @@ async function main() {
     const s = mod.app.listen(port, '127.0.0.1', () => resolvePromise(s));
   });
   await waitForHealth(base);
-  assertLeapDayRepeatPolicy();
+  assertCountdownDatePolicy();
 
   try {
     const alice = await loginByEmailPassword(base, 'countdowns-alice@example.com', smtp.messages);
@@ -179,6 +183,14 @@ async function main() {
     assert(invalidColor.res.status === 400, `invalid countdown color should be 400, got ${invalidColor.res.status}`);
     assert(invalidColor.body.error.code === 'invalid_countdown_color', 'invalid countdown color should return invalid_countdown_color');
 
+    const invalidDate = await req(base, '/api/countdowns', {
+      method: 'POST',
+      cookie: alice.cookie,
+      body: JSON.stringify({ title: 'Invalid date', targetDate: '2030-02-31' }),
+    });
+    assert(invalidDate.res.status === 400, `invalid countdown date should be 400, got ${invalidDate.res.status}`);
+    assert(invalidDate.body.error.code === 'invalid_countdown_date', 'invalid countdown date should return invalid_countdown_date');
+
     const patchedMode = await req(base, `/api/countdowns/${second.body.countdown.id}`, {
       method: 'PATCH',
       cookie: alice.cookie,
@@ -188,6 +200,14 @@ async function main() {
     assert(patchedMode.body.countdown.mode === 'countup', 'patched countdown mode should round-trip');
     assert(patchedMode.body.countdown.color === '#0ea5e9', 'patched countdown color should normalize and round-trip');
     assert(patchedMode.body.countdown.note === 'Updated milestone note', 'patched countdown note should round-trip');
+
+    const invalidDatePatch = await req(base, `/api/countdowns/${second.body.countdown.id}`, {
+      method: 'PATCH',
+      cookie: alice.cookie,
+      body: JSON.stringify({ targetDate: '2026-02-29' }),
+    });
+    assert(invalidDatePatch.res.status === 400, `invalid countdown date patch should be 400, got ${invalidDatePatch.res.status}`);
+    assert(invalidDatePatch.body.error.code === 'invalid_countdown_date', 'invalid countdown date patch should return invalid_countdown_date');
 
     const reordered = await req(base, '/api/countdowns/reorder', {
       method: 'POST',
@@ -225,14 +245,19 @@ async function main() {
 
     const db = new DatabaseSync(dbPath);
     try {
-      const rows = db.prepare('SELECT title, mode, color, note, sort_order FROM countdowns WHERE user_id = ? ORDER BY sort_order ASC').all(alice.userId) as {
+      const rows = db.prepare('SELECT title, target_date, mode, color, note, sort_order FROM countdowns WHERE user_id = ? ORDER BY sort_order ASC').all(alice.userId) as {
         title: string;
+        target_date: string;
         mode: string;
         color: string | null;
         note: string | null;
         sort_order: number;
       }[];
       assert(rows.map((row) => row.title).join('|') === 'Third date|First date|Second date', 'SQLite sort_order should persist manual order');
+      assert(
+        rows.map((row) => row.target_date).join('|') === '2030-01-03|2030-01-01|2030-01-02',
+        'SQLite target_date should reject invalid create and patch dates',
+      );
       assert(rows.map((row) => row.mode).join('|') === 'countdown|countup|countup', 'SQLite mode should persist create and patch values');
       assert(rows.map((row) => row.color ?? '').join('|') === '|#f97316|#0ea5e9', 'SQLite color should persist create and patch values');
       assert(rows.map((row) => row.note ?? '').join('|') === '|Launch anniversary|Updated milestone note', 'SQLite note should persist create and patch values');
