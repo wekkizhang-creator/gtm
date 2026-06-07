@@ -482,16 +482,16 @@ function listExistingBusySlots(userId: string, goalId: string, range: { from: st
     )
     .all(userId, range.to, range.from) as Array<{ id: string; title: string; starts_at: string; ends_at: string }>;
   return [
-    ...taskRows.map((row) => ({
-      start: new Date(row.start_date),
-      end: new Date(row.due_date),
-      source: 'task' as const,
-      label: row.title,
-    })),
     ...externalRows.map((row) => ({
       start: new Date(row.starts_at),
       end: new Date(row.ends_at),
       source: 'external' as const,
+      label: row.title,
+    })),
+    ...taskRows.map((row) => ({
+      start: new Date(row.start_date),
+      end: new Date(row.due_date),
+      source: 'task' as const,
       label: row.title,
     })),
   ].filter((slot) => !Number.isNaN(slot.start.getTime()) && !Number.isNaN(slot.end.getTime()) && slot.start < slot.end);
@@ -1235,8 +1235,21 @@ export function createScheduleProposal(userId: string, goalId: string, input: Re
   if (mode === 'reschedule') {
     const selected = taskIds.length ? new Set(taskIds) : null;
     rows = rows.filter((row) => {
-      if (selected?.has(row.id)) return true;
       const slot = currentTaskSlot(row);
+      if (selected?.has(row.id)) {
+        const blocking = slot ? findBlockingSlot(busySlots, slot.start, slot.end) : null;
+        if (blocking) {
+          conflicts.push({
+            type: 'reschedule_impact',
+            severity: 'info',
+            taskId: row.id,
+            ruleIds: blocking.ruleId ? [blocking.ruleId] : [],
+            message: `Task "${row.title}" overlaps ${busySourceLabel(blocking.source)} "${blocking.label}", so it is included in this reschedule proposal.`,
+            suggestions: ['Review the proposed new time and confirm the reschedule.'],
+          });
+        }
+        return true;
+      }
       if (!slot) return true;
       const blocking = findBlockingSlot(busySlots, slot.start, slot.end);
       if (!blocking) return false;

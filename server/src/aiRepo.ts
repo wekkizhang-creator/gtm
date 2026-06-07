@@ -225,6 +225,13 @@ function normalizeScheduleMinutes(value: unknown): number | null {
   return Number.isInteger(n) && n >= 15 && n <= 1440 ? n : null;
 }
 
+function normalizeSuggestedDueDate(value: unknown): string | null {
+  if (typeof value !== 'string' || !value.trim()) return null;
+  const ms = Date.parse(value);
+  if (Number.isNaN(ms)) return null;
+  return new Date(ms).toISOString();
+}
+
 function normalizeTaskStructureUpdate(value: unknown, allowedTaskIds: Set<string>): AITaskStructureUpdateDTO | null {
   if (!value || typeof value !== 'object') return null;
   const row = value as Record<string, unknown>;
@@ -241,6 +248,7 @@ function normalizeTaskStructureUpdate(value: unknown, allowedTaskIds: Set<string
     scheduleTaskType: typeof row.scheduleTaskType === 'string' && row.scheduleTaskType.trim() ? row.scheduleTaskType.trim().slice(0, 80) : null,
     isSplittable,
     minScheduleMinutes,
+    suggestedDueDate: normalizeSuggestedDueDate(row.suggestedDueDate ?? row.dueDate),
     reason: typeof row.reason === 'string' && row.reason.trim() ? row.reason.trim().slice(0, 500) : null,
   };
 }
@@ -774,7 +782,7 @@ export async function structureGoalTasks(
     {
       role: 'system',
       content:
-        'You structure plan tasks for calendar scheduling. Return only JSON with key "tasks". For each task include taskId, title, estimatedMinutes, scheduleEnergyType (high|medium|low|null), scheduleTaskType, isSplittable, minScheduleMinutes, and reason. Do not invent task IDs.',
+        'You structure plan tasks for calendar scheduling. Return only JSON with key "tasks". For each task include taskId, title, estimatedMinutes, scheduleEnergyType (high|medium|low|null), scheduleTaskType, isSplittable, minScheduleMinutes, suggestedDueDate (ISO8601|null), and reason. Do not invent task IDs.',
     },
     {
       role: 'user',
@@ -790,6 +798,7 @@ export async function structureGoalTasks(
               scheduleTaskType: 'string|null',
               isSplittable: 'boolean',
               minScheduleMinutes: 'integer 15..1440|null',
+              suggestedDueDate: 'ISO8601 string|null',
               reason: 'string|null',
             },
           ],
@@ -800,15 +809,17 @@ export async function structureGoalTasks(
   try {
     const response = await callChatCompletions({ ...cfg, messages });
     const updates = parseTaskStructureUpdates(contentFromChatResponse(response), new Set(tasks.map((task) => task.id)));
-    const updatedTasks = updates.map((update) =>
-      repo.updateTask(userId, update.taskId, {
+    const updatedTasks = updates.map((update) => {
+      const patch: Record<string, unknown> = {
         estimatedMinutes: update.estimatedMinutes,
         scheduleEnergyType: update.scheduleEnergyType,
         scheduleTaskType: update.scheduleTaskType,
         isSplittable: update.isSplittable,
         minScheduleMinutes: update.minScheduleMinutes,
-      }),
-    ).filter((task): task is NonNullable<typeof task> => !!task);
+      };
+      if (update.suggestedDueDate) patch.dueDate = update.suggestedDueDate;
+      return repo.updateTask(userId, update.taskId, patch);
+    }).filter((task): task is NonNullable<typeof task> => !!task);
     const logId = logGeneration({
       userId,
       scenario: 'goal_task_structure',

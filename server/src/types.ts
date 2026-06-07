@@ -766,6 +766,7 @@ export interface AITaskStructureUpdateDTO {
   scheduleTaskType: string | null;
   isSplittable: boolean;
   minScheduleMinutes: number | null;
+  suggestedDueDate: string | null;
   reason: string | null;
 }
 
@@ -1006,6 +1007,30 @@ export interface ExternalCalendarEventDTO {
   endsAt: string;
   isAllDay: boolean;
   rawJson: string | null;
+}
+
+export interface CalendarReplanAffectedTaskDTO {
+  taskId: string;
+  title: string;
+  plannedStartAt: string;
+  plannedEndAt: string;
+  blockingEventTitle: string;
+  blockingEventStart: string;
+  blockingEventEnd: string;
+}
+
+export interface CalendarReplanCandidateDTO {
+  goalId: string;
+  goalTitle: string;
+  affectedTaskCount: number;
+  affectedTasks: CalendarReplanAffectedTaskDTO[];
+  trigger: string;
+}
+
+export interface CalendarSyncResultDTO {
+  subscription: CalendarSubscriptionDTO;
+  events: ExternalCalendarEventDTO[];
+  replanCandidates: CalendarReplanCandidateDTO[];
 }
 
 export interface CalendarDayInfoDTO {

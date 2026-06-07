@@ -311,6 +311,37 @@ async function main() {
     });
     assert(genericSystemCreate.res.status === 501, `generic system subscription should be 501 without provider, got ${genericSystemCreate.res.status}`);
 
+    const replanGoal = await req(base, '/api/goals', {
+      method: 'POST',
+      cookie,
+      body: JSON.stringify({
+        title: 'Calendar replan launch',
+        deadlineAt: '2030-01-09T18:00:00.000Z',
+        availableTimeRule: JSON.stringify({ startHour: 0, endHour: 24 }),
+      }),
+    });
+    assert(replanGoal.res.status === 201, `calendar replan goal create failed: ${replanGoal.res.status} ${JSON.stringify(replanGoal.body)}`);
+    const replanTask = await req(base, `/api/goals/${replanGoal.body.goal.id}/tasks`, {
+      method: 'POST',
+      cookie,
+      body: JSON.stringify({ title: 'Prepare launch deck', estimatedMinutes: 60 }),
+    });
+    assert(replanTask.res.status === 201, `calendar replan task create failed: ${replanTask.res.status} ${JSON.stringify(replanTask.body)}`);
+    const replanOriginalStart = '2030-01-02T09:00:00.000Z';
+    const replanOriginalEnd = '2030-01-02T10:00:00.000Z';
+    const scheduledReplanTask = await req(base, `/api/tasks/${replanTask.body.task.id}`, {
+      method: 'PATCH',
+      cookie,
+      body: JSON.stringify({
+        startDate: replanOriginalStart,
+        dueDate: replanOriginalEnd,
+        plannedStartAt: replanOriginalStart,
+        plannedEndAt: replanOriginalEnd,
+        isAllDay: false,
+      }),
+    });
+    assert(scheduledReplanTask.res.status === 200, `calendar replan task schedule failed: ${scheduledReplanTask.res.status} ${JSON.stringify(scheduledReplanTask.body)}`);
+
     const sub = await req(base, '/api/calendar/subscriptions', {
       method: 'POST',
       cookie,
@@ -324,6 +355,38 @@ async function main() {
       body: JSON.stringify({ icsText: ics }),
     });
     assert(sync.body.events.length === 1, 'sync should create one event');
+    assert(sync.body.replanCandidates.length === 1, `sync should expose one replan candidate, got ${sync.body.replanCandidates.length}`);
+    const replanCandidate = sync.body.replanCandidates[0];
+    assert(replanCandidate.goalId === replanGoal.body.goal.id, 'replan candidate should target the impacted goal');
+    assert(replanCandidate.affectedTaskCount === 1, `expected one affected task, got ${replanCandidate.affectedTaskCount}`);
+    assert(replanCandidate.affectedTasks[0].taskId === replanTask.body.task.id, 'replan candidate affected task mismatch');
+    assert(replanCandidate.affectedTasks[0].blockingEventTitle === 'External Planning', 'replan candidate should name the blocking external event');
+    const replanProposalRes = await req(base, `/api/goals/${replanCandidate.goalId}/schedule-proposals`, {
+      method: 'POST',
+      cookie,
+      body: JSON.stringify({
+        mode: 'reschedule',
+        trigger: replanCandidate.trigger,
+        taskIds: replanCandidate.affectedTasks.map((task: any) => task.taskId),
+        from: replanCandidate.affectedTasks[0].plannedStartAt,
+        to: '2030-01-09T10:00:00.000Z',
+      }),
+    });
+    assert(replanProposalRes.res.status === 201, `calendar replan proposal failed: ${replanProposalRes.res.status} ${JSON.stringify(replanProposalRes.body)}`);
+    const replanProposal = replanProposalRes.body.proposal;
+    assert(replanProposal.changes.length === 1, `calendar replan should propose one change, got ${replanProposal.changes.length}`);
+    assert(replanProposal.changes[0].taskId === replanTask.body.task.id, 'calendar replan proposal task mismatch');
+    assert(replanProposal.changes[0].plannedStartAt !== replanOriginalStart, 'calendar replan should move the impacted task');
+    assert(
+      replanProposal.conflicts.some(
+        (conflict: any) =>
+          conflict.type === 'reschedule_impact' && conflict.taskId === replanTask.body.task.id && conflict.message.includes('External Planning'),
+      ),
+      'calendar replan proposal should explain the external event impact',
+    );
+    const replanConfirm = await req(base, `/api/schedule-proposals/${replanProposal.id}/confirm`, { method: 'POST', cookie });
+    assert(replanConfirm.res.status === 200, `calendar replan confirm failed: ${replanConfirm.res.status} ${JSON.stringify(replanConfirm.body)}`);
+    assert(replanConfirm.body.tasks[0].id === replanTask.body.task.id, 'calendar replan confirm should return the moved task');
     const eventId = sync.body.events[0].id;
     const events = await req(base, '/api/calendar/events?from=2030-01-01T00:00:00.000Z&to=2030-01-03T00:00:00.000Z', { cookie });
     assert(events.body.events.length === 1 && events.body.events[0].title === 'External Planning', 'range query did not return ICS event');
@@ -357,6 +420,9 @@ async function main() {
       const subtaskRow = db.prepare('SELECT parent_id, start_date, due_date, is_all_day FROM tasks WHERE id = ?').get(subtaskBlock.body.task.id) as
         | { parent_id: string; start_date: string; due_date: string; is_all_day: number }
         | undefined;
+      const replanTaskRow = db.prepare('SELECT start_date, due_date FROM tasks WHERE id = ?').get(replanTask.body.task.id) as
+        | { start_date: string; due_date: string }
+        | undefined;
       const permissionRow = db
         .prepare("SELECT status, prompt_reason FROM calendar_permissions WHERE permission = 'system-calendar-readonly'")
         .get() as { status: string; prompt_reason: string | null };
@@ -371,6 +437,9 @@ async function main() {
       assert(subtaskRow?.parent_id === parentTask.body.task.id, 'DB scheduled subtask parent mismatch');
       assert(subtaskRow.start_date === '2030-01-02T13:00:00.000Z' && subtaskRow.due_date === '2030-01-02T14:00:00.000Z', 'DB scheduled subtask time mismatch');
       assert(subtaskRow.is_all_day === 0, 'DB scheduled subtask should be timed');
+      assert(replanTaskRow?.start_date === replanProposal.changes[0].plannedStartAt, 'DB calendar replan start should match confirmed proposal');
+      assert(replanTaskRow.due_date === replanProposal.changes[0].plannedEndAt, 'DB calendar replan end should match confirmed proposal');
+      assert(replanTaskRow.start_date !== replanOriginalStart, 'DB calendar replan should move the task away from the external event');
       assert(permissionRow.status === 'granted', `expected system calendar permission granted, got ${permissionRow.status}`);
       assert(permissionRow.prompt_reason === 'system_calendar_subscription', 'system calendar prompt reason should persist');
     } finally {

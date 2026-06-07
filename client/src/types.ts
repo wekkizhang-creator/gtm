@@ -816,6 +816,7 @@ export interface AITaskStructureUpdate {
   scheduleTaskType: string | null;
   isSplittable: boolean;
   minScheduleMinutes: number | null;
+  suggestedDueDate: string | null;
   reason: string | null;
 }
 
@@ -1023,6 +1024,30 @@ export interface ExternalCalendarEvent {
   endsAt: string;
   isAllDay: boolean;
   rawJson: string | null;
+}
+
+export interface CalendarReplanAffectedTask {
+  taskId: string;
+  title: string;
+  plannedStartAt: string;
+  plannedEndAt: string;
+  blockingEventTitle: string;
+  blockingEventStart: string;
+  blockingEventEnd: string;
+}
+
+export interface CalendarReplanCandidate {
+  goalId: string;
+  goalTitle: string;
+  affectedTaskCount: number;
+  affectedTasks: CalendarReplanAffectedTask[];
+  trigger: string;
+}
+
+export interface CalendarSyncResult {
+  subscription: CalendarSubscription;
+  events: ExternalCalendarEvent[];
+  replanCandidates: CalendarReplanCandidate[];
 }
 
 export interface CalendarDayInfo {

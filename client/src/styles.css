@@ -5964,6 +5964,105 @@ html[data-animations='off'] * {
   opacity: 0.55;
 }
 
+.calendar-replan-panel,
+.calendar-replan-proposal {
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: color-mix(in srgb, var(--accent) 5%, var(--surface));
+  display: grid;
+  gap: 10px;
+  margin-top: 12px;
+  padding: 12px;
+}
+
+.calendar-replan-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+}
+
+.calendar-replan-head span,
+.calendar-replan-panel small,
+.calendar-replan-proposal small {
+  color: var(--muted);
+  font-size: 12px;
+  line-height: 1.45;
+}
+
+.calendar-replan-head button,
+.calendar-replan-panel li > button,
+.calendar-replan-actions button {
+  border: 1px solid var(--accent);
+  border-radius: 8px;
+  background: var(--surface);
+  color: var(--accent);
+  cursor: pointer;
+  font-size: 12px;
+  padding: 7px 10px;
+}
+
+.calendar-replan-panel ul,
+.calendar-replan-proposal ul {
+  display: grid;
+  gap: 8px;
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+
+.calendar-replan-panel li,
+.calendar-replan-proposal li {
+  border-top: 1px solid var(--border);
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+  min-width: 0;
+  padding-top: 8px;
+}
+
+.calendar-replan-panel li:first-child,
+.calendar-replan-proposal li:first-child {
+  border-top: 0;
+  padding-top: 0;
+}
+
+.calendar-replan-panel li > div,
+.calendar-replan-proposal li > div {
+  display: grid;
+  gap: 4px;
+  min-width: 0;
+}
+
+.calendar-replan-panel span,
+.calendar-replan-proposal span {
+  overflow-wrap: anywhere;
+}
+
+.calendar-replan-proposal li.is-conflict {
+  border-left: 3px solid #d3922c;
+  padding-left: 10px;
+}
+
+.calendar-replan-actions {
+  display: flex;
+  gap: 8px;
+  justify-content: flex-end;
+}
+
+.calendar-replan-actions button:first-child {
+  background: var(--accent);
+  color: #fff;
+}
+
+.calendar-replan-head button:disabled,
+.calendar-replan-panel li > button:disabled,
+.calendar-replan-actions button:disabled {
+  cursor: wait;
+  opacity: 0.55;
+}
+
 .external-calendar-subscriptions {
   display: flex;
   flex-wrap: wrap;

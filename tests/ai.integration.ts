@@ -119,6 +119,7 @@ async function startAiProvider(): Promise<{
               scheduleTaskType: task.title.includes('prototype') ? 'engineering' : 'writing',
               isSplittable: task.title.includes('prototype'),
               minScheduleMinutes: task.title.includes('prototype') ? 60 : null,
+              suggestedDueDate: task.title.includes('prototype') ? '2030-01-05T18:00:00.000Z' : '2030-01-04T18:00:00.000Z',
               reason: task.title.includes('prototype') ? 'Implementation work needs a high-energy block.' : 'Copy work fits a medium-energy writing slot.',
             })),
           });
@@ -376,6 +377,7 @@ async function main() {
     assert(prototypeUpdate?.estimatedMinutes === 120, 'prototype task estimate should come from AI structure');
     assert(prototypeUpdate?.scheduleEnergyType === 'high', 'prototype task energy should come from AI structure');
     assert(prototypeUpdate?.isSplittable === true && prototypeUpdate?.minScheduleMinutes === 60, 'prototype task split metadata should come from AI structure');
+    assert(prototypeUpdate?.suggestedDueDate === '2030-01-05T18:00:00.000Z', 'prototype task due date should come from AI structure');
     assert(
       ai.requests.some((r) => String(r.body?.messages?.find((m: any) => m.role === 'user')?.content ?? '').includes('taskStructureRequest')),
       'AI task structure request should call the provider with task context',
@@ -385,13 +387,20 @@ async function main() {
     const structuredByTitle = new Map(structureTree.body.tasks.map((item: any) => [item.title, item]));
     const copyTask = structuredByTitle.get('Write landing copy') as any;
     const prototypeTask = structuredByTitle.get('Implement prototype') as any;
-    assert(copyTask.estimatedMinutes === 45 && copyTask.scheduleEnergyType === 'medium' && copyTask.scheduleTaskType === 'writing', 'copy task structure should persist');
+    assert(
+      copyTask.estimatedMinutes === 45 &&
+        copyTask.scheduleEnergyType === 'medium' &&
+        copyTask.scheduleTaskType === 'writing' &&
+        copyTask.dueDate === '2030-01-04T18:00:00.000Z',
+      'copy task structure should persist',
+    );
     assert(
       prototypeTask.estimatedMinutes === 120 &&
         prototypeTask.scheduleEnergyType === 'high' &&
         prototypeTask.scheduleTaskType === 'engineering' &&
         prototypeTask.isSplittable === true &&
-        prototypeTask.minScheduleMinutes === 60,
+        prototypeTask.minScheduleMinutes === 60 &&
+        prototypeTask.dueDate === '2030-01-05T18:00:00.000Z',
       'prototype task structure should persist',
     );
 
@@ -579,13 +588,14 @@ END:VCALENDAR`;
       assert(JSON.parse(parsedRuleRow.condition_json).startTime === '12:00', 'confirmed parsed rule condition mismatch');
       const structuredRows = db
         .prepare(
-          `SELECT title, estimated_minutes, schedule_energy_type, schedule_task_type, is_splittable, min_schedule_minutes
+          `SELECT title, due_date, estimated_minutes, schedule_energy_type, schedule_task_type, is_splittable, min_schedule_minutes
            FROM tasks
            WHERE goal_id = ?
            ORDER BY title ASC`,
         )
         .all(structureGoal.body.goal.id) as Array<{
         title: string;
+        due_date: string | null;
         estimated_minutes: number | null;
         schedule_energy_type: string | null;
         schedule_task_type: string | null;
@@ -599,7 +609,8 @@ END:VCALENDAR`;
           prototypeRow.schedule_energy_type === 'high' &&
           prototypeRow.schedule_task_type === 'engineering' &&
           prototypeRow.is_splittable === 1 &&
-          prototypeRow.min_schedule_minutes === 60,
+          prototypeRow.min_schedule_minutes === 60 &&
+          prototypeRow.due_date === '2030-01-05T18:00:00.000Z',
         'structured task metadata was not written to SQLite',
       );
       const scheduledRow = db.prepare('SELECT planned_start_at, planned_end_at FROM tasks WHERE id = ?').get(scheduleTask.body.task.id) as

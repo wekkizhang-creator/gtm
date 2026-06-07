@@ -4,10 +4,22 @@ import MonthGrid from '../components/calendar/MonthGrid';
 import SchedulePanel from '../components/calendar/SchedulePanel';
 import TaskDetailModal from '../components/TaskDetailModal';
 import { api } from '../api/client';
+import { buildCalendarReplanProposalInput, calendarReplanCandidateSummary } from '../calendarReplanCandidates';
 import { ensureSystemCalendarPermission } from '../systemCalendarPermission';
 import { useSettings } from '../settings';
 import { rangeFor, addDays, dayAtMinutes, hm, type CalView } from '../calendarUtil';
-import type { CalendarDayInfo, CalendarSubscription, ExternalCalendarEvent, List, SystemCalendarPermission, Tag, Task } from '../types';
+import type {
+  CalendarDayInfo,
+  CalendarReplanCandidate,
+  CalendarSubscription,
+  CalendarSyncResult,
+  ExternalCalendarEvent,
+  List,
+  ScheduleProposal,
+  SystemCalendarPermission,
+  Tag,
+  Task,
+} from '../types';
 
 const DEFAULT_DURATION_MS = 60 * 60000;
 
@@ -20,6 +32,10 @@ export default function CalendarModule() {
   const [externalEvents, setExternalEvents] = useState<ExternalCalendarEvent[]>([]);
   const [subscriptions, setSubscriptions] = useState<CalendarSubscription[]>([]);
   const [systemCalendarPermission, setSystemCalendarPermission] = useState<SystemCalendarPermission | null>(null);
+  const [replanCandidates, setReplanCandidates] = useState<CalendarReplanCandidate[]>([]);
+  const [replanProposal, setReplanProposal] = useState<ScheduleProposal | null>(null);
+  const [replanProposalSource, setReplanProposalSource] = useState<CalendarReplanCandidate | null>(null);
+  const [replanBusy, setReplanBusy] = useState<string | null>(null);
   const [lists, setLists] = useState<List[]>([]);
   const [tags, setTags] = useState<Tag[]>([]);
   const [subName, setSubName] = useState('');
@@ -82,6 +98,12 @@ export default function CalendarModule() {
   const schedule = (taskId: string, start: Date, due: Date) =>
     void mutate(() => api.updateTask(taskId, { startDate: start.toISOString(), dueDate: due.toISOString(), isAllDay: false }));
 
+  function applyCalendarSyncResult(result: CalendarSyncResult) {
+    setReplanCandidates(result.replanCandidates);
+    setReplanProposal(null);
+    setReplanProposalSource(null);
+  }
+
   const onCreateAt = (day: Date, minutes: number, durationMinutes = 60) => {
     const start = dayAtMinutes(day, minutes);
     const due = new Date(start.getTime() + durationMinutes * 60000);
@@ -121,7 +143,8 @@ export default function CalendarModule() {
     if (!name || !icsText.trim()) return;
     await mutate(async () => {
       const sub = await api.createCalendarSubscription({ name, type: 'ics' });
-      await api.syncCalendarSubscription(sub.id, icsText);
+      const result = await api.syncCalendarSubscription(sub.id, icsText);
+      applyCalendarSyncResult(result);
       setSubName('');
       setIcsText('');
     });
@@ -140,9 +163,60 @@ export default function CalendarModule() {
         setSystemCalendarMessage('系统日历权限未允许，暂不能开启系统日历订阅。');
         return;
       }
-      await mutate(() => api.createSystemCalendarSubscription({ name: '系统日历' }));
+      await mutate(async () => {
+        const result = await api.createSystemCalendarSubscription({ name: '系统日历' });
+        applyCalendarSyncResult(result);
+      });
     } catch (e) {
       setError((e as Error).message);
+    }
+  }
+
+  async function generateReplan(candidate: CalendarReplanCandidate) {
+    const busyKey = `generate:${candidate.goalId}`;
+    setReplanBusy(busyKey);
+    try {
+      const proposal = await api.createScheduleProposal(candidate.goalId, buildCalendarReplanProposalInput(candidate));
+      setReplanProposal(proposal);
+      setReplanProposalSource(candidate);
+      setError(null);
+    } catch (e) {
+      setError((e as Error).message);
+    } finally {
+      setReplanBusy(null);
+    }
+  }
+
+  async function confirmCalendarReplan() {
+    if (!replanProposal || !replanProposalSource) return;
+    setReplanBusy(`confirm:${replanProposal.id}`);
+    try {
+      await api.confirmScheduleProposal(replanProposal.id);
+      const source = replanProposalSource;
+      setReplanCandidates((current) => current.filter((item) => item.goalId !== source.goalId || item.trigger !== source.trigger));
+      setReplanProposal(null);
+      setReplanProposalSource(null);
+      await reload();
+      setError(null);
+    } catch (e) {
+      setError((e as Error).message);
+    } finally {
+      setReplanBusy(null);
+    }
+  }
+
+  async function discardCalendarReplan() {
+    if (!replanProposal) return;
+    setReplanBusy(`discard:${replanProposal.id}`);
+    try {
+      await api.discardScheduleProposal(replanProposal.id);
+      setReplanProposal(null);
+      setReplanProposalSource(null);
+      setError(null);
+    } catch (e) {
+      setError((e as Error).message);
+    } finally {
+      setReplanBusy(null);
     }
   }
 
@@ -215,6 +289,78 @@ export default function CalendarModule() {
               同步
             </button>
           </form>
+          {replanCandidates.length > 0 && (
+            <div className="calendar-replan-panel">
+              <div className="calendar-replan-head">
+                <strong>日程变化影响任务</strong>
+                <button type="button" onClick={() => setReplanCandidates([])}>
+                  关闭
+                </button>
+              </div>
+              <ul>
+                {replanCandidates.map((candidate) => (
+                  <li key={`${candidate.goalId}-${candidate.trigger}`}>
+                    <div>
+                      <span>{calendarReplanCandidateSummary(candidate)}</span>
+                      {candidate.affectedTasks.slice(0, 4).map((task) => (
+                        <small key={task.taskId}>
+                          {task.title}：{new Date(task.plannedStartAt).toLocaleString()} - {new Date(task.plannedEndAt).toLocaleTimeString()} · 冲突{' '}
+                          {task.blockingEventTitle}
+                        </small>
+                      ))}
+                    </div>
+                    <button
+                      type="button"
+                      onClick={() => void generateReplan(candidate)}
+                      disabled={replanBusy === `generate:${candidate.goalId}`}
+                    >
+                      生成重排方案
+                    </button>
+                  </li>
+                ))}
+              </ul>
+            </div>
+          )}
+          {replanProposal && (
+            <div className="calendar-replan-proposal">
+              <div className="calendar-replan-head">
+                <strong>重排方案</strong>
+                <span>{replanProposal.changes.length} 个变更</span>
+              </div>
+              <ul>
+                {replanProposal.changes.map((change) => (
+                  <li key={change.changeKey}>
+                    <div>
+                      <span>{change.title}</span>
+                      <small>
+                        {new Date(change.plannedStartAt).toLocaleString()} - {new Date(change.plannedEndAt).toLocaleTimeString()}
+                      </small>
+                      <small>{change.reason}</small>
+                    </div>
+                  </li>
+                ))}
+                {replanProposal.conflicts.slice(0, 3).map((conflict, index) => (
+                  <li key={`${conflict.type}-${index}`} className="is-conflict">
+                    <div>
+                      <span>{conflict.severity}：{conflict.message}</span>
+                      {conflict.suggestions.length > 0 && <small>{conflict.suggestions.join('、')}</small>}
+                    </div>
+                  </li>
+                ))}
+                {replanProposal.changes.length === 0 && replanProposal.conflicts.length === 0 && (
+                  <li className="external-empty">当前没有可重排的任务</li>
+                )}
+              </ul>
+              <div className="calendar-replan-actions">
+                <button type="button" onClick={() => void confirmCalendarReplan()} disabled={replanBusy?.startsWith('confirm') || replanProposal.changes.length === 0}>
+                  确认重排
+                </button>
+                <button type="button" onClick={() => void discardCalendarReplan()} disabled={replanBusy?.startsWith('discard')}>
+                  放弃方案
+                </button>
+              </div>
+            </div>
+          )}
           <div className="external-calendar-subscriptions">
             {subscriptions.map((sub) => (
               <span key={sub.id}>{sub.name}</span>

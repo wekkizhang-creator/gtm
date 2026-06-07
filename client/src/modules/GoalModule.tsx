@@ -15,6 +15,7 @@ import {
   listManualAdjustmentConflicts,
 } from '../scheduleProposalManualAdjust';
 import { buildScheduleProposalImpact } from '../scheduleProposalImpact';
+import { buildScheduleProposalRegenerateInput } from '../scheduleProposalRegenerate';
 import { buildScheduleRuleConflictActions, type ScheduleRuleConflictAction } from '../scheduleRuleConflictActions';
 import { buildScheduleRuleEditProposalInput, type ScheduleRuleEditApplyMode } from '../scheduleRuleEditEffect';
 import { useSettings } from '../settings';
@@ -799,6 +800,24 @@ export default function GoalModule() {
       const result = await api.confirmScheduleProposal(proposal.id, { changeKeys: [...selectedProposalChangeKeys] });
       setProposalWithSelection(result.proposal);
     });
+  }
+
+  async function regenerateProposal() {
+    if (!selected || !proposal) return;
+    if (!goalCanAutoSchedule(selected.status)) {
+      setError('当前计划已暂停、完成或归档，恢复为进行中后才能重新生成排期方案。');
+      return;
+    }
+    setProposalBusy(true);
+    try {
+      const next = await api.createScheduleProposal(selected.id, buildScheduleProposalRegenerateInput(proposal));
+      setProposalWithSelection(next);
+      setError(null);
+    } catch (e) {
+      setError((e as Error).message);
+    } finally {
+      setProposalBusy(false);
+    }
   }
 
   async function undoProposal() {
@@ -1698,6 +1717,9 @@ export default function GoalModule() {
                       disabled={proposal.status !== 'draft' || proposal.changes.length === selectedProposalChangeKeys.size}
                     >
                       全选
+                    </button>
+                    <button onClick={() => void regenerateProposal()} disabled={proposal.status !== 'draft' || proposalBusy}>
+                      {proposalBusy ? '生成中' : '重新生成'}
                     </button>
                     <button onClick={() => void undoProposal()} disabled={proposal.status !== 'confirmed'}>
                       撤销排期

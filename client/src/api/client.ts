@@ -17,6 +17,7 @@ import type {
   Attachment,
   BackgroundSound,
   CalendarDayInfo,
+  CalendarSyncResult,
   CalendarSubscription,
   Countdown,
   DayPilotDashboard,
@@ -700,11 +701,11 @@ export const api = {
   updateSystemCalendarPermission: (input: { status: SystemCalendarPermissionStatus; promptReason?: SystemCalendarPermissionReason }) =>
     req<{ permission: SystemCalendarPermission }>('/calendar/system-permission', { method: 'POST', body: JSON.stringify(input) }).then((r) => r.permission),
   createSystemCalendarSubscription: (input: { name?: string; color?: string | null } = {}) =>
-    req<{ subscription: CalendarSubscription }>('/calendar/system-subscription', { method: 'POST', body: JSON.stringify(input) }).then((r) => r.subscription),
+    req<CalendarSyncResult>('/calendar/system-subscription', { method: 'POST', body: JSON.stringify(input) }),
   createCalendarSubscription: (input: { type?: string; name: string; url?: string | null; color?: string | null; enabled?: boolean }) =>
     req<{ subscription: CalendarSubscription }>('/calendar/subscriptions', { method: 'POST', body: JSON.stringify(input) }).then((r) => r.subscription),
   syncCalendarSubscription: (id: string, icsText?: string) =>
-    req<{ subscription: CalendarSubscription; events: ExternalCalendarEvent[] }>(`/calendar/subscriptions/${id}/sync`, {
+    req<CalendarSyncResult>(`/calendar/subscriptions/${id}/sync`, {
       method: 'POST',
       body: JSON.stringify({ icsText }),
     }),

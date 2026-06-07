@@ -3,7 +3,9 @@ import { readFileSync } from 'node:fs';
 import { db, nowISO } from './db';
 import {
   AppError,
+  type CalendarReplanCandidateDTO,
   type CalendarSubscriptionDTO,
+  type CalendarSyncResultDTO,
   type ExternalCalendarEventDTO,
   type SystemCalendarPermissionDTO,
   type SystemCalendarPermissionReason,
@@ -183,7 +185,7 @@ async function loadSystemCalendarIcs(): Promise<string> {
   }
 }
 
-export async function createSystemSubscription(userId: string, input: { name?: unknown; color?: unknown }): Promise<{ subscription: CalendarSubscriptionDTO; events: ExternalCalendarEventDTO[] }> {
+export async function createSystemSubscription(userId: string, input: { name?: unknown; color?: unknown }): Promise<CalendarSyncResultDTO> {
   const permission = getSystemCalendarPermission(userId);
   if (permission.status !== 'granted') {
     throw new AppError(403, 'system_calendar_permission_required', 'system calendar read-only permission is required');
@@ -196,6 +198,7 @@ export async function createSystemSubscription(userId: string, input: { name?: u
   return {
     subscription: mapSub(db.prepare('SELECT * FROM calendar_subscriptions WHERE user_id = ? AND id = ?').get(userId, subscription.id)),
     events,
+    replanCandidates: buildReplanCandidates(userId, subscription.id, events),
   };
 }
 
@@ -283,7 +286,7 @@ export async function syncSubscription(
   userId: string,
   id: string,
   input: { icsText?: string | null },
-): Promise<{ subscription: CalendarSubscriptionDTO; events: ExternalCalendarEventDTO[] }> {
+): Promise<CalendarSyncResultDTO> {
   const sub = db.prepare('SELECT * FROM calendar_subscriptions WHERE user_id = ? AND id = ?').get(userId, id) as any;
   if (!sub) throw new AppError(404, 'not_found', 'subscription not found');
   let icsText = input.icsText ?? null;
@@ -297,7 +300,11 @@ export async function syncSubscription(
   if (!icsText) throw new AppError(400, 'invalid', 'icsText or subscription url is required');
   const parsed = parseIcs(icsText);
   const events = syncParsedEvents(userId, id, parsed);
-  return { subscription: mapSub(db.prepare('SELECT * FROM calendar_subscriptions WHERE user_id = ? AND id = ?').get(userId, id)), events };
+  return {
+    subscription: mapSub(db.prepare('SELECT * FROM calendar_subscriptions WHERE user_id = ? AND id = ?').get(userId, id)),
+    events,
+    replanCandidates: buildReplanCandidates(userId, id, events),
+  };
 }
 
 function syncParsedEvents(userId: string, subscriptionId: string, parsed: ParsedIcsEvent[]): ExternalCalendarEventDTO[] {
@@ -333,4 +340,81 @@ export function listEvents(userId: string, from: string, to: string): ExternalCa
       )
       .all(userId, from, to) as any[]
   ).map(mapEvent);
+}
+
+function buildReplanCandidates(userId: string, subscriptionId: string, events: ExternalCalendarEventDTO[]): CalendarReplanCandidateDTO[] {
+  if (!events.length) return [];
+  const rows = db
+    .prepare(
+      `SELECT
+         t.id task_id,
+         t.title task_title,
+         t.start_date,
+         t.due_date,
+         t.goal_id,
+         g.title goal_title,
+         e.title event_title,
+         e.starts_at event_start,
+         e.ends_at event_end
+       FROM tasks t
+       JOIN goals g ON g.user_id = t.user_id AND g.id = t.goal_id
+       JOIN external_calendar_events e ON e.user_id = t.user_id
+       WHERE t.user_id = ?
+         AND e.subscription_id = ?
+         AND t.deleted_at IS NULL
+         AND t.completed = 0
+         AND t.goal_id IS NOT NULL
+         AND t.start_date IS NOT NULL
+         AND t.due_date IS NOT NULL
+         AND t.is_all_day = 0
+         AND t.auto_schedule_enabled = 1
+         AND t.is_locked_schedule = 0
+         AND g.status IN ('active', 'not_started')
+         AND e.ends_at > t.start_date
+         AND e.starts_at < t.due_date
+       ORDER BY g.created_at ASC, t.start_date ASC, e.starts_at ASC`,
+    )
+    .all(userId, subscriptionId) as Array<{
+    task_id: string;
+    task_title: string;
+    start_date: string;
+    due_date: string;
+    goal_id: string;
+    goal_title: string;
+    event_title: string;
+    event_start: string;
+    event_end: string;
+  }>;
+  const eventKeys = new Set(events.map((event) => `${event.title}:${event.startsAt}:${event.endsAt}`));
+  const byGoal = new Map<string, CalendarReplanCandidateDTO>();
+  const seenTasks = new Map<string, Set<string>>();
+  for (const row of rows) {
+    if (!eventKeys.has(`${row.event_title}:${row.event_start}:${row.event_end}`)) continue;
+    let candidate = byGoal.get(row.goal_id);
+    if (!candidate) {
+      candidate = {
+        goalId: row.goal_id,
+        goalTitle: row.goal_title,
+        affectedTaskCount: 0,
+        affectedTasks: [],
+        trigger: `calendar_sync:${subscriptionId}`,
+      };
+      byGoal.set(row.goal_id, candidate);
+      seenTasks.set(row.goal_id, new Set());
+    }
+    const seen = seenTasks.get(row.goal_id)!;
+    if (seen.has(row.task_id)) continue;
+    seen.add(row.task_id);
+    candidate.affectedTasks.push({
+      taskId: row.task_id,
+      title: row.task_title,
+      plannedStartAt: row.start_date,
+      plannedEndAt: row.due_date,
+      blockingEventTitle: row.event_title,
+      blockingEventStart: row.event_start,
+      blockingEventEnd: row.event_end,
+    });
+    candidate.affectedTaskCount = candidate.affectedTasks.length;
+  }
+  return Array.from(byGoal.values());
 }
