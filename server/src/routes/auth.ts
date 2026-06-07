@@ -1,4 +1,4 @@
-import { Router } from 'express';
+import { Router, type Request } from 'express';
 import * as auth from '../authRepo';
 import { optionalAuth } from '../authMiddleware';
 import { AppError } from '../types';
@@ -45,6 +45,22 @@ function deviceFromBody(body: any) {
   };
 }
 
+function optionalDeviceIdFromBody(body: any): string | null {
+  const raw = body?.device?.deviceId ?? body?.deviceId;
+  if (raw === undefined || raw === null || raw === '') return null;
+  if (typeof raw !== 'string') throw new AppError(400, 'invalid', 'deviceId must be a string');
+  const trimmed = raw.trim();
+  return trimmed || null;
+}
+
+function riskFromRequest(req: Request, body: any): auth.AuthRiskContext {
+  return {
+    ip: req.ip,
+    userAgent: req.headers['user-agent'],
+    deviceId: optionalDeviceIdFromBody(body),
+  };
+}
+
 router.get('/session', optionalAuth, (req, res) => {
   if (!req.auth) throw new AppError(401, 'unauthenticated', 'please sign in');
   res.json(auth.currentSession(req.auth));
@@ -64,7 +80,7 @@ router.post('/verification-codes', async (req, res, next) => {
       type: b.type,
       identifier: b.identifier,
       purpose,
-      risk: { ip: req.ip, userAgent: req.headers['user-agent'] },
+      risk: riskFromRequest(req, b),
     });
     auth.audit(null, 'verification_code_requested', b.type, challenge.challengeId, req.ip, req.headers['user-agent']);
     track(req, 'auth_code_send', { method: b.type, success: true, purpose, is_new_identifier: challenge.isNewIdentifier });
@@ -88,7 +104,7 @@ router.post('/register/start', async (req, res, next) => {
     if (typeof b.email !== 'string') throw new AppError(400, 'invalid_identifier', 'email is required');
     const challenge = await auth.startEmailRegistration({
       email: b.email,
-      risk: { ip: req.ip, userAgent: req.headers['user-agent'] },
+      risk: riskFromRequest(req, b),
     });
     auth.audit(null, 'registration_code_requested', 'email', challenge.challengeId, req.ip, req.headers['user-agent']);
     track(req, 'auth_code_send', { method: 'email', success: true, purpose: 'register', is_new_identifier: challenge.isNewIdentifier });
@@ -149,7 +165,7 @@ router.post('/password-reset/start', async (req, res, next) => {
     if (typeof b.email !== 'string') throw new AppError(400, 'invalid_identifier', 'email is required');
     const challenge = await auth.startPasswordReset({
       email: b.email,
-      risk: { ip: req.ip, userAgent: req.headers['user-agent'] },
+      risk: riskFromRequest(req, b),
     });
     auth.audit(null, 'password_reset_code_requested', 'email', challenge.challengeId, req.ip, req.headers['user-agent']);
     track(req, 'auth_code_send', { method: 'email', success: true, purpose: 'password_reset', is_new_identifier: challenge.isNewIdentifier });

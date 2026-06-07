@@ -112,6 +112,15 @@ function fmtTime(value: string | null | undefined): string {
   return value ? new Date(value).toLocaleString() : '暂无';
 }
 
+function authDevicePayload(session: AuthSession) {
+  return {
+    deviceId: session.deviceId,
+    deviceName: session.deviceName ?? undefined,
+    platform: session.platform ?? undefined,
+    appVersion: session.appVersion ?? undefined,
+  };
+}
+
 function Seg<T extends string | number>({ options, value, onChange }: { options: { value: T; label: string }[]; value: T; onChange: (v: T) => void }) {
   return (
     <div className="seg">
@@ -764,6 +773,7 @@ export default function SettingsModal({ open, onClose }: { open: boolean; onClos
         type: 'email',
         identifier: deleteEmail.trim(),
         purpose: 'account_delete',
+        device: authDevicePayload(session),
       });
       setDeleteChallengeId(result.challengeId);
       setDeleteMessage(`验证码已发送至 ${result.maskedIdentifier}`);
@@ -784,6 +794,7 @@ export default function SettingsModal({ open, onClose }: { open: boolean; onClos
         type: 'email',
         identifier: bindEmail.trim(),
         purpose: 'account_bind',
+        device: authDevicePayload(session),
       });
       setBindChallengeId(result.challengeId);
       setBindMessage(`验证码已发送至 ${result.maskedIdentifier}`);
@@ -804,6 +815,7 @@ export default function SettingsModal({ open, onClose }: { open: boolean; onClos
         type: 'phone',
         identifier: bindPhone.trim(),
         purpose: 'account_bind',
+        device: authDevicePayload(session),
       });
       setBindPhoneChallengeId(result.challengeId);
       setBindMessage(`验证码已发送至 ${result.maskedIdentifier}`);

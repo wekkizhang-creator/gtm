@@ -30,6 +30,7 @@ type ReRegistrationPolicy = 'allow' | 'block';
 export interface AuthRiskContext {
   ip?: string | null;
   userAgent?: string | string[] | null;
+  deviceId?: string | null;
 }
 
 function tokenSecret(): string {
@@ -45,6 +46,35 @@ function splitConfigList(value: string | undefined): string[] {
     .split(',')
     .map((item) => item.trim())
     .filter(Boolean);
+}
+
+function positiveIntEnv(name: string, fallback: number): number {
+  const n = Number(process.env[name]);
+  return Number.isInteger(n) && n > 0 ? n : fallback;
+}
+
+function codeIdentifierWindowSec(): number {
+  return positiveIntEnv('AUTH_CODE_IDENTIFIER_WINDOW_SEC', 60 * 60);
+}
+
+function codeIdentifierMaxPerWindow(): number {
+  return positiveIntEnv('AUTH_CODE_IDENTIFIER_MAX_PER_WINDOW', 5);
+}
+
+function codeIpWindowSec(): number {
+  return positiveIntEnv('AUTH_CODE_IP_WINDOW_SEC', 5 * 60);
+}
+
+function codeIpMaxPerWindow(): number {
+  return positiveIntEnv('AUTH_CODE_IP_MAX_PER_WINDOW', 30);
+}
+
+function codeDeviceWindowSec(): number {
+  return positiveIntEnv('AUTH_CODE_DEVICE_WINDOW_SEC', 5 * 60);
+}
+
+function codeDeviceMaxPerWindow(): number {
+  return positiveIntEnv('AUTH_CODE_DEVICE_MAX_PER_WINDOW', 10);
 }
 
 function reRegistrationPolicy(): ReRegistrationPolicy {
@@ -109,6 +139,48 @@ function verifySigned(token: string): Record<string, any> | null {
 
 function codeHash(challengeId: string, code: string): string {
   return hmac(`${challengeId}:${code}`);
+}
+
+function riskHash(scope: 'ip' | 'device', value: string | null | undefined): string | null {
+  const v = typeof value === 'string' ? value.trim() : '';
+  return v ? hmac(`auth-code-rate:${scope}:${v}`, identifierSecret()) : null;
+}
+
+function secondsUntilWindowClears(createdAt: string, windowSec: number, now: string): number {
+  const ms = Date.parse(createdAt) + windowSec * 1000 - Date.parse(now);
+  return Math.max(1, Math.ceil(ms / 1000));
+}
+
+function rateLimited(createdAt: string, windowSec: number, now: string): never {
+  const wait = secondsUntilWindowClears(createdAt, windowSec, now);
+  throw new AppError(429, 'rate_limited', `please wait ${wait} seconds before requesting another code`);
+}
+
+function assertIdentifierCodeRate(type: 'email' | 'phone', identifierHashValue: string, now: string): void {
+  const windowSec = codeIdentifierWindowSec();
+  const max = codeIdentifierMaxPerWindow();
+  const since = addSeconds(now, -windowSec);
+  const rows = db
+    .prepare(
+      `SELECT created_at FROM verification_codes
+       WHERE type = ? AND identifier_hash = ? AND created_at >= ?
+       ORDER BY created_at ASC`,
+    )
+    .all(type, identifierHashValue, since) as Array<{ created_at: string }>;
+  if (rows.length >= max) rateLimited(rows[0].created_at, windowSec, now);
+}
+
+function assertRequesterCodeRate(column: 'requester_ip_hash' | 'requester_device_hash', hash: string | null, windowSec: number, max: number, now: string): void {
+  if (!hash) return;
+  const since = addSeconds(now, -windowSec);
+  const rows = db
+    .prepare(
+      `SELECT created_at FROM verification_codes
+       WHERE ${column} = ? AND created_at >= ?
+       ORDER BY created_at ASC`,
+    )
+    .all(hash, since) as Array<{ created_at: string }>;
+  if (rows.length >= max) rateLimited(rows[0].created_at, windowSec, now);
 }
 
 function normalizeEmail(v: string): string {
@@ -396,6 +468,8 @@ export async function createVerificationCode(input: {
   const idHash = identifierHash(input.type, normalized);
   assertIdentifierRiskAllowed(input.type, normalized, idHash, input.risk);
   const now = nowISO();
+  const requesterIpHash = riskHash('ip', input.risk?.ip);
+  const requesterDeviceHash = riskHash('device', input.risk?.deviceId);
   const existingIdentity = db
     .prepare('SELECT id FROM auth_identities WHERE type = ? AND identifier_hash = ? AND unbound_at IS NULL LIMIT 1')
     .get(input.type, idHash);
@@ -411,19 +485,24 @@ export async function createVerificationCode(input: {
   if (latest && latest.resend_after_at > now) {
     throw new AppError(429, 'rate_limited', 'please wait before requesting another code');
   }
+  assertIdentifierCodeRate(input.type, idHash, now);
+  assertRequesterCodeRate('requester_ip_hash', requesterIpHash, codeIpWindowSec(), codeIpMaxPerWindow(), now);
+  assertRequesterCodeRate('requester_device_hash', requesterDeviceHash, codeDeviceWindowSec(), codeDeviceMaxPerWindow(), now);
 
   const challengeId = randomUUID();
   const code = String(randomInt(0, 1_000_000)).padStart(6, '0');
   const expiresAt = addSeconds(now, CODE_TTL_SEC);
   db.prepare(
     `INSERT INTO verification_codes
-       (id, type, identifier_hash, display_identifier, code_hash, purpose, expires_at, resend_after_at, attempts, consumed_at, created_at)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, 0, NULL, ?)`,
+       (id, type, identifier_hash, display_identifier, requester_ip_hash, requester_device_hash, code_hash, purpose, expires_at, resend_after_at, attempts, consumed_at, created_at)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, NULL, ?)`,
   ).run(
     challengeId,
     input.type,
     idHash,
     masked,
+    requesterIpHash,
+    requesterDeviceHash,
     codeHash(challengeId, code),
     purpose,
     expiresAt,

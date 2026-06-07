@@ -93,6 +93,8 @@ db.exec(`
     type            TEXT NOT NULL CHECK(type IN ('phone','email')),
     identifier_hash TEXT NOT NULL,
     display_identifier TEXT,
+    requester_ip_hash TEXT,
+    requester_device_hash TEXT,
     code_hash       TEXT NOT NULL,
     purpose         TEXT NOT NULL DEFAULT 'login',
     expires_at      TEXT NOT NULL,
@@ -728,6 +730,8 @@ db.exec(`
   addCol('tasks', 'pinned', 'pinned INTEGER NOT NULL DEFAULT 0');
   addCol('tasks', 'status', "status TEXT NOT NULL DEFAULT 'todo'");
   addCol('verification_codes', 'display_identifier', 'display_identifier TEXT');
+  addCol('verification_codes', 'requester_ip_hash', 'requester_ip_hash TEXT');
+  addCol('verification_codes', 'requester_device_hash', 'requester_device_hash TEXT');
   addCol('focus_sessions', 'background_sound_id', 'background_sound_id TEXT');
   addCol('focus_sessions', 'background_sound_name', 'background_sound_name TEXT');
   addCol('focus_sessions', 'background_volume', 'background_volume INTEGER');
@@ -778,6 +782,8 @@ db.exec(`
   CREATE INDEX IF NOT EXISTS idx_sync_operations_status ON sync_operations(user_id, status, received_at);
   CREATE INDEX IF NOT EXISTS idx_login_sessions_user ON login_sessions(user_id, revoked_at);
   CREATE INDEX IF NOT EXISTS idx_verification_codes_identifier ON verification_codes(type, identifier_hash, created_at);
+  CREATE INDEX IF NOT EXISTS idx_verification_codes_ip ON verification_codes(requester_ip_hash, created_at);
+  CREATE INDEX IF NOT EXISTS idx_verification_codes_device ON verification_codes(requester_device_hash, created_at);
   CREATE INDEX IF NOT EXISTS idx_lists_user ON lists(user_id, sort_order);
   CREATE INDEX IF NOT EXISTS idx_list_folders_user ON list_folders(user_id, sort_order, created_at);
   CREATE INDEX IF NOT EXISTS idx_lists_user_folder ON lists(user_id, folder_id, sort_order);

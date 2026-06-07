@@ -185,8 +185,8 @@ function PasswordAuthScreen({ onAuthed }: { onAuthed: (s: { user: User; session:
     try {
       const result =
         mode === 'register'
-          ? await api.startRegistration({ email: email.trim() })
-          : await api.startPasswordReset({ email: email.trim() });
+          ? await api.startRegistration({ email: email.trim(), device: devicePayload() })
+          : await api.startPasswordReset({ email: email.trim(), device: devicePayload() });
       setChallengeId(result.challengeId);
       setMasked(result.maskedIdentifier);
       setResendIn(result.resendAfterSec);
@@ -204,8 +204,8 @@ function PasswordAuthScreen({ onAuthed }: { onAuthed: (s: { user: User; session:
     try {
       const result =
         mode === 'register'
-          ? await api.startRegistration({ email: email.trim() })
-          : await api.startPasswordReset({ email: email.trim() });
+          ? await api.startRegistration({ email: email.trim(), device: devicePayload() })
+          : await api.startPasswordReset({ email: email.trim(), device: devicePayload() });
       setChallengeId(result.challengeId);
       setMasked(result.maskedIdentifier);
       setResendIn(result.resendAfterSec);

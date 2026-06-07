@@ -3195,3 +3195,43 @@ Response:
 ### Verification
 
 `npm run test:notifications` now creates a due task reminder, runs the real reminder tick, reads the notification, snoozes it with `{ minutes: 10 }`, verifies the returned `scheduledAt` is calculated around server receipt time, verifies it is hidden from `GET /api/notifications`, rejects invalid minutes and past ISO snooze values, verifies another account cannot snooze the row, and checks SQLite persists `action_state = 'snoozed'`, `read_at IS NULL`, and the returned `scheduled_at`.
+
+## Slice 122: Auth Verification Code Rate Limits
+
+AUTH-22 now has real server-side verification-code throttling across identifier, IP, and device dimensions. The existing same-identifier resend cooldown remains in place, and additional rolling-window limits stop high-frequency code requests before SMTP/SMS delivery is attempted.
+
+### Data Contract
+
+`verification_codes` adds two hashed request dimensions:
+
+- `requester_ip_hash TEXT`
+- `requester_device_hash TEXT`
+
+The server stores only HMAC hashes, not raw IP addresses or device IDs. Existing `AUTH_IDENTIFIER_SECRET` is reused for these hashes, so no new required secret is introduced.
+
+### API Contract
+
+The following endpoints accept an optional request device for send-rate limiting:
+
+- `POST /api/auth/register/start`: `{ "email": "...", "device": { "deviceId": "..." } }`
+- `POST /api/auth/password-reset/start`: `{ "email": "...", "device": { "deviceId": "..." } }`
+- `POST /api/auth/verification-codes`: `{ "type": "email", "identifier": "...", "purpose": "account_bind", "device": { "deviceId": "..." } }`
+
+Old clients that omit `device` still work and are limited by identifier plus request IP. If a request exceeds any configured rolling window, the route returns `429 rate_limited` and does not send a verification email/SMS.
+
+Optional environment knobs:
+
+- `AUTH_CODE_IDENTIFIER_WINDOW_SEC`, default `3600`
+- `AUTH_CODE_IDENTIFIER_MAX_PER_WINDOW`, default `5`
+- `AUTH_CODE_IP_WINDOW_SEC`, default `300`
+- `AUTH_CODE_IP_MAX_PER_WINDOW`, default `30`
+- `AUTH_CODE_DEVICE_WINDOW_SEC`, default `300`
+- `AUTH_CODE_DEVICE_MAX_PER_WINDOW`, default `10`
+
+### Client Contract
+
+The email registration and password-reset start steps send the real web device ID. Account binding and account deletion verification-code requests send the current login session's device ID. This gives the backend a real device dimension while preserving the existing email-only auth flow.
+
+### Verification
+
+`npm run test:auth-rate-limit` starts a real local SMTP server and Express app, sends verification-code requests through HTTP, verifies same-identifier resend, shared-device throttling, and request-IP throttling all return `429 rate_limited`, verifies blocked requests do not add SMTP messages, and checks SQLite contains only successful send rows with hashed IP/device dimensions.

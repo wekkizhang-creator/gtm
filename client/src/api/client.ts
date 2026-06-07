@@ -292,15 +292,22 @@ export interface SyncOperationResult {
   appliedAt: string | null;
 }
 
+export interface AuthDeviceInput {
+  deviceId: string;
+  deviceName?: string | null;
+  platform?: string | null;
+  appVersion?: string | null;
+}
+
 export const api = {
   // auth
   getSession: () => req<{ user: User; session: AuthSession }>('/auth/session'),
-  requestVerificationCode: (input: { type: 'email' | 'phone'; identifier: string; purpose?: 'account_delete' | 'account_bind' }) =>
+  requestVerificationCode: (input: { type: 'email' | 'phone'; identifier: string; purpose?: 'account_delete' | 'account_bind'; device?: AuthDeviceInput }) =>
     req<{ challengeId: string; maskedIdentifier: string; expiresAt: string; resendAfterSec: number; isNewIdentifier: boolean }>(
       '/auth/verification-codes',
       { method: 'POST', body: JSON.stringify(input) },
     ),
-  startRegistration: (input: { email: string }) =>
+  startRegistration: (input: { email: string; device?: AuthDeviceInput }) =>
     req<{ challengeId: string; maskedIdentifier: string; expiresAt: string; resendAfterSec: number; isNewIdentifier: boolean }>(
       '/auth/register/start',
       { method: 'POST', body: JSON.stringify(input) },
@@ -310,7 +317,7 @@ export const api = {
     code: string;
     password: string;
     agreedToTerms: boolean;
-    device: { deviceId: string; deviceName?: string; platform?: string; appVersion?: string };
+    device: AuthDeviceInput;
   }) =>
     req<{ user: User; session: AuthSession; isNewUser: boolean }>('/auth/register/complete', {
       method: 'POST',
@@ -319,13 +326,13 @@ export const api = {
   loginWithPassword: (input: {
     email: string;
     password: string;
-    device: { deviceId: string; deviceName?: string; platform?: string; appVersion?: string };
+    device: AuthDeviceInput;
   }) =>
     req<{ user: User; session: AuthSession; isNewUser: false }>('/auth/login/password', {
       method: 'POST',
       body: JSON.stringify(input),
     }),
-  startPasswordReset: (input: { email: string }) =>
+  startPasswordReset: (input: { email: string; device?: AuthDeviceInput }) =>
     req<{ challengeId: string; maskedIdentifier: string; expiresAt: string; resendAfterSec: number; isNewIdentifier: boolean }>(
       '/auth/password-reset/start',
       { method: 'POST', body: JSON.stringify(input) },
@@ -334,7 +341,7 @@ export const api = {
     challengeId: string;
     code: string;
     password: string;
-    device: { deviceId: string; deviceName?: string; platform?: string; appVersion?: string };
+    device: AuthDeviceInput;
   }) =>
     req<{ user: User; session: AuthSession; isNewUser: false }>('/auth/password-reset/complete', {
       method: 'POST',
@@ -343,7 +350,7 @@ export const api = {
   loginWithOAuth: (provider: string, input: {
     accessToken: string;
     agreedToTerms: boolean;
-    device: { deviceId: string; deviceName?: string; platform?: string; appVersion?: string };
+    device: AuthDeviceInput;
   }) =>
     req<{ user: User; session: AuthSession; isNewUser: boolean }>(`/auth/oauth/${encodeURIComponent(provider)}/login`, {
       method: 'POST',
