@@ -1,9 +1,16 @@
 import { createContext, useContext, useEffect, useMemo, useState, type FormEvent, type ReactNode } from 'react';
 import { api } from './api/client';
 import { getDeviceId, trackEvent } from './analytics';
+import { authAgreementCheckProperties, authAgreementClickProperties } from './authAgreementAnalytics';
+import { authDeleteAccountCancelProperties } from './authDeletionAnalytics';
+import { authMethodSelectProperties, type AuthMethodSelectEntry } from './authMethodAnalytics';
 import { resolveLogoutFlow } from './logoutFlow';
 import { describeAuthError, passwordScore } from './authMessages';
+import { authOfflineNotice, browserOnlineStatus } from './authNetworkState';
+import { validateEmailInput } from './emailAuthValidation';
 import { LEGAL_DOC_LINKS } from './legalDocs';
+import { readLoginMemory, rememberEmailLogin, type LoginMemory } from './loginMemory';
+import { SESSION_EXPIRED_EVENT, sessionExpiredMessage, type SessionExpiredEventDetail } from './sessionExpiry';
 import type { AuthSession, User } from './types';
 
 interface AuthCtx {
@@ -21,22 +28,6 @@ export function useAuth() {
   const ctx = useContext(Ctx);
   if (!ctx) throw new Error('Auth context is not ready');
   return ctx;
-}
-
-function readLastEmail(): string {
-  try {
-    return localStorage.getItem('el_last_email') ?? '';
-  } catch {
-    return '';
-  }
-}
-
-function rememberEmail(email: string): void {
-  try {
-    localStorage.setItem('el_last_email', email);
-  } catch {
-    /* ignore storage errors (private mode etc.) */
-  }
 }
 
 function devicePayload() {
@@ -93,9 +84,16 @@ function PasswordField({
   );
 }
 
-function PasswordAuthScreen({ onAuthed }: { onAuthed: (s: { user: User; session: AuthSession }) => void }) {
+function PasswordAuthScreen({
+  onAuthed,
+  notice,
+}: {
+  onAuthed: (s: { user: User; session: AuthSession }) => void;
+  notice?: string | null;
+}) {
   const [mode, setMode] = useState<AuthMode>('login');
-  const [email, setEmail] = useState(readLastEmail);
+  const [email, setEmail] = useState('');
+  const [loginMemory, setLoginMemory] = useState<LoginMemory>(readLoginMemory);
   const [challengeId, setChallengeId] = useState('');
   const [masked, setMasked] = useState('');
   const [code, setCode] = useState('');
@@ -105,12 +103,25 @@ function PasswordAuthScreen({ onAuthed }: { onAuthed: (s: { user: User; session:
   const [busy, setBusy] = useState(false);
   const [resendIn, setResendIn] = useState(0);
   const [error, setError] = useState<string | null>(null);
+  const [online, setOnline] = useState(browserOnlineStatus);
   const isRiskRestricted = error?.includes('账号验证受限') ?? false;
   const waitingForCode = mode !== 'login' && !!challengeId;
   const strength = passwordScore(password);
 
   useEffect(() => {
     trackEvent('auth_page_view', { entry: 'app_start', platform: 'web', is_offline: !navigator.onLine });
+  }, []);
+
+  useEffect(() => {
+    function updateOnlineStatus() {
+      setOnline(browserOnlineStatus());
+    }
+    window.addEventListener('online', updateOnlineStatus);
+    window.addEventListener('offline', updateOnlineStatus);
+    return () => {
+      window.removeEventListener('online', updateOnlineStatus);
+      window.removeEventListener('offline', updateOnlineStatus);
+    };
   }, []);
 
   // Tick the resend cooldown down to zero. The boolean dependency keeps a single
@@ -121,7 +132,10 @@ function PasswordAuthScreen({ onAuthed }: { onAuthed: (s: { user: User; session:
     return () => clearInterval(timer);
   }, [resendIn > 0]);
 
-  function switchMode(next: AuthMode) {
+  function switchMode(next: AuthMode, analyticsEntry?: AuthMethodSelectEntry) {
+    if (analyticsEntry && next !== mode) {
+      trackEvent('auth_method_select', authMethodSelectProperties(analyticsEntry));
+    }
     setMode(next);
     setChallengeId('');
     setMasked('');
@@ -161,17 +175,28 @@ function PasswordAuthScreen({ onAuthed }: { onAuthed: (s: { user: User; session:
     return true;
   }
 
+  function requireValidEmail(): string | null {
+    const result = validateEmailInput(email);
+    if (!result.ok) {
+      setError(result.error);
+      return null;
+    }
+    return result.email;
+  }
+
   async function submitLogin(e: FormEvent) {
     e.preventDefault();
+    const normalizedEmail = requireValidEmail();
+    if (!normalizedEmail) return;
     setBusy(true);
     setError(null);
     try {
       const result = await api.loginWithPassword({
-        email: email.trim(),
+        email: normalizedEmail,
         password,
         device: devicePayload(),
       });
-      rememberEmail(email.trim());
+      setLoginMemory(rememberEmailLogin(normalizedEmail));
       onAuthed({ user: result.user, session: result.session });
     } catch (err) {
       setError(describeAuthError(err));
@@ -182,13 +207,15 @@ function PasswordAuthScreen({ onAuthed }: { onAuthed: (s: { user: User; session:
 
   async function startCodeFlow(e: FormEvent) {
     e.preventDefault();
+    const normalizedEmail = requireValidEmail();
+    if (!normalizedEmail) return;
     setBusy(true);
     setError(null);
     try {
       const result =
         mode === 'register'
-          ? await api.startRegistration({ email: email.trim(), device: devicePayload() })
-          : await api.startPasswordReset({ email: email.trim(), device: devicePayload() });
+          ? await api.startRegistration({ email: normalizedEmail, device: devicePayload() })
+          : await api.startPasswordReset({ email: normalizedEmail, device: devicePayload() });
       setChallengeId(result.challengeId);
       setMasked(result.maskedIdentifier);
       setResendIn(result.resendAfterSec);
@@ -201,13 +228,15 @@ function PasswordAuthScreen({ onAuthed }: { onAuthed: (s: { user: User; session:
 
   async function resendCode() {
     if (busy || resendIn > 0) return;
+    const normalizedEmail = requireValidEmail();
+    if (!normalizedEmail) return;
     setBusy(true);
     setError(null);
     try {
       const result =
         mode === 'register'
-          ? await api.startRegistration({ email: email.trim(), device: devicePayload() })
-          : await api.startPasswordReset({ email: email.trim(), device: devicePayload() });
+          ? await api.startRegistration({ email: normalizedEmail, device: devicePayload() })
+          : await api.startPasswordReset({ email: normalizedEmail, device: devicePayload() });
       setChallengeId(result.challengeId);
       setMasked(result.maskedIdentifier);
       setResendIn(result.resendAfterSec);
@@ -221,6 +250,8 @@ function PasswordAuthScreen({ onAuthed }: { onAuthed: (s: { user: User; session:
 
   async function completeCodeFlow(e: FormEvent) {
     e.preventDefault();
+    const normalizedEmail = requireValidEmail();
+    if (!normalizedEmail) return;
     if (!validateNewPassword()) return;
     setBusy(true);
     setError(null);
@@ -240,7 +271,7 @@ function PasswordAuthScreen({ onAuthed }: { onAuthed: (s: { user: User; session:
               password,
               device: devicePayload(),
             });
-      rememberEmail(email.trim());
+      setLoginMemory(rememberEmailLogin(normalizedEmail));
       onAuthed({ user: result.user, session: result.session });
     } catch (err) {
       setError(describeAuthError(err));
@@ -259,6 +290,10 @@ function PasswordAuthScreen({ onAuthed }: { onAuthed: (s: { user: User; session:
         : mode === 'register'
           ? '先验证邮箱，再设置你的登录密码。'
           : '验证邮箱后即可重设密码。';
+  const emailValidation = validateEmailInput(email);
+  const emailFormatError = email.trim() && !emailValidation.ok ? emailValidation.error : null;
+  const canUseEmail = emailValidation.ok;
+  const offlineNotice = authOfflineNotice(online);
 
   return (
     <main className="auth-page">
@@ -271,15 +306,25 @@ function PasswordAuthScreen({ onAuthed }: { onAuthed: (s: { user: User; session:
         <div className="auth-brand">效率清单</div>
         <h1>{title}</h1>
         <p>{intro}</p>
+        {notice && (
+          <div className="banner" role="status">
+            {notice}
+          </div>
+        )}
+        {offlineNotice && (
+          <div className="banner" role="status">
+            {offlineNotice}
+          </div>
+        )}
 
         <div className="auth-tabs" role="tablist" aria-label="认证方式">
-          <button className={mode === 'login' ? 'active' : ''} type="button" onClick={() => switchMode('login')}>
+          <button className={mode === 'login' ? 'active' : ''} type="button" onClick={() => switchMode('login', 'login_tab')}>
             登录
           </button>
-          <button className={mode === 'register' ? 'active' : ''} type="button" onClick={() => switchMode('register')}>
+          <button className={mode === 'register' ? 'active' : ''} type="button" onClick={() => switchMode('register', 'register_tab')}>
             注册
           </button>
-          <button className={mode === 'reset' ? 'active' : ''} type="button" onClick={() => switchMode('reset')}>
+          <button className={mode === 'reset' ? 'active' : ''} type="button" onClick={() => switchMode('reset', 'password_reset_tab')}>
             忘记密码
           </button>
         </div>
@@ -297,6 +342,10 @@ function PasswordAuthScreen({ onAuthed }: { onAuthed: (s: { user: User; session:
                 onChange={(e) => setEmail(e.target.value)}
                 disabled={busy}
               />
+              {loginMemory.method === 'email_password' && loginMemory.maskedEmail && (
+                <span className="auth-muted">上次使用邮箱账号：{loginMemory.maskedEmail}</span>
+              )}
+              {emailFormatError && <span className="auth-muted">{emailFormatError}</span>}
             </label>
             <PasswordField
               label="密码"
@@ -306,10 +355,10 @@ function PasswordAuthScreen({ onAuthed }: { onAuthed: (s: { user: User; session:
               onChange={setPassword}
               disabled={busy}
             />
-            <button className="btn-primary" disabled={busy || !email.trim() || !password}>
+            <button className="btn-primary" disabled={busy || !canUseEmail || !password}>
               {busy ? '登录中...' : '登录'}
             </button>
-            <button type="button" className="auth-link" onClick={() => switchMode('reset')} disabled={busy}>
+            <button type="button" className="auth-link" onClick={() => switchMode('reset', 'forgot_password_link')} disabled={busy}>
               忘记密码？
             </button>
           </form>
@@ -326,8 +375,9 @@ function PasswordAuthScreen({ onAuthed }: { onAuthed: (s: { user: User; session:
                 onChange={(e) => setEmail(e.target.value)}
                 disabled={busy}
               />
+              {emailFormatError && <span className="auth-muted">{emailFormatError}</span>}
             </label>
-            <button className="btn-primary" disabled={busy || !email.trim()}>
+            <button className="btn-primary" disabled={busy || !canUseEmail}>
               {busy ? '发送中...' : '获取邮箱验证码'}
             </button>
           </form>
@@ -389,16 +439,32 @@ function PasswordAuthScreen({ onAuthed }: { onAuthed: (s: { user: User; session:
                   checked={agreed}
                   onChange={(e) => {
                     setAgreed(e.target.checked);
-                    trackEvent('auth_agreement_check', { checked: e.target.checked, entry: 'email_password_register' });
+                    trackEvent('auth_agreement_check', authAgreementCheckProperties(e.target.checked));
                   }}
                 />
                 <span>
                   我已阅读并同意
-                  <a href={LEGAL_DOC_LINKS.terms.href} target="_blank" rel="noreferrer" onClick={(e) => e.stopPropagation()}>
+                  <a
+                    href={LEGAL_DOC_LINKS.terms.href}
+                    target="_blank"
+                    rel="noreferrer"
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      trackEvent('auth_agreement_click', authAgreementClickProperties('terms'));
+                    }}
+                  >
                     {LEGAL_DOC_LINKS.terms.label}
                   </a>
                   与
-                  <a href={LEGAL_DOC_LINKS.privacy.href} target="_blank" rel="noreferrer" onClick={(e) => e.stopPropagation()}>
+                  <a
+                    href={LEGAL_DOC_LINKS.privacy.href}
+                    target="_blank"
+                    rel="noreferrer"
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      trackEvent('auth_agreement_click', authAgreementClickProperties('privacy'));
+                    }}
+                  >
                     {LEGAL_DOC_LINKS.privacy.label}
                   </a>
                 </span>
@@ -445,11 +511,11 @@ function AccountDeletingScreen({
     setError(null);
     try {
       const result = await api.cancelAccountDeletion();
-      trackEvent('auth_delete_account_cancel', { entry: 'account_deleting_screen', success: true });
+      trackEvent('auth_delete_account_cancel', authDeleteAccountCancelProperties(user.deleteRequestedAt));
       onCancelled(result);
     } catch (err) {
       const reason = (err as Error).message;
-      trackEvent('auth_delete_account_cancel', { entry: 'account_deleting_screen', success: false, fail_reason: reason });
+      trackEvent('auth_delete_account_cancel', { ...authDeleteAccountCancelProperties(user.deleteRequestedAt), fail_reason: reason });
       setError(describeAuthError(err));
     } finally {
       setBusy(false);
@@ -484,17 +550,24 @@ function AccountDeletingScreen({
 export function AuthProvider({ children }: { children: ReactNode }) {
   const [state, setState] = useState<{ user: User; session: AuthSession } | null>(null);
   const [loaded, setLoaded] = useState(false);
+  const [sessionNotice, setSessionNotice] = useState<string | null>(null);
 
   useEffect(() => {
     let active = true;
     async function loadSession() {
       try {
         const session = await api.getSession();
-        if (active) setState(session);
+        if (active) {
+          setState(session);
+          setSessionNotice(null);
+        }
       } catch {
         try {
           const refreshed = await api.refreshSession();
-          if (active) setState(refreshed);
+          if (active) {
+            setState(refreshed);
+            setSessionNotice(null);
+          }
         } catch {
           if (active) setState(null);
         }
@@ -507,6 +580,36 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       active = false;
     };
   }, []);
+
+  useEffect(() => {
+    if (!state || typeof window === 'undefined') return;
+    let active = true;
+    let refreshing = false;
+    async function handleSessionExpired(event: Event) {
+      if (refreshing) return;
+      refreshing = true;
+      const detail = (event as CustomEvent<SessionExpiredEventDetail>).detail;
+      try {
+        const refreshed = await api.refreshSession();
+        if (active) {
+          setState(refreshed);
+          setSessionNotice(null);
+        }
+      } catch {
+        if (active) {
+          setState(null);
+          setSessionNotice(sessionExpiredMessage(detail?.code));
+        }
+      } finally {
+        refreshing = false;
+      }
+    }
+    window.addEventListener(SESSION_EXPIRED_EVENT, handleSessionExpired);
+    return () => {
+      active = false;
+      window.removeEventListener(SESSION_EXPIRED_EVENT, handleSessionExpired);
+    };
+  }, [state]);
 
   const value = useMemo<AuthCtx | null>(() => {
     if (!state) return null;
@@ -531,10 +634,16 @@ export function AuthProvider({ children }: { children: ReactNode }) {
           had_unsynced_data: logoutFlow.pendingBefore > 0,
           pending_sync_remaining: logoutFlow.pendingAfter,
         });
+        setSessionNotice(null);
         setState(null);
       },
     };
   }, [state]);
+
+  function handleAuthed(next: { user: User; session: AuthSession }) {
+    setSessionNotice(null);
+    setState(next);
+  }
 
   if (!loaded) {
     return (
@@ -543,7 +652,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       </main>
     );
   }
-  if (!state || !value) return <PasswordAuthScreen onAuthed={setState} />;
+  if (!state || !value) return <PasswordAuthScreen onAuthed={handleAuthed} notice={sessionNotice} />;
   if (state.user.status === 'deleting') {
     return (
       <AccountDeletingScreen

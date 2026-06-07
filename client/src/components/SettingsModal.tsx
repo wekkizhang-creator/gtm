@@ -3,6 +3,13 @@ import { useSettings } from '../settings';
 import { useAuth } from '../auth';
 import { api } from '../api/client';
 import { trackEvent } from '../analytics';
+import { authBindingResultProperties, authUnbindResultProperties, identityTypeForAnalytics } from '../authBindingAnalytics';
+import {
+  authDeleteAccountConfirmProperties,
+  authDeleteAccountStartProperties,
+  authDeleteAccountVerifyProperties,
+} from '../authDeletionAnalytics';
+import { authDeviceListViewProperties, authDeviceLogoutProperties } from '../authDeviceAnalytics';
 import { LEGAL_DOC_LINKS, legalDocEntries } from '../legalDocs';
 import { normalizeModuleOrder, reorderModuleOrder, type ModuleKey } from '../moduleOrder';
 import { clearSyncQueue, pendingSyncCount } from '../syncQueue';
@@ -828,6 +835,7 @@ export default function SettingsModal({ open, onClose }: { open: boolean; onClos
   }
 
   async function requestDeletionCode() {
+    trackEvent('auth_delete_account_start', authDeleteAccountStartProperties('settings'));
     setDeleteBusy(true);
     setDeleteError(null);
     setDeleteMessage(null);
@@ -926,7 +934,10 @@ export default function SettingsModal({ open, onClose }: { open: boolean; onClos
       setBindCode('');
       setAccountEmailMasked(result.user.emailMasked);
       setBindMessage(`邮箱已换绑为 ${result.user.emailMasked ?? '新邮箱'}`);
+      trackEvent('auth_binding_result', authBindingResultProperties('email', true));
     } catch (err) {
+      const failReason = (err as { code?: string; message?: string }).code ?? (err as Error).message;
+      trackEvent('auth_binding_result', authBindingResultProperties('email', false, failReason));
       setBindError((err as Error).message);
     } finally {
       setBindBusy(false);
@@ -944,7 +955,10 @@ export default function SettingsModal({ open, onClose }: { open: boolean; onClos
       setBindPhoneChallengeId('');
       setBindPhoneCode('');
       setBindMessage(`手机号已绑定为 ${result.user.phoneMasked ?? '新手机号'}`);
+      trackEvent('auth_binding_result', authBindingResultProperties('phone', true));
     } catch (err) {
+      const failReason = (err as { code?: string; message?: string }).code ?? (err as Error).message;
+      trackEvent('auth_binding_result', authBindingResultProperties('phone', false, failReason));
       setBindError((err as Error).message);
     } finally {
       setBindBusy(false);
@@ -962,7 +976,10 @@ export default function SettingsModal({ open, onClose }: { open: boolean; onClos
       setOauthToken('');
       setAccountEmailMasked(result.user.emailMasked);
       setBindMessage('第三方账号已绑定');
+      trackEvent('auth_binding_result', authBindingResultProperties('oauth', true));
     } catch (err) {
+      const failReason = (err as { code?: string; message?: string }).code ?? (err as Error).message;
+      trackEvent('auth_binding_result', authBindingResultProperties('oauth', false, failReason));
       setBindError((err as Error).message);
     } finally {
       setBindBusy(false);
@@ -1002,7 +1019,10 @@ export default function SettingsModal({ open, onClose }: { open: boolean; onClos
       setOauthCode('');
       setAccountEmailMasked(result.user.emailMasked);
       setBindMessage('OAuth account has been bound.');
+      trackEvent('auth_binding_result', authBindingResultProperties('oauth', true));
     } catch (err) {
+      const failReason = (err as { code?: string; message?: string }).code ?? (err as Error).message;
+      trackEvent('auth_binding_result', authBindingResultProperties('oauth', false, failReason));
       setBindError((err as Error).message);
     } finally {
       setBindBusy(false);
@@ -1010,6 +1030,8 @@ export default function SettingsModal({ open, onClose }: { open: boolean; onClos
   }
 
   async function unbindIdentity(id: string) {
+    const target = identities.find((identity) => identity.id === id);
+    const identityType = identityTypeForAnalytics(target);
     setBindBusy(true);
     setBindError(null);
     setBindMessage(null);
@@ -1018,7 +1040,10 @@ export default function SettingsModal({ open, onClose }: { open: boolean; onClos
       setIdentities(result.identities);
       setAccountEmailMasked(result.user.emailMasked);
       setBindMessage('登录方式已解绑');
+      trackEvent('auth_unbind_result', authUnbindResultProperties(identityType, true, result.identities.length));
     } catch (err) {
+      const failReason = (err as { code?: string; message?: string }).code ?? (err as Error).message;
+      trackEvent('auth_unbind_result', authUnbindResultProperties(identityType, false, identities.length, failReason));
       setBindError((err as Error).message);
     } finally {
       setBindBusy(false);
@@ -1031,6 +1056,7 @@ export default function SettingsModal({ open, onClose }: { open: boolean; onClos
     try {
       const sessions = await api.listAccountSessions();
       setAccountSessions(sessions);
+      trackEvent('auth_device_list_view', authDeviceListViewProperties(sessions));
     } catch (err) {
       setAccountSessions([]);
       setSessionError((err as Error).message);
@@ -1051,10 +1077,12 @@ export default function SettingsModal({ open, onClose }: { open: boolean; onClos
     setSessionError(null);
     try {
       await api.revokeAccountSession(target.id);
+      trackEvent('auth_device_logout', authDeviceLogoutProperties(target, true));
       const sessions = await api.listAccountSessions();
       setAccountSessions(sessions);
       setSessionMessage('设备已退出');
     } catch (err) {
+      trackEvent('auth_device_logout', authDeviceLogoutProperties(target, false));
       setSessionError((err as Error).message);
     } finally {
       setSessionBusy(false);
@@ -1076,9 +1104,13 @@ export default function SettingsModal({ open, onClose }: { open: boolean; onClos
         confirmText: 'DELETE',
         exportAcknowledged: deleteAck,
       });
+      trackEvent('auth_delete_account_verify', authDeleteAccountVerifyProperties('email', true));
+      trackEvent('auth_delete_account_confirm', authDeleteAccountConfirmProperties(true, result.coolingDays));
       setDeleteMessage(`账号已进入 ${result.coolingDays} 天冷静期，将于 ${new Date(result.deleteScheduledAt).toLocaleString()} 后删除`);
       await logout({ confirm: false });
     } catch (err) {
+      const failReason = (err as { code?: string; message?: string }).code ?? (err as Error).message;
+      trackEvent('auth_delete_account_verify', authDeleteAccountVerifyProperties('email', false, failReason));
       setDeleteError((err as Error).message);
     } finally {
       setDeleteBusy(false);

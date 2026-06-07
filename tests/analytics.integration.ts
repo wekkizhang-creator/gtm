@@ -233,6 +233,7 @@ async function main() {
       for (const name of [
         'auth_page_view',
         'auth_code_send',
+        'auth_code_verify',
         'auth_register_result',
         'auth_register_success',
         'auth_login_result',
@@ -260,6 +261,23 @@ async function main() {
 
       const failedRegistration = events.find((event) => event.event_name === 'auth_register_result')!;
       assert(JSON.parse(failedRegistration.properties_json).fail_reason === 'invalid_code', 'missing failed registration event');
+      const codeVerifyEvents = events.filter((event) => event.event_name === 'auth_code_verify');
+      assert(codeVerifyEvents.length >= 2, `expected failed and successful code verify events, got ${codeVerifyEvents.length}`);
+      const failedVerify = codeVerifyEvents.find((event) => JSON.parse(event.properties_json).success === false)!;
+      const failedVerifyProps = JSON.parse(failedVerify.properties_json);
+      assert(
+        failedVerifyProps.method === 'email' && failedVerifyProps.purpose === 'register' && failedVerifyProps.fail_reason === 'invalid_code',
+        'failed code verify event should include method, purpose, and fail_reason',
+      );
+      const successfulVerify = codeVerifyEvents.find((event) => JSON.parse(event.properties_json).success === true)!;
+      const successfulVerifyProps = JSON.parse(successfulVerify.properties_json);
+      assert(
+        successfulVerify.user_id === userId &&
+          !!successfulVerify.session_id &&
+          successfulVerifyProps.method === 'email' &&
+          successfulVerifyProps.purpose === 'register',
+        'successful code verify event should be user/session scoped with method and purpose',
+      );
       const failedLogin = events.find((event) => event.event_name === 'auth_login_result')!;
       assert(JSON.parse(failedLogin.properties_json).fail_reason === 'invalid_credentials', 'missing failed password login event');
 

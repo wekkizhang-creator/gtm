@@ -130,10 +130,12 @@ router.post('/register/complete', (req, res, next) => {
       risk: { ip: req.ip, userAgent: req.headers['user-agent'] },
     });
     auth.audit(result.user.id, result.isNewUser ? 'account_registered' : 'account_password_set', 'session', result.session.id, req.ip, req.headers['user-agent']);
+    track(req, 'auth_code_verify', { method: 'email', purpose: 'register', success: true }, result.user.id, result.session.id);
     track(req, 'auth_register_success', { method: 'email_password', init_success: true, is_new_user: result.isNewUser }, result.user.id, result.session.id);
     track(req, 'auth_login_success', { method: 'email_password', is_new_user: result.isNewUser, has_local_cache: false }, result.user.id, result.session.id);
     res.status(result.isNewUser ? 201 : 200).json(result);
   } catch (e) {
+    track(req, 'auth_code_verify', { method: 'email', purpose: 'register', success: false, fail_reason: failReason(e) });
     track(req, 'auth_register_result', { method: 'email_password', success: false, fail_reason: failReason(e) });
     next(e);
   }
@@ -190,10 +192,12 @@ router.post('/password-reset/complete', (req, res, next) => {
       risk: { ip: req.ip, userAgent: req.headers['user-agent'] },
     });
     auth.audit(result.user.id, 'account_password_reset', 'session', result.session.id, req.ip, req.headers['user-agent']);
+    track(req, 'auth_code_verify', { method: 'email', purpose: 'password_reset', success: true }, result.user.id, result.session.id);
     track(req, 'auth_password_reset_success', { method: 'email_password' }, result.user.id, result.session.id);
     track(req, 'auth_login_success', { method: 'email_password', is_new_user: false, has_local_cache: false }, result.user.id, result.session.id);
     res.json(result);
   } catch (e) {
+    track(req, 'auth_code_verify', { method: 'email', purpose: 'password_reset', success: false, fail_reason: failReason(e) });
     track(req, 'auth_password_reset_result', { method: 'email_password', success: false, fail_reason: failReason(e) });
     next(e);
   }

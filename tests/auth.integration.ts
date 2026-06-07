@@ -359,6 +359,14 @@ async function main() {
     const refresh = await req(base, '/api/auth/refresh', { method: 'POST', cookie: userACookie });
     assert(refresh.res.status === 200 && refresh.body.user.emailMasked, `refresh failed: ${refresh.res.status}`);
     userACookie = cookiesFrom(refresh.res);
+    const aliceUserId = refresh.body.user.id;
+    const initialSettings = await req(base, '/api/settings', { cookie: userACookie });
+    assert(initialSettings.res.status === 200, `initial settings failed: ${initialSettings.res.status}`);
+    assert(initialSettings.body.settings.datetime.weekStart === 1, 'new account should default week start to Monday');
+    assert(initialSettings.body.settings.datetime.showLunar === true, 'new account should default lunar calendar display on');
+    assert(initialSettings.body.settings.notifications.taskReminders === true, 'new account should default task reminders on');
+    assert(initialSettings.body.settings.focus.defaultMinutes === 25, 'new account should default Pomodoro length to 25 minutes');
+    assert(initialSettings.body.settings.focus.soundId === null, 'new account should default focus background sound to none');
     const onboardingBeforeTask = await req(base, '/api/account/onboarding', { cookie: userACookie });
     assert(onboardingBeforeTask.res.status === 200, `onboarding before task failed: ${onboardingBeforeTask.res.status}`);
     assert(onboardingBeforeTask.body.onboarding.firstTaskCreated === false, 'new account should not have firstTaskCreated');
@@ -432,6 +440,13 @@ async function main() {
     const remoteAliceSession = sessionsBeforeRevoke.body.sessions.find((item: any) => item.deviceId === 'alice-phone');
     assert(currentAliceSession?.deviceId === 'test-alice@example.com', 'session list should mark the requesting cookie as current');
     assert(remoteAliceSession && !remoteAliceSession.isCurrentDevice && !remoteAliceSession.revokedAt, 'remote Alice device should be active before revoke');
+    const aliceNotificationsAfterNewDevice = await req(base, '/api/notifications', { cookie: userACookie });
+    const aliceNewDeviceNotification = aliceNotificationsAfterNewDevice.body.notifications.find(
+      (item: any) => item.type === 'security_login_new_device' && item.targetId === remoteAliceSession.id,
+    );
+    assert(aliceNewDeviceNotification, 'new device login should create a security notification for Alice');
+    assert(aliceNewDeviceNotification.title.includes('新设备登录'), 'new device notification title should explain the security event');
+    assert(aliceNewDeviceNotification.body.includes('Alice Phone'), 'new device notification body should include the device label');
     const revokeRemote = await req(base, `/api/account/sessions/${remoteAliceSession.id}`, { method: 'DELETE', cookie: userACookie });
     assert(revokeRemote.res.status === 204, `remote session revoke failed: ${revokeRemote.res.status}`);
     const revokedRemoteAccess = await req(base, '/api/auth/session', { cookie: userASecondCookie });
@@ -682,6 +697,17 @@ async function main() {
       const passwordChangeAuditRows = db.prepare("SELECT COUNT(*) c FROM security_audit_logs WHERE action = 'account_password_changed'").get() as { c: number };
       const accountUpdatedAuditRows = db.prepare("SELECT COUNT(*) c FROM security_audit_logs WHERE action = 'account_updated'").get() as { c: number };
       const avatarAuditRows = db.prepare("SELECT COUNT(*) c FROM security_audit_logs WHERE action = 'account_avatar_updated'").get() as { c: number };
+      const newDeviceNotificationRow = db
+        .prepare("SELECT title, body, target_type FROM notifications WHERE type = 'security_login_new_device' AND target_id = ?")
+        .get(remoteAliceSession.id) as { title: string; body: string; target_type: string } | undefined;
+      const newDeviceAuditRows = db
+        .prepare("SELECT COUNT(*) c FROM security_audit_logs WHERE action = 'new_device_login_detected' AND target_id = ?")
+        .get(remoteAliceSession.id) as { c: number };
+      const newDeviceAuditContext = db
+        .prepare("SELECT ip, user_agent FROM security_audit_logs WHERE action = 'new_device_login_detected' AND target_id = ?")
+        .get(remoteAliceSession.id) as { ip: string | null; user_agent: string | null } | undefined;
+      const aliceSettingsRows = db.prepare('SELECT key, value FROM settings WHERE user_id = ?').all(aliceUserId) as Array<{ key: string; value: string }>;
+      const aliceSettingsByKey = new Map(aliceSettingsRows.map((row) => [row.key, JSON.parse(row.value)]));
       assert(users.c === 4, `expected 4 users in DB, got ${users.c}`);
       assert(tasks.c === 1, `expected 1 task in DB, got ${tasks.c}`);
       assert(consumedCodes.c === 6, `expected 6 consumed codes, got ${consumedCodes.c}`);
@@ -708,6 +734,19 @@ async function main() {
       assert(passwordChangeAuditRows.c === 1, `expected one password change audit row, got ${passwordChangeAuditRows.c}`);
       assert(accountUpdatedAuditRows.c >= 1, 'account profile update should write an account_updated audit row');
       assert(avatarAuditRows.c === 1, `expected one avatar update audit row, got ${avatarAuditRows.c}`);
+      assert(newDeviceNotificationRow?.target_type === 'login_session', 'new device login notification should target the login session');
+      assert(newDeviceNotificationRow.title.includes('新设备登录'), 'new device login notification should persist the security title');
+      assert(newDeviceNotificationRow.body.includes('Alice Phone'), 'new device login notification should persist the device label');
+      assert(newDeviceAuditRows.c === 1, `expected one new device audit row for Alice phone, got ${newDeviceAuditRows.c}`);
+      assert(newDeviceAuditContext?.ip, 'new device audit row should include request IP context');
+      assert(newDeviceAuditContext?.user_agent, 'new device audit row should include user-agent context');
+      for (const key of ['notifications', 'focus', 'datetime', 'modules', 'taskDefaults']) {
+        assert(aliceSettingsByKey.has(key), `new account default settings should persist ${key}`);
+      }
+      assert(aliceSettingsByKey.get('datetime')?.weekStart === 1, 'persisted default datetime weekStart should be Monday');
+      assert(aliceSettingsByKey.get('notifications')?.taskReminders === true, 'persisted default task reminders should be enabled');
+      assert(aliceSettingsByKey.get('focus')?.defaultMinutes === 25, 'persisted default focus duration should be 25 minutes');
+      assert(aliceSettingsByKey.get('focus')?.soundId === null, 'persisted default focus sound should be null');
     } finally {
       db.close();
     }

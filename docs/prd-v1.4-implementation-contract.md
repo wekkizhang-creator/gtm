@@ -3398,3 +3398,283 @@ Both routes serve the local Markdown artifacts from `docs/legal`. No placeholder
 ### Verification
 
 `npm run test:legal-doc-links-client` verifies the terms and privacy link labels and that both links point to the real `/api/about/legal/*` routes. `npm run test:about` verifies those routes return the real Markdown documents. Client typecheck and production build verify the account settings and auth page compile with the shared link source.
+
+## Slice 128: Session Expiry And Revoked Session Guidance
+
+AUTH-53 now has a real client-side session-expiry path instead of leaving users on a broken authenticated screen after a revoked or expired session.
+
+### API Contract
+
+This slice reuses the existing authenticated API error contract:
+
+- Authenticated routes return `401 unauthenticated` when the access token is missing, expired, or points to a revoked session.
+- `POST /api/auth/refresh` returns `401 invalid_refresh_token` when the refresh token is missing, expired, or revoked.
+
+No new backend route is introduced. The server remains the source of truth for session validity through `login_sessions.revoked_at` and refresh-token validation.
+
+### Client Contract
+
+`client/src/sessionExpiry.ts` defines the session-expired browser event and keeps auth-flow failures separate from authenticated API failures. When a normal authenticated API call receives `401 unauthenticated`, the API client dispatches `efficiency-list:session-expired`.
+
+`AuthProvider` listens for that event and attempts one real `POST /api/auth/refresh`:
+
+- If refresh succeeds, the authenticated state is replaced with the server-returned user/session and the app stays open.
+- If refresh fails, the client clears the authenticated state, returns to the email-password login page, and shows a clear re-login notice.
+- `/api/auth/session`, `/api/auth/refresh`, `/api/auth/login/password`, registration, reset, logout, and other auth-flow endpoints do not dispatch the event, preventing refresh loops and avoiding false session-expired prompts for normal login errors.
+
+### Verification
+
+`npm run test:session-expiry-client` verifies the event gating rules, the re-login copy, and event dispatch payload for authenticated API failures. Client typecheck and production build verify the API client and AuthProvider wiring.
+
+## Slice 129: Masked Login Method Memory
+
+AUTH-14 now remembers the last successful email-password login method without showing or persisting the complete email address in the login form.
+
+### Client Contract
+
+`client/src/loginMemory.ts` stores only:
+
+- `el_last_login_method = "email_password"`
+- `el_last_email_masked = "<masked email>"`
+
+The previous `el_last_email` raw-email key is treated as legacy data. When the login page reads it, the client converts it to a masked hint, removes the raw key, and does not prefill the email input.
+
+After successful password login, registration completion, or password reset completion, the client updates the login-method memory with the masked email. The login screen can display a hint such as "上次使用邮箱账号：we***@qq.com", but the user must still enter the email address explicitly.
+
+### Verification
+
+`npm run test:login-memory-client` verifies email masking, legacy raw-email migration/removal, persisted login method, and that only the masked email value is stored. Client typecheck and production build verify the login page uses the masked memory helper.
+
+## Slice 130: Email Auth Format Validation
+
+AUTH-24 now has front-end email format validation for the email-only registration and login flow. Invalid email input is caught before any login, registration-code, password-reset-code, resend-code, or verification-completion request can be sent.
+
+### Client Contract
+
+`client/src/emailAuthValidation.ts` is the shared validation helper for auth email input:
+
+- Email input is trimmed and normalized to lowercase before API calls.
+- A valid email must contain one local part, one `@`, and a dotted domain without whitespace.
+- Invalid email input returns the localized message `邮箱格式不正确`.
+
+The login/register/reset screen displays the format error next to the email input as soon as the field contains an invalid value. Login and send-code buttons are disabled while the email is invalid, and submit handlers still re-check the helper before calling the real backend.
+
+### Verification
+
+`npm run test:email-auth-validation-client` verifies normalization, valid/invalid email cases, and localized error output. Client typecheck and production build verify the login/register/reset page uses the shared validation helper.
+
+## Slice 131: Auth Network Retry Notice
+
+AUTH-25 now has an explicit login/register-page network notice for unauthenticated users. The app still does not create visitor data or fake offline auth; when the browser reports offline, the user stays on the real email-password auth screen and sees a retry-oriented notice.
+
+### Client Contract
+
+`client/src/authNetworkState.ts` provides the auth-page network copy:
+
+- Online state returns no notice.
+- Offline state returns `网络连接不可用，请检查网络后重试。已填写内容会保留。`
+
+`PasswordAuthScreen` listens to browser `online` and `offline` events and renders the notice while offline. It does not clear email, password, verification code, agreement, or reset/register state when a network error happens, so users can retry after the connection returns.
+
+### Verification
+
+`npm run test:auth-network-state-client` verifies the online/offline notice rules and that the offline copy promises input retention. Client typecheck and production build verify the login/register/reset page is wired to browser network status.
+
+## Slice 132: Agreement Link Click Analytics
+
+The login/register analytics spec now includes the missing `auth_agreement_click` event. Registration already tracked checkbox changes; this slice records which legal document link the user opens, without logging identifiers or secrets.
+
+### Client Contract
+
+`client/src/authAgreementAnalytics.ts` builds the analytics payload for agreement-link clicks:
+
+- `agreement_type`: `terms` or `privacy`
+- `entry`: defaults to `email_password_register`
+
+The registration agreement links still open the real local legal document routes from `client/src/legalDocs.ts`. Their click handlers now call the existing real `trackEvent('auth_agreement_click', ...)` path, which posts to `/api/analytics/events` and never blocks the auth flow.
+
+### Verification
+
+`npm run test:auth-agreement-analytics-client` verifies the event payload for terms/privacy clicks, the default registration entry, custom entry support, and that the payload contains no email address, code, password, token, or secret fields. Client typecheck and production build verify the registration page uses the helper.
+
+## Slice 133: Device Session Analytics
+
+The login-device management analytics spec now records device-list views and remote device logout results through the existing real analytics pipeline.
+
+### Client Contract
+
+`client/src/authDeviceAnalytics.ts` builds safe analytics payloads for login-session actions:
+
+- `auth_device_list_view`: `{ device_count }`
+- `auth_device_logout`: `{ target_platform, is_current_device, success }`
+
+The account settings page calls `trackEvent('auth_device_list_view', ...)` after the real `/api/account/sessions` response is loaded. It calls `trackEvent('auth_device_logout', ...)` after a non-current session revoke succeeds, and also records a failed event if the real revoke request fails.
+
+Device IDs and device names are intentionally not included in analytics payloads.
+
+### Verification
+
+`npm run test:auth-device-analytics-client` verifies the safe payload shape, success/failure values, platform fallback, and that device IDs/names are not serialized. Client typecheck and production build verify the settings page uses the helper.
+
+## Slice 134: Binding And Unbind Result Analytics
+
+The account-binding analytics spec now records binding completion and unbind completion, not only binding starts.
+
+### Client Contract
+
+`client/src/authBindingAnalytics.ts` builds safe analytics payloads for account identity operations:
+
+- `auth_binding_result`: `{ identity_type, success, fail_reason, conflict_type }`
+- `auth_unbind_result`: `{ identity_type, success, fail_reason, remaining_identity_count }`
+
+The account settings page records `auth_binding_result` after real email, phone, and OAuth binding calls succeed or fail. It records `auth_unbind_result` after real identity unbind calls succeed or fail. The payload keeps only identity type, result status, normalized failure reason, conflict class, and remaining identity count; it does not include email addresses, phone numbers, OAuth provider subjects, verification codes, tokens, or passwords.
+
+### Verification
+
+`npm run test:auth-binding-analytics-client` verifies binding success/failure payloads, conflict mapping, unbind success/failure payloads, identity-type normalization, and that serialized payloads contain no email addresses or sensitive auth values. Client typecheck and production build verify the settings page uses the helper.
+
+## Slice 135: Account Deletion Analytics
+
+The account deletion analytics spec now records the deletion funnel through the existing real analytics pipeline.
+
+### Client Contract
+
+`client/src/authDeletionAnalytics.ts` builds safe analytics payloads for deletion lifecycle events:
+
+- `auth_delete_account_start`: `{ entry }`
+- `auth_delete_account_verify`: `{ method, success, fail_reason }`
+- `auth_delete_account_confirm`: `{ has_export_prompt, cooling_period_days }`
+- `auth_delete_account_cancel`: `{ days_since_request }`
+
+The account settings deletion form records `auth_delete_account_start` when the user starts the email verification step. A real `POST /api/account/deletion/request` success records verification success and confirmation with the server-returned cooling period. Request failure records verification failure with the backend error code/message. The pending-deletion screen records cancellation with elapsed cooling-period days derived from `user.deleteRequestedAt`.
+
+Email addresses, verification codes, tokens, passwords, and secrets are not included in these analytics payloads.
+
+### Verification
+
+`npm run test:auth-deletion-analytics-client` verifies start, verify success/failure, confirm, cancel day calculation, null/invalid date handling, and that serialized payloads do not include email addresses or auth secrets. Client typecheck and production build verify the settings page and pending-deletion screen use the helper.
+
+## Slice 136: Offline Enter Analytics
+
+The authenticated offline-entry analytics spec now records `auth_offline_enter` for the existing real offline-sync path.
+
+### Client Contract
+
+`client/src/authOfflineAnalytics.ts` builds and queues safe offline-entry analytics payloads:
+
+- `pending_sync_count`: current account's browser-local pending sync queue length.
+- `last_sync_interval`: seconds since the last successful offline-sync flush for this account, or `null` if no successful sync is known.
+
+When the task module detects the browser entering offline state, it stores an `auth_offline_enter` payload in localStorage under the current `userId`. When the browser returns online, the queued payload is consumed and sent through the existing real `trackEvent('auth_offline_enter', ...)` path. This avoids pretending that analytics can be delivered while offline.
+
+`flushSyncQueue` records the latest successful sync timestamp when the backend accepts at least one queued operation as `applied` or `duplicate`.
+
+### Verification
+
+`npm run test:auth-offline-analytics-client` verifies pending-count normalization, last-sync interval calculation, offline-event queue/consume behavior, and that serialized payloads contain no identifiers or auth secrets. Client typecheck and production build verify the task module and sync queue use the helper.
+
+## Slice 137: Auth Method Select Analytics
+
+The login/register analytics spec now records `auth_method_select` for the email-only authentication page. Because the current product contract only exposes email registration/login, this slice does not introduce phone or third-party choices on the UI.
+
+### Client Contract
+
+`client/src/authMethodAnalytics.ts` builds the safe analytics payload:
+
+- `method`: always `email_password`
+- `entry`: `login_tab`, `register_tab`, `password_reset_tab`, or `forgot_password_link`
+
+The login page records `auth_method_select` through the existing real `trackEvent` pipeline when the user switches between login, registration, and password-reset flows. Re-clicking the already active tab does not emit another select event. The payload does not include email addresses, phone numbers, verification codes, passwords, tokens, or secrets.
+
+### Verification
+
+`npm run test:auth-method-analytics-client` verifies every supported entry, locks the payload keys to `method` and `entry`, and checks serialized payloads for sensitive auth values. Client typecheck and production build verify the login page uses the helper.
+
+## Slice 138: Auth Code Verify Analytics
+
+The login/register analytics spec now records `auth_code_verify` for the current email registration and password-reset completion routes, not only for the deprecated legacy code-login route.
+
+### API Contract
+
+The following real verification completion routes emit `auth_code_verify` through the existing server analytics pipeline:
+
+- `POST /api/auth/register/complete`
+- `POST /api/auth/password-reset/complete`
+
+Successful verification records `{ method:"email", purpose, success:true }` and is scoped to the newly created authenticated user/session. Failed verification records `{ method:"email", purpose, success:false, fail_reason }` without user/session scope when the request has not produced a valid session. No verification code, challenge identifier, email address, password, token, or secret is stored in analytics properties.
+
+### Verification
+
+`npm run test:analytics` now submits a wrong email registration code, then the correct code, and verifies SQLite contains both failed and successful `auth_code_verify` rows with method, purpose, failure reason, and session scoping for the successful event. Server typecheck verifies the auth route instrumentation.
+
+## Slice 139: Agreement Check Analytics Helper
+
+The registration agreement checkbox already used the real analytics pipeline. This slice makes the `auth_agreement_check` payload explicit and test-covered so it stays aligned with the PRD sensitive-data rule.
+
+### Client Contract
+
+`client/src/authAgreementAnalytics.ts` now also builds `auth_agreement_check` properties:
+
+- `checked`: whether the user has checked the agreement box.
+- `entry`: defaults to `email_password_register`.
+
+The registration checkbox calls `trackEvent('auth_agreement_check', authAgreementCheckProperties(...))`. The payload does not include email addresses, phone numbers, verification codes, passwords, tokens, or secrets.
+
+### Verification
+
+`npm run test:auth-agreement-analytics-client` now covers agreement-link clicks and checkbox check/uncheck payloads, including key whitelists and sensitive-value guards. Client typecheck and production build verify the registration page uses the helper.
+
+## Slice 140: New Device Login Security Reminder
+
+AUTH-54 now has a first real abnormal-login reminder path. This is not a full fraud engine; it covers the concrete and useful case where an existing account signs in from a `deviceId` that has never appeared in that account's prior login sessions.
+
+### Data Contract
+
+This slice reuses existing tables:
+
+- `login_sessions` remains the source of truth for device history.
+- `notifications` stores the in-app security reminder with `type = "security_login_new_device"`, `target_type = "login_session"`, and `target_id = <new session id>`.
+- `security_audit_logs` records `action = "new_device_login_detected"` with request IP / User-Agent context for compliance/audit traceability.
+
+### Behavior
+
+When `createSessionForUser` creates a session:
+
+- If this is the account's first session, no abnormal-login reminder is created.
+- If the same `deviceId` has been used before by the same account, no duplicate new-device reminder is created.
+- If the account has prior sessions but this `deviceId` is new, the backend writes one unread security notification and one security audit row.
+
+The reminder uses the supplied device name when available, then platform, then a generic device label. It does not store raw passwords, verification codes, tokens, email addresses, or device secrets.
+
+### Verification
+
+`npm run test:auth` now registers Alice, logs her in from a second real device, reads `/api/notifications` through Alice's existing session to verify the `security_login_new_device` notification, and checks SQLite for the notification row plus the `new_device_login_detected` audit row with IP and User-Agent context.
+
+## Slice 141: New Account Default Preferences Initialization
+
+AUTH-71 now persists default account preferences when a new account is created instead of relying only on runtime fallback values from `getSettings`.
+
+### Data Contract
+
+New account creation writes default rows into the account-scoped `settings` table for every normal settings group, including:
+
+- `notifications`
+- `focus`
+- `quickAdd`
+- `calendar`
+- `datetime`
+- `modules`
+- `smartLists`
+- `taskDefaults`
+
+The AI API key row is not initialized with a fake secret. `ai.hasApiKey` remains derived from the real optional `ai.apiKey` row, so no placeholder API key is persisted.
+
+### Behavior
+
+When `createOrLoadUserForIdentity` creates a brand-new user, it creates the inbox list and initializes default settings in the same SQLite transaction. Existing accounts that later set a password or re-authenticate are not overwritten.
+
+The default values match the PRD baseline: week starts Monday, lunar display is enabled, task reminders are enabled, Pomodoro default duration is 25 minutes, and the focus background sound defaults to none.
+
+### Verification
+
+`npm run test:auth` now registers Alice through the real SMTP email-password flow, reads `/api/settings` to verify the default preference DTO, and checks SQLite `settings` rows for persisted `datetime`, `notifications`, `focus`, `modules`, and `taskDefaults` defaults.

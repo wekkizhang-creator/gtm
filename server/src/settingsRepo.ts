@@ -125,6 +125,13 @@ function writeRow(userId: string, key: string, value: string): void {
   ).run(userId, key, value, nowISO());
 }
 
+export function initializeDefaultSettings(userId: string): void {
+  const defaults: Settings = JSON.parse(JSON.stringify(DEFAULTS));
+  for (const group of GROUPS) {
+    writeRow(userId, group, JSON.stringify(defaults[group]));
+  }
+}
+
 function readGroup(userId: string, key: string): Record<string, unknown> {
   const raw = readRow(userId, key);
   if (!raw) return {};

@@ -7,6 +7,7 @@ import { db, getInboxId, nowISO } from './db';
 import { sendVerificationEmail } from './smtp';
 import { sendVerificationSms } from './sms';
 import { exchangeOAuthCode, fetchOAuthProfile } from './oauth';
+import { initializeDefaultSettings } from './settingsRepo';
 import {
   AppError,
   type AccountDeletionPreviewDTO,
@@ -397,14 +398,54 @@ function createTokens(sessionId: string, userId: string, now = nowISO()): { acce
   };
 }
 
+function shouldNotifyNewLoginDevice(userId: string, deviceId: string): boolean {
+  const row = db
+    .prepare(
+      `SELECT
+         COUNT(*) AS sessionCount,
+         SUM(CASE WHEN device_id = ? THEN 1 ELSE 0 END) AS sameDeviceCount
+       FROM login_sessions
+       WHERE user_id = ?`,
+    )
+    .get(deviceId, userId) as { sessionCount: number; sameDeviceCount: number | null };
+  return Number(row.sessionCount ?? 0) > 0 && Number(row.sameDeviceCount ?? 0) === 0;
+}
+
+function createNewDeviceLoginNotification(
+  userId: string,
+  sessionId: string,
+  device: { deviceName?: string | null; platform?: string | null },
+  now: string,
+  risk?: AuthRiskContext,
+): void {
+  const deviceLabel = device.deviceName?.trim() || device.platform?.trim() || '新设备';
+  db.prepare(
+    `INSERT OR IGNORE INTO notifications
+       (id, user_id, type, title, body, target_type, target_id, scheduled_at, delivered_at, read_at, action_state, created_at)
+     VALUES (?, ?, 'security_login_new_device', ?, ?, 'login_session', ?, ?, ?, NULL, 'created', ?)`,
+  ).run(
+    randomUUID(),
+    userId,
+    '检测到新设备登录',
+    `你的账号刚刚通过 ${deviceLabel} 登录。如非本人操作，请尽快修改密码并退出异常设备。`,
+    sessionId,
+    now,
+    now,
+    now,
+  );
+  audit(userId, 'new_device_login_detected', 'session', sessionId, risk?.ip ?? undefined, userAgentString(risk?.userAgent));
+}
+
 function createSessionForUser(
   userId: string,
   device: { deviceId: string; deviceName?: string | null; platform?: string | null; appVersion?: string | null },
   res: Response,
   now = nowISO(),
+  risk?: AuthRiskContext,
 ): SessionDTO {
   const sessionId = randomUUID();
   const tokens = createTokens(sessionId, userId, now);
+  const notifyNewDevice = shouldNotifyNewLoginDevice(userId, device.deviceId);
   db.prepare(
     `INSERT INTO login_sessions
        (id, user_id, device_id, device_name, platform, app_version, refresh_token_hash, login_at, last_active_at, access_token_expires_at, refresh_token_expires_at, revoked_at)
@@ -422,6 +463,7 @@ function createSessionForUser(
     tokens.accessExp,
     tokens.refreshExp,
   );
+  if (notifyNewDevice) createNewDeviceLoginNotification(userId, sessionId, device, now, risk);
   setAuthCookies(res, tokens.accessToken, tokens.refreshToken);
   return sessionById(sessionId)!;
 }
@@ -681,6 +723,7 @@ function createOrLoadUserForIdentity(
      VALUES (?, ?, ?, ?, ?, ?, 1, ?, ?, NULL)`,
   ).run(identityId, userId, type, provider, idHash, masked, ts, ts);
   getInboxId(userId);
+  initializeDefaultSettings(userId);
   return { user: userById(userId)!, isNewUser: true };
 }
 
@@ -714,7 +757,7 @@ export function completeEmailRegistration(input: {
     setPasswordCredential(user.id, input.password, ts);
     db.prepare('UPDATE users SET last_login_at = ? WHERE id = ?').run(ts, user.id);
     db.prepare('UPDATE verification_codes SET consumed_at = ? WHERE id = ?').run(ts, input.challengeId);
-    session = createSessionForUser(user.id, device, input.res, ts);
+    session = createSessionForUser(user.id, device, input.res, ts, input.risk);
     db.exec('COMMIT');
   } catch (err) {
     db.exec('ROLLBACK');
@@ -750,7 +793,7 @@ export function loginWithPassword(input: {
   const ts = nowISO();
   resetPasswordFailures(user.id, ts);
   db.prepare('UPDATE users SET last_login_at = ? WHERE id = ?').run(ts, user.id);
-  const session = createSessionForUser(user.id, device, input.res, ts);
+  const session = createSessionForUser(user.id, device, input.res, ts, input.risk);
   return { user: userById(user.id)!, session, isNewUser: false };
 }
 
@@ -780,7 +823,7 @@ export function completePasswordReset(input: {
     setPasswordCredential(user.id, input.password, ts);
     db.prepare('UPDATE users SET last_login_at = ? WHERE id = ?').run(ts, user.id);
     db.prepare('UPDATE verification_codes SET consumed_at = ? WHERE id = ?').run(ts, input.challengeId);
-    session = createSessionForUser(user.id, device, input.res, ts);
+    session = createSessionForUser(user.id, device, input.res, ts, input.risk);
     db.exec('COMMIT');
   } catch (err) {
     db.exec('ROLLBACK');
@@ -1155,7 +1198,7 @@ export async function loginWithOAuth(input: {
   assertSessionAllowedUser(user);
   const now = nowISO();
   db.prepare('UPDATE users SET last_login_at = ? WHERE id = ?').run(now, user.id);
-  const session = createSessionForUser(user.id, input.device, input.res, now);
+  const session = createSessionForUser(user.id, input.device, input.res, now, input.risk);
   return { user: userById(user.id)!, session, isNewUser };
 }
 

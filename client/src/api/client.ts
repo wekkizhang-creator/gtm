@@ -87,6 +87,7 @@ import type {
   TrashSummary,
   User,
 } from '../types';
+import { emitSessionExpired } from '../sessionExpiry';
 
 const BASE = import.meta.env.VITE_API_BASE || (import.meta.env.PROD ? '/efficiency-list/api' : '/api');
 
@@ -118,6 +119,7 @@ async function req<T>(path: string, opts?: RequestInit): Promise<T> {
     } catch {
       /* ignore parse errors */
     }
+    emitSessionExpired(path, res.status, code);
     const err = new Error(message) as Error & { code?: string; status?: number };
     err.code = code;
     err.status = res.status;

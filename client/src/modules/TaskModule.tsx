@@ -3,6 +3,8 @@ import Sidebar from '../components/Sidebar';
 import TaskPanel from '../components/TaskPanel';
 import TaskDetailModal from '../components/TaskDetailModal';
 import { api, isNetworkError, type CreateTaskInput, type QuickCaptureInput } from '../api/client';
+import { trackEvent } from '../analytics';
+import { authOfflineEnterProperties, consumeQueuedAuthOfflineEnter, queueAuthOfflineEnter } from '../authOfflineAnalytics';
 import { startOfTodayISO } from '../util';
 import { useSettings } from '../settings';
 import { useAuth } from '../auth';
@@ -184,10 +186,24 @@ export default function TaskModule({ searchTarget }: Props) {
   }, [user.id]);
 
   useEffect(() => {
-    const onOnline = () => void flushPendingSync();
+    const queueOfflineEnter = () => {
+      const pending = pendingSyncCount(user.id);
+      setPendingSync(pending);
+      queueAuthOfflineEnter(user.id, authOfflineEnterProperties(user.id, pending));
+    };
+    const onOnline = () => {
+      const queued = consumeQueuedAuthOfflineEnter(user.id);
+      if (queued) trackEvent('auth_offline_enter', queued);
+      void flushPendingSync();
+    };
     window.addEventListener('online', onOnline);
-    if (navigator.onLine) void flushPendingSync();
-    return () => window.removeEventListener('online', onOnline);
+    window.addEventListener('offline', queueOfflineEnter);
+    if (navigator.onLine) onOnline();
+    else queueOfflineEnter();
+    return () => {
+      window.removeEventListener('online', onOnline);
+      window.removeEventListener('offline', queueOfflineEnter);
+    };
   }, [flushPendingSync]);
 
   const mutate = useCallback(

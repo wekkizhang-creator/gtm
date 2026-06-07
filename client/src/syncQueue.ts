@@ -1,4 +1,5 @@
 import { api, type CreateTaskInput, type SyncOperationInput, type SyncOperationResult } from './api/client';
+import { recordSuccessfulSyncAt } from './authOfflineAnalytics';
 
 type QueueItem = SyncOperationInput & { lastError?: string | null };
 
@@ -50,6 +51,9 @@ export async function flushSyncQueue(userId: string): Promise<{ results: SyncOpe
   const items = read(userId);
   if (!items.length) return { results: [], pending: 0 };
   const { results } = await api.pushSyncOperations(items);
+  if (results.some((result) => result.status === 'applied' || result.status === 'duplicate')) {
+    recordSuccessfulSyncAt(userId);
+  }
   const done = new Set(
     results
       .filter((result) => result.status === 'applied' || result.status === 'duplicate')
