@@ -2860,3 +2860,24 @@ When `api.confirmScheduleProposal` throws an error with `code:"proposal_stale"`:
 ### Verification
 
 `npm run test:schedule-proposal-regenerate-client` verifies the regenerate request still preserves the original proposal range and trigger, verifies reschedule proposals keep their affected task IDs, verifies `proposal_stale` errors are recognized, and verifies stale confirmation errors render a message that tells the user to `重新生成`.
+
+## Slice 112: Stale Schedule Proposal Undo Guard
+
+Confirmed schedule proposals now protect later manual edits. If a task involved in a confirmed proposal changes after confirmation, undo refuses to restore the old snapshot so the user's newer task time is not overwritten.
+
+### API Contract
+
+`POST /api/schedule-proposals/:id/undo` keeps the existing response shape on success. Before restoring task dates, the server checks every confirmed change's task plus any generated split segment:
+
+- If any involved task has `updated_at` later than the proposal `confirmed_at`, return `409 proposal_undo_stale`.
+- A stale undo keeps the proposal status as `confirmed`.
+- A stale undo writes no task date, planned date, reminder, or split-segment mutation.
+- Normal undo still restores only `changes[].confirmed === true`; unconfirmed partial-confirm changes remain untouched.
+
+### Client Contract
+
+When undo returns `proposal_undo_stale`, the goal module displays `无法撤销这次排期：相关任务在确认后已被修改。请先核对当前任务时间。` for both the current proposal undo button and the recent confirmed proposal undo entry. Other undo errors keep their original API message.
+
+### Verification
+
+`npm run test:schedule-rules` now confirms a real proposal, edits the scheduled task through `PATCH /api/tasks/:id`, calls the real undo route, verifies `409 proposal_undo_stale`, and checks SQLite keeps the manually edited `start_date`, `due_date`, `planned_start_at`, `planned_end_at`, while `schedule_proposals.status` remains `confirmed`. `npm run test:schedule-proposal-regenerate-client` verifies the stale undo error is recognized and rendered as the Chinese task-changed warning.

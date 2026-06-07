@@ -1,7 +1,9 @@
 import {
   buildScheduleProposalRegenerateInput,
   describeScheduleProposalConfirmError,
+  describeScheduleProposalUndoError,
   isScheduleProposalStaleError,
+  isScheduleProposalUndoStaleError,
 } from '../client/src/scheduleProposalRegenerate';
 import type { ScheduleProposal } from '../client/src/types';
 
@@ -111,5 +113,15 @@ assert(
 );
 const normalError = new Error('ordinary confirm failure');
 assert(describeScheduleProposalConfirmError(normalError) === 'ordinary confirm failure', 'non-stale confirmation errors should keep their original message');
+
+const undoStaleError = new Error('server english undo stale message') as Error & { code?: string };
+undoStaleError.code = 'proposal_undo_stale';
+assert(isScheduleProposalUndoStaleError(undoStaleError), 'proposal_undo_stale API errors should be recognized by the client');
+assert(
+  describeScheduleProposalUndoError(undoStaleError).includes('已被修改'),
+  'stale undo errors should tell the user the task changed after confirmation',
+);
+const normalUndoError = new Error('ordinary undo failure');
+assert(describeScheduleProposalUndoError(normalUndoError) === 'ordinary undo failure', 'non-stale undo errors should keep their original message');
 
 console.log('schedule-proposal-regenerate-client: all assertions passed');

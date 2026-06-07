@@ -570,6 +570,65 @@ async function main() {
       dbAfterAutoCompat.close();
     }
 
+    const undoStaleGoal = await req(base, '/api/goals', {
+      method: 'POST',
+      cookie,
+      body: JSON.stringify({
+        title: 'Undo stale guard plan',
+        startAt: new Date('2030-01-20T09:00:00+08:00').toISOString(),
+        deadlineAt: new Date('2030-01-20T12:00:00+08:00').toISOString(),
+        availableTimeRule: JSON.stringify({ startHour: 9, endHour: 12 }),
+      }),
+    });
+    assert(undoStaleGoal.res.status === 201, `undo stale goal create failed: ${undoStaleGoal.res.status} ${JSON.stringify(undoStaleGoal.body)}`);
+    const undoStaleTask = await req(base, `/api/goals/${undoStaleGoal.body.goal.id}/tasks`, {
+      method: 'POST',
+      cookie,
+      body: JSON.stringify({ title: 'Edited after confirm', estimatedMinutes: 30 }),
+    });
+    assert(undoStaleTask.res.status === 201, `undo stale task create failed: ${undoStaleTask.res.status} ${JSON.stringify(undoStaleTask.body)}`);
+    const undoStaleProposalRes = await req(base, `/api/goals/${undoStaleGoal.body.goal.id}/schedule-proposals`, { method: 'POST', cookie });
+    assert(
+      undoStaleProposalRes.res.status === 201,
+      `undo stale proposal failed: ${undoStaleProposalRes.res.status} ${JSON.stringify(undoStaleProposalRes.body)}`,
+    );
+    const undoStaleProposal = undoStaleProposalRes.body.proposal;
+    const undoStaleConfirm = await req(base, `/api/schedule-proposals/${undoStaleProposal.id}/confirm`, { method: 'POST', cookie });
+    assert(undoStaleConfirm.res.status === 200, `undo stale confirm failed: ${undoStaleConfirm.res.status} ${JSON.stringify(undoStaleConfirm.body)}`);
+    await nextClockTick();
+    const manualUndoStart = new Date('2030-01-20T10:30:00+08:00').toISOString();
+    const manualUndoEnd = new Date('2030-01-20T11:00:00+08:00').toISOString();
+    const manualUndoEdit = await req(base, `/api/tasks/${undoStaleTask.body.task.id}`, {
+      method: 'PATCH',
+      cookie,
+      body: JSON.stringify({
+        startDate: manualUndoStart,
+        dueDate: manualUndoEnd,
+        plannedStartAt: manualUndoStart,
+        plannedEndAt: manualUndoEnd,
+        isAllDay: false,
+      }),
+    });
+    assert(manualUndoEdit.res.status === 200, `manual edit before stale undo failed: ${manualUndoEdit.res.status} ${JSON.stringify(manualUndoEdit.body)}`);
+    const staleUndo = await req(base, `/api/schedule-proposals/${undoStaleProposal.id}/undo`, { method: 'POST', cookie });
+    assert(staleUndo.res.status === 409, `stale undo should be 409, got ${staleUndo.res.status}`);
+    assert(staleUndo.body.error.code === 'proposal_undo_stale', `stale undo should return proposal_undo_stale, got ${staleUndo.body.error.code}`);
+    const dbAfterStaleUndo = new DatabaseSync(dbPath);
+    try {
+      const task = dbAfterStaleUndo.prepare('SELECT start_date, due_date, planned_start_at, planned_end_at FROM tasks WHERE id = ?').get(undoStaleTask.body.task.id) as {
+        start_date: string | null;
+        due_date: string | null;
+        planned_start_at: string | null;
+        planned_end_at: string | null;
+      };
+      const proposalRow = dbAfterStaleUndo.prepare('SELECT status FROM schedule_proposals WHERE id = ?').get(undoStaleProposal.id) as { status: string };
+      assert(task.start_date === manualUndoStart && task.due_date === manualUndoEnd, 'stale undo must not overwrite manually edited task dates');
+      assert(task.planned_start_at === manualUndoStart && task.planned_end_at === manualUndoEnd, 'stale undo must not overwrite manually edited planned dates');
+      assert(proposalRow.status === 'confirmed', 'stale undo must leave the proposal confirmed');
+    } finally {
+      dbAfterStaleUndo.close();
+    }
+
     const staleTaskGoal = await req(base, '/api/goals', {
       method: 'POST',
       cookie,

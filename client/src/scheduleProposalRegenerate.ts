@@ -30,3 +30,14 @@ export function describeScheduleProposalConfirmError(err: unknown): string {
   }
   return err instanceof Error ? err.message : String(err);
 }
+
+export function isScheduleProposalUndoStaleError(err: unknown): boolean {
+  return !!err && typeof err === 'object' && (err as { code?: string }).code === 'proposal_undo_stale';
+}
+
+export function describeScheduleProposalUndoError(err: unknown): string {
+  if (isScheduleProposalUndoStaleError(err)) {
+    return '无法撤销这次排期：相关任务在确认后已被修改。请先核对当前任务时间。';
+  }
+  return err instanceof Error ? err.message : String(err);
+}

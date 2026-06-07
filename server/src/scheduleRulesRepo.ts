@@ -985,6 +985,39 @@ function assertScheduleProposalFresh(
   }
 }
 
+function assertScheduleProposalUndoFresh(userId: string, proposal: ScheduleProposalDTO): void {
+  if (!proposal.confirmedAt) return;
+  const taskIds = Array.from(
+    new Set(
+      proposal.changes
+        .filter((change) => change.confirmed)
+        .flatMap((change) => [change.taskId, change.createdTaskId])
+        .filter((id): id is string => typeof id === 'string' && id.length > 0),
+    ),
+  );
+  if (taskIds.length === 0) return;
+  const placeholders = taskIds.map(() => '?').join(', ');
+  const task = db
+    .prepare(
+      `SELECT id, title, updated_at
+       FROM tasks
+       WHERE user_id = ?
+         AND goal_id = ?
+         AND id IN (${placeholders})
+         AND updated_at > ?
+       ORDER BY updated_at DESC
+       LIMIT 1`,
+    )
+    .get(userId, proposal.goalId, ...taskIds, proposal.confirmedAt) as { id: string; title: string; updated_at: string } | undefined;
+  if (task) {
+    throw new AppError(
+      409,
+      'proposal_undo_stale',
+      `Schedule proposal cannot be undone because task "${task.title}" changed after confirmation. Review the latest task time before undoing.`,
+    );
+  }
+}
+
 function splitDurations(totalMinutes: number, minMinutes: number, enabled: boolean): number[] {
   const total = Math.max(15, totalMinutes);
   const min = Math.max(15, minMinutes);
@@ -1943,6 +1976,7 @@ export function undoScheduleProposal(userId: string, id: string): { proposal: Sc
   const proposal = getScheduleProposal(userId, id);
   if (!proposal) throw new AppError(404, 'not_found', 'proposal not found');
   if (proposal.status !== 'confirmed') throw new AppError(409, 'proposal_not_confirmed', 'only confirmed proposals can be undone');
+  assertScheduleProposalUndoFresh(userId, proposal);
   const ts = nowISO();
   const updatedIds = new Set<string>();
   const restoredSplitParents = new Set<string>();

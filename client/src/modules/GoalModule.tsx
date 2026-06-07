@@ -15,7 +15,11 @@ import {
   listManualAdjustmentConflicts,
 } from '../scheduleProposalManualAdjust';
 import { buildScheduleProposalImpact } from '../scheduleProposalImpact';
-import { buildScheduleProposalRegenerateInput, describeScheduleProposalConfirmError } from '../scheduleProposalRegenerate';
+import {
+  buildScheduleProposalRegenerateInput,
+  describeScheduleProposalConfirmError,
+  describeScheduleProposalUndoError,
+} from '../scheduleProposalRegenerate';
 import { buildScheduleRuleConflictActions, type ScheduleRuleConflictAction } from '../scheduleRuleConflictActions';
 import { buildScheduleRuleEditProposalInput, type ScheduleRuleEditApplyMode } from '../scheduleRuleEditEffect';
 import { useSettings } from '../settings';
@@ -827,20 +831,28 @@ export default function GoalModule() {
 
   async function undoProposal() {
     if (!proposal) return;
-    await mutate(async () => {
+    try {
       const result = await api.undoScheduleProposal(proposal.id);
       setProposalWithSelection(result.proposal);
       setRecentConfirmedProposal(null);
-    });
+      await reload();
+      setError(null);
+    } catch (e) {
+      setError(describeScheduleProposalUndoError(e));
+    }
   }
 
   async function undoRecentConfirmedProposal() {
     if (!recentConfirmedProposal) return;
-    await mutate(async () => {
+    try {
       const result = await api.undoScheduleProposal(recentConfirmedProposal.id);
       setProposalWithSelection(result.proposal);
       setRecentConfirmedProposal(null);
-    });
+      await reload();
+      setError(null);
+    } catch (e) {
+      setError(describeScheduleProposalUndoError(e));
+    }
   }
 
   async function discardProposal() {
