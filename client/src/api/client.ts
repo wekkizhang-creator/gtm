@@ -87,7 +87,7 @@ import type {
   User,
 } from '../types';
 
-const BASE = import.meta.env.VITE_API_BASE || '/api';
+const BASE = import.meta.env.VITE_API_BASE || (import.meta.env.PROD ? '/efficiency-list/api' : '/api');
 
 export function isNetworkError(err: unknown): boolean {
   return !!err && typeof err === 'object' && (err as { isNetworkError?: boolean }).isNetworkError === true;
