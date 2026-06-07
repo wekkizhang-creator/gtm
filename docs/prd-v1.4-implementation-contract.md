@@ -2881,3 +2881,19 @@ When undo returns `proposal_undo_stale`, the goal module displays `无法撤销�
 ### Verification
 
 `npm run test:schedule-rules` now confirms a real proposal, edits the scheduled task through `PATCH /api/tasks/:id`, calls the real undo route, verifies `409 proposal_undo_stale`, and checks SQLite keeps the manually edited `start_date`, `due_date`, `planned_start_at`, `planned_end_at`, while `schedule_proposals.status` remains `confirmed`. `npm run test:schedule-proposal-regenerate-client` verifies the stale undo error is recognized and rendered as the Chinese task-changed warning.
+
+## Slice 113: Generated Split Segment Undo Freshness
+
+Split-task proposals now distinguish system-created split segments from user-edited split segments during undo freshness checks. A generated `schedule_split` child can be newer than the proposal confirmation timestamp simply because it was created during confirmation; that alone must not block undo. If the generated child is edited after creation, undo is still protected by `proposal_undo_stale`.
+
+### API Contract
+
+`POST /api/schedule-proposals/:id/undo` keeps the Slice 112 stale-undo contract with one split-specific rule:
+
+- A confirmed `create_split_segment` child with `source:"schedule_split"` and `created_at === updated_at` is treated as unchanged confirmation output, even if its timestamp is later than `confirmed_at`.
+- A generated split child with `updated_at !== created_at` is treated as user-modified and returns `409 proposal_undo_stale`.
+- Normal split undo still soft-deletes generated segment rows and restores the parent task only when none of the confirmed parent/child rows were edited after confirmation.
+
+### Verification
+
+`npm run test:schedule-rules` already verifies an unedited split proposal can be undone and soft-deletes the three generated `schedule_split` children. It now also confirms another split proposal, edits one generated child through `PATCH /api/tasks/:id`, calls undo, verifies `409 proposal_undo_stale`, and checks SQLite keeps the edited child active with its manually edited dates while the proposal remains `confirmed`.

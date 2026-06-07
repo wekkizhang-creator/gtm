@@ -1121,6 +1121,88 @@ async function main() {
       dbAfterSplitUndo.close();
     }
 
+    const splitUndoStaleGoal = await req(base, '/api/goals', {
+      method: 'POST',
+      cookie,
+      body: JSON.stringify({
+        title: 'Split undo stale child plan',
+        startAt: new Date('2030-01-21T09:00:00+08:00').toISOString(),
+        deadlineAt: new Date('2030-01-21T12:00:00+08:00').toISOString(),
+        availableTimeRule: JSON.stringify({ startHour: 9, endHour: 12 }),
+      }),
+    });
+    assert(
+      splitUndoStaleGoal.res.status === 201,
+      `split stale goal create failed: ${splitUndoStaleGoal.res.status} ${JSON.stringify(splitUndoStaleGoal.body)}`,
+    );
+    const splitUndoStaleTask = await req(base, `/api/goals/${splitUndoStaleGoal.body.goal.id}/tasks`, {
+      method: 'POST',
+      cookie,
+      body: JSON.stringify({
+        title: 'Edit generated split child',
+        estimatedMinutes: 120,
+        isSplittable: true,
+        minScheduleMinutes: 60,
+      }),
+    });
+    assert(
+      splitUndoStaleTask.res.status === 201,
+      `split stale task create failed: ${splitUndoStaleTask.res.status} ${JSON.stringify(splitUndoStaleTask.body)}`,
+    );
+    const splitUndoStaleProposalRes = await req(base, `/api/goals/${splitUndoStaleGoal.body.goal.id}/schedule-proposals`, { method: 'POST', cookie });
+    assert(
+      splitUndoStaleProposalRes.res.status === 201,
+      `split stale proposal failed: ${splitUndoStaleProposalRes.res.status} ${JSON.stringify(splitUndoStaleProposalRes.body)}`,
+    );
+    const splitUndoStaleProposal = splitUndoStaleProposalRes.body.proposal;
+    const splitUndoStaleConfirm = await req(base, `/api/schedule-proposals/${splitUndoStaleProposal.id}/confirm`, { method: 'POST', cookie });
+    assert(
+      splitUndoStaleConfirm.res.status === 200,
+      `split stale confirm failed: ${splitUndoStaleConfirm.res.status} ${JSON.stringify(splitUndoStaleConfirm.body)}`,
+    );
+    const editedGeneratedChildId = splitUndoStaleConfirm.body.proposal.changes[0].createdTaskId;
+    assert(typeof editedGeneratedChildId === 'string' && editedGeneratedChildId, 'split stale confirm should expose a generated child id');
+    await nextClockTick();
+    const editedChildStart = new Date('2030-01-21T10:30:00+08:00').toISOString();
+    const editedChildEnd = new Date('2030-01-21T11:30:00+08:00').toISOString();
+    const editGeneratedChild = await req(base, `/api/tasks/${editedGeneratedChildId}`, {
+      method: 'PATCH',
+      cookie,
+      body: JSON.stringify({
+        startDate: editedChildStart,
+        dueDate: editedChildEnd,
+        plannedStartAt: editedChildStart,
+        plannedEndAt: editedChildEnd,
+        isAllDay: false,
+      }),
+    });
+    assert(editGeneratedChild.res.status === 200, `edit generated split child failed: ${editGeneratedChild.res.status} ${JSON.stringify(editGeneratedChild.body)}`);
+    const splitUndoStale = await req(base, `/api/schedule-proposals/${splitUndoStaleProposal.id}/undo`, { method: 'POST', cookie });
+    assert(splitUndoStale.res.status === 409, `edited split child undo should be 409, got ${splitUndoStale.res.status}`);
+    assert(
+      splitUndoStale.body.error.code === 'proposal_undo_stale',
+      `edited split child undo should return proposal_undo_stale, got ${splitUndoStale.body.error.code}`,
+    );
+    const dbAfterSplitStaleUndo = new DatabaseSync(dbPath);
+    try {
+      const child = dbAfterSplitStaleUndo
+        .prepare('SELECT start_date, due_date, planned_start_at, planned_end_at, deleted_at FROM tasks WHERE id = ?')
+        .get(editedGeneratedChildId) as {
+        start_date: string | null;
+        due_date: string | null;
+        planned_start_at: string | null;
+        planned_end_at: string | null;
+        deleted_at: string | null;
+      };
+      const proposalRow = dbAfterSplitStaleUndo.prepare('SELECT status FROM schedule_proposals WHERE id = ?').get(splitUndoStaleProposal.id) as { status: string };
+      assert(child.start_date === editedChildStart && child.due_date === editedChildEnd, 'stale split undo must not overwrite edited child dates');
+      assert(child.planned_start_at === editedChildStart && child.planned_end_at === editedChildEnd, 'stale split undo must not overwrite edited child planned dates');
+      assert(child.deleted_at === null, 'stale split undo must not delete the edited generated child');
+      assert(proposalRow.status === 'confirmed', 'stale split undo must keep the proposal confirmed');
+    } finally {
+      dbAfterSplitStaleUndo.close();
+    }
+
     const invalidCategoryRule = await req(base, '/api/schedule-rules', {
       method: 'POST',
       cookie,

@@ -997,18 +997,25 @@ function assertScheduleProposalUndoFresh(userId: string, proposal: SchedulePropo
   );
   if (taskIds.length === 0) return;
   const placeholders = taskIds.map(() => '?').join(', ');
-  const task = db
+  const changedTasks = db
     .prepare(
-      `SELECT id, title, updated_at
+      `SELECT id, title, source, created_at, updated_at
        FROM tasks
        WHERE user_id = ?
          AND goal_id = ?
          AND id IN (${placeholders})
          AND updated_at > ?
        ORDER BY updated_at DESC
-       LIMIT 1`,
+       LIMIT 100`,
     )
-    .get(userId, proposal.goalId, ...taskIds, proposal.confirmedAt) as { id: string; title: string; updated_at: string } | undefined;
+    .all(userId, proposal.goalId, ...taskIds, proposal.confirmedAt) as Array<{
+    id: string;
+    title: string;
+    source: string | null;
+    created_at: string;
+    updated_at: string;
+  }>;
+  const task = changedTasks.find((item) => item.source !== 'schedule_split' || item.created_at !== item.updated_at);
   if (task) {
     throw new AppError(
       409,
