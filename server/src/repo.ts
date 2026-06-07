@@ -211,6 +211,18 @@ function parseIdList(s: any): string[] {
   }
 }
 
+function parseJsonObjectSafe(raw: unknown): Record<string, unknown> {
+  if (!raw) return {};
+  if (typeof raw === 'object' && !Array.isArray(raw)) return raw as Record<string, unknown>;
+  if (typeof raw !== 'string') return {};
+  try {
+    const value = JSON.parse(raw);
+    return value && typeof value === 'object' && !Array.isArray(value) ? (value as Record<string, unknown>) : {};
+  } catch {
+    return {};
+  }
+}
+
 function assertTaskStatus(status: unknown): asserts status is TaskStatus {
   if (status != null && !['todo', 'doing', 'waiting', 'done', 'skipped'].includes(String(status))) {
     throw new AppError(400, 'invalid', 'status must be todo, doing, waiting, done or skipped');
@@ -2142,8 +2154,53 @@ export function getGoal(userId: string, id: string): GoalDTO | null {
   return row ? mapGoal(row) : null;
 }
 
+const SCHEDULE_RULE_PRIORITY_WEIGHT: Record<'hard' | 'normal' | 'preference', number> = {
+  hard: 300,
+  normal: 200,
+  preference: 100,
+};
+
+function addGoalIdsFromRuleTarget(target: Record<string, unknown>, ids: Set<string>): void {
+  const goalId = target.goalId;
+  if (typeof goalId === 'string' && goalId) ids.add(goalId);
+  const goalIds = target.goalIds;
+  if (Array.isArray(goalIds)) {
+    for (const id of goalIds) {
+      if (typeof id === 'string' && id) ids.add(id);
+    }
+  }
+}
+
+function planPriorityGoalScores(userId: string): Map<string, number> {
+  const rows = db
+    .prepare(
+      `SELECT priority, condition_json, action_json, scope_json
+       FROM personal_schedule_rules
+       WHERE user_id = ? AND type = 'plan_priority' AND status = 'enabled' AND deleted_at IS NULL`,
+    )
+    .all(userId) as Array<{
+    priority: 'hard' | 'normal' | 'preference';
+    condition_json: string;
+    action_json: string;
+    scope_json: string;
+  }>;
+  const scores = new Map<string, number>();
+  for (const row of rows) {
+    const ids = new Set<string>();
+    addGoalIdsFromRuleTarget(parseJsonObjectSafe(row.scope_json), ids);
+    addGoalIdsFromRuleTarget(parseJsonObjectSafe(row.action_json), ids);
+    addGoalIdsFromRuleTarget(parseJsonObjectSafe(row.condition_json), ids);
+    const weight = SCHEDULE_RULE_PRIORITY_WEIGHT[row.priority] ?? SCHEDULE_RULE_PRIORITY_WEIGHT.normal;
+    for (const id of ids) {
+      scores.set(id, (scores.get(id) ?? 0) + weight);
+    }
+  }
+  return scores;
+}
+
 export function getDayPilotDashboard(userId: string, input: { date?: string | null } = {}): DayPilotDashboardDTO {
   const range = dashboardDayRange(input.date);
+  const planPriorityScores = planPriorityGoalScores(userId);
   const activeGoalRows = db
     .prepare(
       `SELECT
@@ -2164,19 +2221,23 @@ export function getDayPilotDashboard(userId: string, input: { date?: string | nu
           CASE WHEN g.deadline_at IS NULL THEN 1 ELSE 0 END ASC,
          g.deadline_at ASC,
          g.created_at DESC
-       LIMIT 8`,
+       LIMIT 50`,
     )
     .all(range.to, range.from, userId) as Array<any & { open_task_count: number; scheduled_today_count: number; unscheduled_task_count: number }>;
-  const activeGoals = activeGoalRows.map((row) => ({
-    id: row.id,
-    title: row.title,
-    deadlineAt: row.deadline_at ?? null,
-    priority: (row.priority ?? 0) as Priority,
-    status: row.status ?? 'not_started',
-    scheduledTodayCount: row.scheduled_today_count ?? 0,
-    unscheduledTaskCount: row.unscheduled_task_count ?? 0,
-    openTaskCount: row.open_task_count ?? 0,
-  }));
+  const activeGoals = activeGoalRows
+    .map((row, index) => ({ row, index }))
+    .sort((a, b) => (planPriorityScores.get(b.row.id) ?? 0) - (planPriorityScores.get(a.row.id) ?? 0) || a.index - b.index)
+    .slice(0, 8)
+    .map(({ row }) => ({
+      id: row.id,
+      title: row.title,
+      deadlineAt: row.deadline_at ?? null,
+      priority: (row.priority ?? 0) as Priority,
+      status: row.status ?? 'not_started',
+      scheduledTodayCount: row.scheduled_today_count ?? 0,
+      unscheduledTaskCount: row.unscheduled_task_count ?? 0,
+      openTaskCount: row.open_task_count ?? 0,
+    }));
 
   const baseTaskWhere = `
     FROM tasks t

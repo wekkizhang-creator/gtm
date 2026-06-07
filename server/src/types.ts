@@ -263,6 +263,7 @@ export interface ScheduleProposalChangeDTO {
   segmentIndex: number | null;
   segmentTotal: number | null;
   createdTaskId: string | null;
+  createdReminderIds?: string[];
   oldStartDate: string | null;
   oldDueDate: string | null;
   oldPlannedStartAt: string | null;

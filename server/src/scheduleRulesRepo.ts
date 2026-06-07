@@ -1,6 +1,6 @@
 import { randomUUID } from 'node:crypto';
 import { db, nowISO } from './db';
-import { createGoalTask, getGoal, getTask } from './repo';
+import { createGoalTask, createTaskReminder, deleteTaskReminder, getGoal, getTask } from './repo';
 import {
   AppError,
   type GoalDTO,
@@ -165,6 +165,9 @@ function mapProposal(row: ProposalRow): ScheduleProposalDTO {
     segmentIndex: Number.isInteger((change as any).segmentIndex) ? (change as any).segmentIndex : null,
     segmentTotal: Number.isInteger((change as any).segmentTotal) ? (change as any).segmentTotal : null,
     createdTaskId: typeof (change as any).createdTaskId === 'string' ? (change as any).createdTaskId : null,
+    createdReminderIds: Array.isArray((change as any).createdReminderIds)
+      ? (change as any).createdReminderIds.filter((id: unknown): id is string => typeof id === 'string' && !!id)
+      : [],
     oldPlannedStartAt: (change as any).oldPlannedStartAt ?? null,
     oldPlannedEndAt: (change as any).oldPlannedEndAt ?? null,
     oldIsAllDay: !!(change as any).oldIsAllDay,
@@ -243,6 +246,12 @@ function validateRuleShape(type: ScheduleRuleType, condition: Record<string, unk
     const minutes = Number(action.minutes ?? condition.minutes);
     if (!Number.isInteger(minutes) || minutes < 0 || minutes > 240) {
       throw new AppError(400, 'invalid_schedule_rule', 'buffer minutes must be 0-240');
+    }
+  }
+  if (type === 'reminder') {
+    const minutes = Number(action.minutesBefore ?? condition.minutesBefore ?? action.minutes ?? condition.minutes ?? 10);
+    if (!Number.isInteger(minutes) || minutes < 0 || minutes > 10080) {
+      throw new AppError(400, 'invalid_schedule_rule', 'reminder minutes must be 0-10080');
     }
   }
   if (type === 'energy_preference' && condition.energyType != null && !ENERGY_TYPES.includes(condition.energyType as ScheduleEnergyType)) {
@@ -587,6 +596,43 @@ function totalBufferMinutes(rules: PersonalScheduleRuleDTO[]): number {
       .map((rule) => Number(rule.action.minutes ?? rule.condition.minutes ?? 0))
       .filter((minutes) => Number.isFinite(minutes) && minutes >= 0 && minutes <= 240),
   );
+}
+
+function reminderMinutes(rule: PersonalScheduleRuleDTO): number | null {
+  const minutes = Number(rule.action.minutesBefore ?? rule.condition.minutesBefore ?? rule.action.minutes ?? rule.condition.minutes ?? 10);
+  return Number.isInteger(minutes) && minutes >= 0 && minutes <= 10080 ? minutes : null;
+}
+
+function createScheduleReminderIfMissing(userId: string, taskId: string, remindAt: string): string | null {
+  const existing = db
+    .prepare("SELECT id FROM task_reminders WHERE user_id = ? AND task_id = ? AND remind_at = ? AND channel = 'email' AND status <> 'cancelled'")
+    .get(userId, taskId, remindAt) as { id: string } | undefined;
+  if (existing) return null;
+  return createTaskReminder(userId, taskId, { remindAt, channel: 'email' }).id;
+}
+
+function applyReminderRulesToScheduledTask(
+  userId: string,
+  taskId: string,
+  plannedStartAt: string,
+  reminderRules: PersonalScheduleRuleDTO[],
+): string[] {
+  const startMs = Date.parse(plannedStartAt);
+  if (!Number.isFinite(startMs)) return [];
+  const createdIds: string[] = [];
+  for (const rule of reminderRules) {
+    const minutes = reminderMinutes(rule);
+    if (minutes == null) continue;
+    const reminderId = createScheduleReminderIfMissing(userId, taskId, new Date(startMs - minutes * 60_000).toISOString());
+    if (reminderId) createdIds.push(reminderId);
+  }
+  return createdIds;
+}
+
+function removeScheduleProposalReminders(userId: string, taskId: string, reminderIds: string[]): void {
+  for (const reminderId of reminderIds) {
+    deleteTaskReminder(userId, taskId, reminderId);
+  }
 }
 
 function matchingEnergyRuleIds(task: TaskRow, rules: PersonalScheduleRuleDTO[]): string[] {
@@ -1294,6 +1340,9 @@ export function confirmScheduleProposal(
   const selectedChanges = selectedKeys ? changes.filter((change) => selectedKeys.has(change.changeKey)) : changes;
   if (selectedChanges.length === 0) throw new AppError(400, 'no_changes_selected', 'selected proposal changes were not found');
   for (const change of changes) change.confirmed = selectedChanges.some((selected) => selected.changeKey === change.changeKey);
+  const reminderRules = listScheduleRules(userId).filter(
+    (rule) => rule.status === 'enabled' && rule.type === 'reminder' && scopedToGoal(rule, proposal.goalId),
+  );
   db.exec('BEGIN');
   try {
     for (const change of selectedChanges) {
@@ -1325,6 +1374,7 @@ export function confirmScheduleProposal(
           isAllDay: false,
           source: 'schedule_split',
         });
+        const createdReminderIds = applyReminderRulesToScheduledTask(userId, child.id, change.plannedStartAt, reminderRules);
         db.prepare('UPDATE tasks SET planned_start_at = ?, planned_end_at = ?, updated_at = ? WHERE user_id = ? AND id = ?').run(
           change.plannedStartAt,
           change.plannedEndAt,
@@ -1333,8 +1383,12 @@ export function confirmScheduleProposal(
           child.id,
         );
         change.createdTaskId = child.id;
+        change.createdReminderIds = createdReminderIds;
         const stored = changes.find((item) => item.changeKey === change.changeKey);
-        if (stored) stored.createdTaskId = child.id;
+        if (stored) {
+          stored.createdTaskId = child.id;
+          stored.createdReminderIds = createdReminderIds;
+        }
         updatedIds.add(child.id);
       } else {
         const info = db
@@ -1347,6 +1401,10 @@ export function confirmScheduleProposal(
         if (info.changes === 0) {
           throw new AppError(404, 'not_found', `task ${change.taskId} not found`);
         }
+        const createdReminderIds = applyReminderRulesToScheduledTask(userId, change.taskId, change.plannedStartAt, reminderRules);
+        change.createdReminderIds = createdReminderIds;
+        const stored = changes.find((item) => item.changeKey === change.changeKey);
+        if (stored) stored.createdReminderIds = createdReminderIds;
         updatedIds.add(change.taskId);
       }
     }
@@ -1410,6 +1468,7 @@ export function undoScheduleProposal(userId: string, id: string): { proposal: Sc
           updatedIds.add(change.taskId);
         }
         if (!change.createdTaskId) throw new AppError(409, 'split_segment_missing', 'confirmed split proposal is missing created task ids');
+        removeScheduleProposalReminders(userId, change.createdTaskId, change.createdReminderIds ?? []);
         const childInfo = db
           .prepare(
             `UPDATE tasks
@@ -1419,6 +1478,7 @@ export function undoScheduleProposal(userId: string, id: string): { proposal: Sc
           .run(ts, ts, userId, proposal.goalId, change.createdTaskId, change.taskId);
         if (childInfo.changes === 0) throw new AppError(404, 'not_found', `split segment ${change.createdTaskId} not found`);
       } else {
+        removeScheduleProposalReminders(userId, change.taskId, change.createdReminderIds ?? []);
         const info = db
           .prepare(
             `UPDATE tasks

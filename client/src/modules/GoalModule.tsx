@@ -14,6 +14,7 @@ import {
   listManualAdjustmentConflicts,
 } from '../scheduleProposalManualAdjust';
 import { buildScheduleProposalImpact } from '../scheduleProposalImpact';
+import { buildScheduleRuleEditProposalInput, type ScheduleRuleEditApplyMode } from '../scheduleRuleEditEffect';
 import { useSettings } from '../settings';
 import { PRIORITY_LABELS, dateInputToISO, isoToDateInput } from '../util';
 import type {
@@ -174,6 +175,7 @@ export default function GoalModule() {
   const [ruleBufferMinutes, setRuleBufferMinutes] = useState('15');
   const [ruleEnergy, setRuleEnergy] = useState<ScheduleEnergyType>('high');
   const [ruleTaskType, setRuleTaskType] = useState('');
+  const [ruleEditApplyMode, setRuleEditApplyMode] = useState<ScheduleRuleEditApplyMode>('future_only');
   const [naturalRuleText, setNaturalRuleText] = useState('');
   const [naturalRuleBusy, setNaturalRuleBusy] = useState(false);
   const [lastRuleParse, setLastRuleParse] = useState<AIScheduleRuleParseResult | null>(null);
@@ -463,6 +465,13 @@ export default function GoalModule() {
     };
   }
 
+  function buildRuleScope() {
+    if (ruleType === 'plan_priority' && selected) {
+      return { goalIds: [selected.id] };
+    }
+    return {};
+  }
+
   async function createRule(e: FormEvent) {
     e.preventDefault();
     const name = ruleName.trim();
@@ -476,12 +485,22 @@ export default function GoalModule() {
         status: ruleStatus,
         condition: payload.condition,
         action: payload.action,
-        scope: {},
+        scope: buildRuleScope(),
       };
-      if (editingRuleId) await api.updateScheduleRule(editingRuleId, input);
-      else await api.createScheduleRule(input);
+      if (editingRuleId) {
+        const rule = await api.updateScheduleRule(editingRuleId, input);
+        if (selected && goalCanAutoSchedule(selected.status)) {
+          const proposalInput = buildScheduleRuleEditProposalInput(ruleEditApplyMode, rule.id);
+          if (proposalInput) {
+            setProposalWithSelection(await api.createScheduleProposal(selected.id, proposalInput));
+          }
+        }
+      } else {
+        await api.createScheduleRule(input);
+      }
       setRuleName('');
       setEditingRuleId(null);
+      setRuleEditApplyMode('future_only');
       setRulePreview(null);
       setRuleDetails(null);
       setLastRuleParse(null);
@@ -505,7 +524,7 @@ export default function GoalModule() {
         status: ruleStatus,
         condition: payload.condition,
         action: payload.action,
-        scope: {},
+        scope: buildRuleScope(),
         from,
         to,
         goalId: selected.id,
@@ -624,12 +643,14 @@ export default function GoalModule() {
 
   function beginEditRule(rule: PersonalScheduleRule) {
     setEditingRuleId(rule.id);
+    setRuleEditApplyMode('future_only');
     fillRuleForm(rule);
     setLastRuleParse(null);
   }
 
   function useRuleTemplate(template: ScheduleRuleTemplate) {
     setEditingRuleId(null);
+    setRuleEditApplyMode('future_only');
     fillRuleForm(template);
     setLastRuleParse(null);
     setRulePreview(null);
@@ -1238,6 +1259,31 @@ export default function GoalModule() {
                   <option value="enabled">启用</option>
                   <option value="disabled">停用</option>
                 </select>
+                {editingRuleId && (
+                  <div className="goal-rule-apply-mode" role="radiogroup" aria-label="规则更新生效方式">
+                    <label className={ruleEditApplyMode === 'future_only' ? 'active' : ''}>
+                      <input
+                        type="radio"
+                        name="rule-edit-apply-mode"
+                        value="future_only"
+                        checked={ruleEditApplyMode === 'future_only'}
+                        onChange={() => setRuleEditApplyMode('future_only')}
+                      />
+                      <span>仅影响未来</span>
+                    </label>
+                    <label className={ruleEditApplyMode === 'recalculate_7d' ? 'active' : ''}>
+                      <input
+                        type="radio"
+                        name="rule-edit-apply-mode"
+                        value="recalculate_7d"
+                        checked={ruleEditApplyMode === 'recalculate_7d'}
+                        onChange={() => setRuleEditApplyMode('recalculate_7d')}
+                        disabled={!selected || !goalCanAutoSchedule(selected.status)}
+                      />
+                      <span>重排未来 7 天</span>
+                    </label>
+                  </div>
+                )}
                 {(ruleType === 'time_boundary' || ruleType === 'fixed_habit') && (
                   <>
                     <input type="time" value={ruleStartTime} onChange={(e) => setRuleStartTime(e.target.value)} />
@@ -1274,13 +1320,19 @@ export default function GoalModule() {
                   <input placeholder="任务类型" value={ruleTaskType} onChange={(e) => setRuleTaskType(e.target.value)} />
                 )}
                 <button type="submit" disabled={!ruleName.trim()}>
-                  {editingRuleId ? '更新规则' : '保存规则'}
+                  {editingRuleId ? (ruleEditApplyMode === 'recalculate_7d' ? '更新并重排' : '更新规则') : '保存规则'}
                 </button>
                 <button type="button" onClick={() => void previewRule()} disabled={!selected || !ruleName.trim() || rulePreviewBusy}>
                   {rulePreviewBusy ? '预览中' : '预览 7 天'}
                 </button>
                 {editingRuleId && (
-                  <button type="button" onClick={() => setEditingRuleId(null)}>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setEditingRuleId(null);
+                      setRuleEditApplyMode('future_only');
+                    }}
+                  >
                     取消
                   </button>
                 )}
