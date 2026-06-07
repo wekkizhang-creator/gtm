@@ -26,9 +26,22 @@ router.post('/:id/read', (req, res) => {
 });
 
 router.post('/:id/snooze', (req, res) => {
-  const snoozedUntil = req.body?.snoozedUntil;
-  if (typeof snoozedUntil !== 'string' || Number.isNaN(Date.parse(snoozedUntil))) {
-    throw new AppError(400, 'invalid', 'snoozedUntil must be an ISO date string');
+  let snoozedUntil: string | null = null;
+  const minutes = req.body?.minutes;
+  if (minutes !== undefined) {
+    const n = Number(minutes);
+    if (!Number.isInteger(n) || n <= 0 || n > 1440) {
+      throw new AppError(400, 'invalid_snooze_minutes', 'minutes must be an integer from 1 to 1440');
+    }
+    snoozedUntil = new Date(Date.now() + n * 60_000).toISOString();
+  } else if (typeof req.body?.snoozedUntil === 'string' && !Number.isNaN(Date.parse(req.body.snoozedUntil))) {
+    snoozedUntil = new Date(req.body.snoozedUntil).toISOString();
+  }
+  if (!snoozedUntil) {
+    throw new AppError(400, 'invalid_snooze_until', 'snoozedUntil must be an ISO date string or minutes must be provided');
+  }
+  if (Date.parse(snoozedUntil) <= Date.now()) {
+    throw new AppError(400, 'invalid_snooze_until', 'snoozedUntil must be in the future');
   }
   const notification = repo.snoozeNotification(requireUserId(req), req.params.id, snoozedUntil);
   if (!notification) throw new AppError(404, 'not_found', 'notification not found');

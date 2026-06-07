@@ -80,12 +80,8 @@ export default function NotificationCenter({ locked = false }: { locked?: boolea
                 </div>
                 <div className="notif-actions">
                   {!item.readAt && <button onClick={() => void mutate(() => api.markNotificationRead(item.id))}>已读</button>}
-                  <button
-                    onClick={() =>
-                      void mutate(() => api.snoozeNotification(item.id, new Date(Date.now() + 10 * 60_000).toISOString()))
-                    }
-                  >
-                    稍后
+                  <button onClick={() => void mutate(() => api.snoozeNotification(item.id, { minutes: 10 }))}>
+                    稍后 10 分钟
                   </button>
                 </div>
               </li>

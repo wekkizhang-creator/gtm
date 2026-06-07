@@ -2974,9 +2974,12 @@ export function removeTaskDependency(userId: string, taskId: string, dependencyI
 
 export function listNotifications(userId: string, opts: { unreadOnly?: boolean; limit?: number } = {}): NotificationDTO[] {
   const limit = Math.max(1, Math.min(200, opts.limit ?? 100));
-  const where = opts.unreadOnly ? 'user_id = ? AND read_at IS NULL' : 'user_id = ?';
+  const ts = nowISO();
+  const where = opts.unreadOnly
+    ? 'user_id = ? AND read_at IS NULL AND (scheduled_at IS NULL OR scheduled_at <= ?)'
+    : 'user_id = ? AND (scheduled_at IS NULL OR scheduled_at <= ?)';
   return (
-    db.prepare(`SELECT * FROM notifications WHERE ${where} ORDER BY created_at DESC LIMIT ?`).all(userId, limit) as any[]
+    db.prepare(`SELECT * FROM notifications WHERE ${where} ORDER BY created_at DESC LIMIT ?`).all(userId, ts, limit) as any[]
   ).map(mapNotification);
 }
 

@@ -597,10 +597,10 @@ export const api = {
     req<{ notifications: Notification[] }>(`/notifications${unreadOnly ? '?unread=1' : ''}`).then((r) => r.notifications),
   markNotificationRead: (id: string) =>
     req<{ notification: Notification }>(`/notifications/${id}/read`, { method: 'POST' }).then((r) => r.notification),
-  snoozeNotification: (id: string, snoozedUntil: string) =>
+  snoozeNotification: (id: string, input: { minutes: number } | { snoozedUntil: string }) =>
     req<{ notification: Notification }>(`/notifications/${id}/snooze`, {
       method: 'POST',
-      body: JSON.stringify({ snoozedUntil }),
+      body: JSON.stringify(input),
     }).then((r) => r.notification),
   getNotificationPermission: () => req<{ permission: NotificationPermissionState }>('/notifications/permission').then((r) => r.permission),
   updateNotificationPermission: (input: { status: NotificationPermissionStatus; promptReason?: NotificationPermissionPromptReason }) =>

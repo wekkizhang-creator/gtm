@@ -226,14 +226,37 @@ async function main() {
     const unread = await req(base, '/api/notifications?unread=1', { cookie });
     assert(unread.body.notifications.length === 0, 'unread list should be empty after read');
 
-    const snoozedUntil = new Date(Date.now() + 10 * 60_000).toISOString();
+    const beforeSnooze = Date.now();
     const snooze = await req(base, `/api/notifications/${notificationId}/snooze`, {
       method: 'POST',
       cookie,
-      body: JSON.stringify({ snoozedUntil }),
+      body: JSON.stringify({ minutes: 10 }),
     });
-    assert(snooze.body.notification.scheduledAt === snoozedUntil, 'snooze did not update scheduledAt');
+    const afterSnooze = Date.now();
+    const scheduledAtMs = Date.parse(snooze.body.notification.scheduledAt);
+    assert(scheduledAtMs >= beforeSnooze + 10 * 60_000, 'minute snooze should schedule at least 10 minutes ahead');
+    assert(scheduledAtMs <= afterSnooze + 10 * 60_000 + 1000, 'minute snooze should be based on server receipt time');
     assert(snooze.body.notification.readAt === null, 'snooze should make notification unread again');
+    assert(snooze.body.notification.actionState === 'snoozed', 'snooze should mark actionState as snoozed');
+
+    const hiddenWhileSnoozed = await req(base, '/api/notifications', { cookie });
+    assert(hiddenWhileSnoozed.body.notifications.length === 0, 'future snoozed notification should be hidden from notification center');
+
+    const invalidMinutes = await req(base, `/api/notifications/${notificationId}/snooze`, {
+      method: 'POST',
+      cookie,
+      body: JSON.stringify({ minutes: 0 }),
+    });
+    assert(invalidMinutes.res.status === 400, `invalid snooze minutes should be 400, got ${invalidMinutes.res.status}`);
+    assert(invalidMinutes.body.error.code === 'invalid_snooze_minutes', 'invalid snooze minutes should return invalid_snooze_minutes');
+
+    const pastSnooze = await req(base, `/api/notifications/${notificationId}/snooze`, {
+      method: 'POST',
+      cookie,
+      body: JSON.stringify({ snoozedUntil: new Date(Date.now() - 1000).toISOString() }),
+    });
+    assert(pastSnooze.res.status === 400, `past snooze should be 400, got ${pastSnooze.res.status}`);
+    assert(pastSnooze.body.error.code === 'invalid_snooze_until', 'past snooze should return invalid_snooze_until');
 
     const importantTask = await req(base, '/api/tasks', {
       method: 'POST',
@@ -376,6 +399,12 @@ async function main() {
     assert(bobList.body.notifications.length === 0, 'Bob should not see Alice notifications');
     const bobRead = await req(base, `/api/notifications/${notificationId}/read`, { method: 'POST', cookie: bobCookie });
     assert(bobRead.res.status === 404, `expected Bob read to be 404, got ${bobRead.res.status}`);
+    const bobSnooze = await req(base, `/api/notifications/${notificationId}/snooze`, {
+      method: 'POST',
+      cookie: bobCookie,
+      body: JSON.stringify({ minutes: 10 }),
+    });
+    assert(bobSnooze.res.status === 404, `expected Bob snooze to be 404, got ${bobSnooze.res.status}`);
 
     const exportA = await req(base, '/api/settings/export', { cookie });
     assert(exportA.body.notifications.length === 7, 'export should include Alice notifications');
@@ -387,6 +416,11 @@ async function main() {
       const permissionRow = db
         .prepare("SELECT status, prompt_reason, last_prompted_at FROM notification_permissions WHERE permission = 'system-notifications'")
         .get() as { status: string; prompt_reason: string | null; last_prompted_at: string | null };
+      const snoozedRow = db.prepare('SELECT scheduled_at, read_at, action_state FROM notifications WHERE id = ?').get(notificationId) as {
+        scheduled_at: string;
+        read_at: string | null;
+        action_state: string | null;
+      };
       const r = db.prepare('SELECT status FROM task_reminders WHERE id = ?').get(reminderId) as { status: string };
       const important = db.prepare('SELECT status FROM task_reminders WHERE id = ?').get(importantReminderId) as { status: string };
       const quiet = db.prepare('SELECT status FROM task_reminders WHERE id = ?').get(quietReminder.body.reminder.id) as { status: string };
@@ -395,6 +429,9 @@ async function main() {
       assert(permissionRow.status === 'denied', `expected notification permission denied, got ${permissionRow.status}`);
       assert(permissionRow.prompt_reason === 'settings', 'notification permission prompt reason should be preserved');
       assert(!!permissionRow.last_prompted_at, 'notification permission prompt timestamp should be preserved');
+      assert(snoozedRow.scheduled_at === snooze.body.notification.scheduledAt, 'DB snoozed scheduled_at mismatch');
+      assert(snoozedRow.read_at === null, 'DB snoozed notification should remain unread');
+      assert(snoozedRow.action_state === 'snoozed', 'DB snoozed action_state mismatch');
       assert(r.status === 'sent', `expected reminder status sent, got ${r.status}`);
       assert(important.status === 'sent', `expected confirmed important reminder status sent, got ${important.status}`);
       assert(quiet.status === 'sent', `expected quiet reminder status sent after DND ends, got ${quiet.status}`);

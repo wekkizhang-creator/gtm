@@ -3156,3 +3156,42 @@ The global search panel does not fabricate detail content. Every clicked result 
 ### Verification
 
 `npm run test:search-navigation-client` verifies result-type to module mapping and repeated-click navigation target creation. `npm run test:search-client`, `npm run test:search`, client/server typecheck, and the production client build cover the existing search API, typed search controls, and compiled navigation surface.
+
+## Slice 121: Notification Snooze Preset
+
+N-03 now has a real "稍后 10 分钟" notification action. The client sends the preset duration to the backend, the backend calculates the future scheduled time, and future snoozed notifications are hidden from the notification center until their `scheduled_at` time arrives.
+
+### API Contract
+
+`POST /api/notifications/:id/snooze` accepts the new preset input:
+
+```json
+{
+  "minutes": 10
+}
+```
+
+Response:
+
+```json
+{
+  "notification": {
+    "scheduledAt": "2026-06-07T10:10:00.000Z",
+    "readAt": null,
+    "actionState": "snoozed"
+  }
+}
+```
+
+- `minutes` must be an integer from `1` to `1440`; invalid values return `400 invalid_snooze_minutes`.
+- The legacy `{ "snoozedUntil": "..." }` input remains supported, but it must be a future ISO date; past values return `400 invalid_snooze_until`.
+- `GET /api/notifications` and `GET /api/notifications?unread=1` hide notifications whose `scheduled_at` is in the future.
+- The notification row remains in SQLite and export data; snooze changes only its `scheduled_at`, `read_at`, and `action_state`.
+
+### Client Contract
+
+`NotificationCenter` renders the action as `稍后 10 分钟` and calls `api.snoozeNotification(id, { minutes: 10 })`. It reloads from the real notification list after the mutation, so hidden future snoozes disappear because of backend filtering rather than client-side filtering.
+
+### Verification
+
+`npm run test:notifications` now creates a due task reminder, runs the real reminder tick, reads the notification, snoozes it with `{ minutes: 10 }`, verifies the returned `scheduledAt` is calculated around server receipt time, verifies it is hidden from `GET /api/notifications`, rejects invalid minutes and past ISO snooze values, verifies another account cannot snooze the row, and checks SQLite persists `action_state = 'snoozed'`, `read_at IS NULL`, and the returned `scheduled_at`.
