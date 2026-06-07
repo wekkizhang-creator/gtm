@@ -6,6 +6,7 @@ import { GOAL_STATUS_LABELS, goalCanAutoSchedule, goalStatusActions } from '../g
 import { buildGoalTaskDependencyState } from '../goalTaskDependencies';
 import { buildGoalTaskCreateInput, buildGoalTaskEditPatch } from '../goalTaskForm';
 import { GOAL_TASK_STATUS_LABELS, goalTaskDisplayStatus, goalTaskStatusActions } from '../goalTaskStatus';
+import { buildGoalTaskStructureSummary, type GoalTaskStructureSummaryItem } from '../goalTaskStructureSummary';
 import {
   buildScheduleProposalManualDragPatch,
   buildScheduleProposalManualShift,
@@ -14,6 +15,7 @@ import {
   listManualAdjustmentConflicts,
 } from '../scheduleProposalManualAdjust';
 import { buildScheduleProposalImpact } from '../scheduleProposalImpact';
+import { buildScheduleRuleConflictActions, type ScheduleRuleConflictAction } from '../scheduleRuleConflictActions';
 import { buildScheduleRuleEditProposalInput, type ScheduleRuleEditApplyMode } from '../scheduleRuleEditEffect';
 import { useSettings } from '../settings';
 import { PRIORITY_LABELS, dateInputToISO, isoToDateInput } from '../util';
@@ -31,6 +33,7 @@ import type {
   ScheduleRuleDraft,
   ScheduleRuleConflictList,
   ScheduleRuleDetails,
+  ScheduleRuleImpactAnalysis,
   ScheduleRulePreview,
   ScheduleRulePriority,
   ScheduleRuleStatus,
@@ -68,6 +71,13 @@ const RULE_PRIORITY_LABELS: Record<ScheduleRulePriority, string> = {
 const RULE_STATUS_LABELS: Record<ScheduleRuleStatus, string> = {
   enabled: '启用',
   disabled: '停用',
+};
+
+const RULE_IMPACT_RECOMMENDATION_LABELS: Record<ScheduleRuleImpactAnalysis['rules'][number]['recommendation'], string> = {
+  loosen_rule: '建议放宽',
+  review_conflicts: '复查冲突',
+  keep_rule: '保持规则',
+  unused_rule: '暂未命中',
 };
 
 const ENERGY_LABELS: Record<ScheduleEnergyType, string> = {
@@ -126,15 +136,19 @@ export default function GoalModule() {
   const [deletedScheduleRules, setDeletedScheduleRules] = useState<PersonalScheduleRule[]>([]);
   const [scheduleRuleTemplates, setScheduleRuleTemplates] = useState<ScheduleRuleTemplate[]>([]);
   const [proposal, setProposal] = useState<ScheduleProposal | null>(null);
+  const [recentConfirmedProposal, setRecentConfirmedProposal] = useState<ScheduleProposal | null>(null);
   const [selectedProposalChangeKeys, setSelectedProposalChangeKeys] = useState<Set<string>>(new Set());
   const [proposalEditDrafts, setProposalEditDrafts] = useState<Record<string, { start: string; end: string }>>({});
   const [ruleConflicts, setRuleConflicts] = useState<ScheduleRuleConflictList | null>(null);
   const [ruleDetails, setRuleDetails] = useState<ScheduleRuleDetails | null>(null);
+  const [ruleImpactAnalysis, setRuleImpactAnalysis] = useState<ScheduleRuleImpactAnalysis | null>(null);
   const [rulePreview, setRulePreview] = useState<ScheduleRulePreview | null>(null);
   const [deletePreviewRule, setDeletePreviewRule] = useState<PersonalScheduleRule | null>(null);
   const [deletePreview, setDeletePreview] = useState<ScheduleRulePreview | null>(null);
   const [proposalBusy, setProposalBusy] = useState(false);
   const [ruleConflictBusy, setRuleConflictBusy] = useState(false);
+  const [ruleConflictActionBusy, setRuleConflictActionBusy] = useState<string | null>(null);
+  const [ruleImpactBusy, setRuleImpactBusy] = useState(false);
   const [ruleDetailsBusy, setRuleDetailsBusy] = useState<string | null>(null);
   const [rulePreviewBusy, setRulePreviewBusy] = useState(false);
   const [deletePreviewBusy, setDeletePreviewBusy] = useState<string | null>(null);
@@ -181,6 +195,7 @@ export default function GoalModule() {
   const [lastRuleParse, setLastRuleParse] = useState<AIScheduleRuleParseResult | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [aiSchedule, setAiSchedule] = useState<AIScheduleResult | null>(null);
+  const [taskStructureSummary, setTaskStructureSummary] = useState<GoalTaskStructureSummaryItem[] | null>(null);
   const [structureBusy, setStructureBusy] = useState(false);
   const [aiBusy, setAiBusy] = useState(false);
   const [deleteGoalConfirm, setDeleteGoalConfirm] = useState(false);
@@ -190,6 +205,14 @@ export default function GoalModule() {
   const scheduleInsightByTaskId = useMemo(() => new Map(scheduleInsights.map((insight) => [insight.taskId, insight])), [scheduleInsights]);
   const goalDetailSummary = useMemo(() => (selected ? buildGoalDetailSummary(selected, tasks) : null), [selected, tasks]);
   const proposalImpact = useMemo(() => (proposal ? buildScheduleProposalImpact(proposal) : null), [proposal]);
+  const proposalExplanationByKey = useMemo(() => {
+    const map = new Map<string, ScheduleProposal['explanations'][number]>();
+    proposal?.explanations.forEach((explanation) => {
+      if (explanation.changeKey) map.set(explanation.changeKey, explanation);
+      if (!map.has(`task:${explanation.taskId}`)) map.set(`task:${explanation.taskId}`, explanation);
+    });
+    return map;
+  }, [proposal]);
 
   useEffect(() => {
     setEditingGoal(false);
@@ -229,11 +252,16 @@ export default function GoalModule() {
     if (!selectedId) {
       setTasks([]);
       setScheduleInsights([]);
+      setRecentConfirmedProposal(null);
       return;
     }
-    const tree = await api.getGoalTree(selectedId);
+    const [tree, latestProposal] = await Promise.all([
+      api.getGoalTree(selectedId),
+      api.getLatestConfirmedScheduleProposal(selectedId),
+    ]);
     setTasks(tree.tasks);
     setScheduleInsights(tree.scheduleInsights ?? []);
+    setRecentConfirmedProposal(latestProposal);
   }, [selectedId]);
 
   const loadRules = useCallback(async () => {
@@ -265,10 +293,13 @@ export default function GoalModule() {
 
   useEffect(() => {
     setAiSchedule(null);
+    setTaskStructureSummary(null);
     setProposalWithSelection(null);
+    setRecentConfirmedProposal(null);
     setSelectedProposalChangeKeys(new Set());
     setRuleConflicts(null);
     setRuleDetails(null);
+    setRuleImpactAnalysis(null);
     setDeletePreviewRule(null);
     setDeletePreview(null);
     setDeleteGoalConfirm(false);
@@ -617,6 +648,42 @@ export default function GoalModule() {
     }
   }
 
+  async function showRuleImpactAnalysis() {
+    setRuleImpactBusy(true);
+    try {
+      setRuleImpactAnalysis(await api.getScheduleRuleImpactAnalysis());
+      setError(null);
+    } catch (e) {
+      setError((e as Error).message);
+    } finally {
+      setRuleImpactBusy(false);
+    }
+  }
+
+  async function applyRuleConflictAction(conflictId: string, action: ScheduleRuleConflictAction) {
+    const busyKey = `${conflictId}:${action.type}:${action.type === 'reschedule' ? action.goalId : action.ruleId}`;
+    setRuleConflictActionBusy(busyKey);
+    try {
+      if (action.type === 'reschedule') {
+        const next = await api.createScheduleProposal(action.goalId, action.proposalInput);
+        setSelectedId(action.goalId);
+        setProposalWithSelection(next);
+        await loadDashboard();
+      } else if (action.type === 'disable_rule') {
+        await api.updateScheduleRule(action.ruleId, { status: 'disabled' });
+        await loadRules();
+        setRuleConflicts(await api.listScheduleRuleConflicts());
+      } else {
+        setRuleDetails(await api.getScheduleRuleDetails(action.ruleId));
+      }
+      setError(null);
+    } catch (e) {
+      setError((e as Error).message);
+    } finally {
+      setRuleConflictActionBusy(null);
+    }
+  }
+
   function fillRuleForm(rule: ScheduleRuleDraft) {
     setRuleName(rule.name);
     setRuleType(rule.type);
@@ -739,6 +806,16 @@ export default function GoalModule() {
     await mutate(async () => {
       const result = await api.undoScheduleProposal(proposal.id);
       setProposalWithSelection(result.proposal);
+      setRecentConfirmedProposal(null);
+    });
+  }
+
+  async function undoRecentConfirmedProposal() {
+    if (!recentConfirmedProposal) return;
+    await mutate(async () => {
+      const result = await api.undoScheduleProposal(recentConfirmedProposal.id);
+      setProposalWithSelection(result.proposal);
+      setRecentConfirmedProposal(null);
     });
   }
 
@@ -859,7 +936,8 @@ export default function GoalModule() {
     }
     setStructureBusy(true);
     try {
-      await api.structureGoalTasks(selected.id);
+      const result = await api.structureGoalTasks(selected.id);
+      setTaskStructureSummary(buildGoalTaskStructureSummary(result));
       await reload();
       setError(null);
     } catch (e) {
@@ -993,6 +1071,21 @@ export default function GoalModule() {
           )}
         </header>
 
+        {selected && recentConfirmedProposal && (
+          <section className="goal-recent-undo" role="status">
+            <div>
+              <strong>最近排期可撤销</strong>
+              <span>
+                {recentConfirmedProposal.changes.filter((change) => change.confirmed).length} 个时间块 ·{' '}
+                {recentConfirmedProposal.confirmedAt ? formatDateTime(recentConfirmedProposal.confirmedAt) : formatDateTime(recentConfirmedProposal.createdAt)}
+              </span>
+            </div>
+            <button type="button" onClick={() => void undoRecentConfirmedProposal()}>
+              撤销最近排期
+            </button>
+          </section>
+        )}
+
         {selected && (
           <section className="goal-summary">
             {editingGoal ? (
@@ -1050,6 +1143,45 @@ export default function GoalModule() {
                 </div>
               </div>
             )}
+          </section>
+        )}
+
+        {taskStructureSummary && (
+          <section className="goal-structure-summary">
+            <div className="goal-section-head">
+              <strong>任务属性识别结果</strong>
+              <div>
+                <span>{taskStructureSummary.length} 个任务已回写</span>
+                <button type="button" onClick={() => setTaskStructureSummary(null)}>
+                  关闭
+                </button>
+              </div>
+            </div>
+            <ul>
+              {taskStructureSummary.map((item) => {
+                const task = tasks.find((candidate) => candidate.id === item.taskId);
+                return (
+                  <li key={item.taskId}>
+                    <div>
+                      <span>{item.title}</span>
+                      {item.reason && <em>{item.reason}</em>}
+                      <div className="goal-structure-fields">
+                        {item.changes.map((change) => (
+                          <small key={change.field}>
+                            {change.label}：{change.value}
+                          </small>
+                        ))}
+                      </div>
+                    </div>
+                    {task && (
+                      <button type="button" onClick={() => beginTaskEdit(task)}>
+                        编辑确认
+                      </button>
+                    )}
+                  </li>
+                );
+              })}
+            </ul>
           </section>
         )}
 
@@ -1210,6 +1342,9 @@ export default function GoalModule() {
                   <span>{scheduleRules.filter((rule) => rule.status === 'enabled').length} 条启用</span>
                   <button type="button" onClick={() => void showRuleConflicts()} disabled={ruleConflictBusy}>
                     {ruleConflictBusy ? '读取中' : '冲突'}
+                  </button>
+                  <button type="button" onClick={() => void showRuleImpactAnalysis()} disabled={ruleImpactBusy}>
+                    {ruleImpactBusy ? '分析中' : '影响分析'}
                   </button>
                 </div>
               </div>
@@ -1386,20 +1521,80 @@ export default function GoalModule() {
                     </span>
                   </div>
                   <ul>
-                    {ruleConflicts.conflicts.map((item) => (
-                      <li key={item.id}>
+                    {ruleConflicts.conflicts.map((item) => {
+                      const actions = buildScheduleRuleConflictActions(item);
+                      return (
+                        <li key={item.id}>
+                          <div>
+                            <span>
+                              {item.severity} · {item.type}
+                              {item.taskTitle ? ` · ${item.taskTitle}` : ''}
+                            </span>
+                            <em>{item.message}</em>
+                            {item.rules.length > 0 && <small>规则：{item.rules.map((rule) => rule.name).join('、')}</small>}
+                            {item.suggestions.length > 0 && <small>建议：{item.suggestions.join('、')}</small>}
+                            {actions.length > 0 && (
+                              <div className="goal-rule-conflict-actions">
+                                {actions.map((action) => {
+                                  const busyKey = `${item.id}:${action.type}:${action.type === 'reschedule' ? action.goalId : action.ruleId}`;
+                                  return (
+                                    <button
+                                      key={`${action.type}-${action.type === 'reschedule' ? action.goalId : action.ruleId}`}
+                                      type="button"
+                                      onClick={() => void applyRuleConflictAction(item.id, action)}
+                                      disabled={ruleConflictActionBusy === busyKey}
+                                    >
+                                      {ruleConflictActionBusy === busyKey ? '处理中' : action.label}
+                                    </button>
+                                  );
+                                })}
+                              </div>
+                            )}
+                          </div>
+                        </li>
+                      );
+                    })}
+                    {ruleConflicts.conflicts.length === 0 && <li className="goal-empty">暂无规则冲突</li>}
+                  </ul>
+                </div>
+              )}
+              {ruleImpactAnalysis && (
+                <div className="goal-rule-impact-analysis">
+                  <div className="goal-rule-details-head">
+                    <strong>规则影响分析</strong>
+                    <span>
+                      {ruleImpactAnalysis.summary.activeRuleCount} 条启用 · 命中 {ruleImpactAnalysis.summary.totalHits} 次 · 冲突{' '}
+                      {ruleImpactAnalysis.summary.totalConflicts} 次
+                    </span>
+                  </div>
+                  <div className="goal-rule-impact-grid">
+                    <div>
+                      <strong>{ruleImpactAnalysis.summary.delayRiskRuleCount}</strong>
+                      <span>延期风险规则</span>
+                    </div>
+                    <div>
+                      <strong>{ruleImpactAnalysis.proposalCount}</strong>
+                      <span>已分析方案</span>
+                    </div>
+                    <div>
+                      <strong>{ruleImpactAnalysis.summary.ruleCount}</strong>
+                      <span>规则总数</span>
+                    </div>
+                  </div>
+                  <ul>
+                    {ruleImpactAnalysis.rules.slice(0, 6).map((item) => (
+                      <li key={item.rule.id}>
                         <div>
                           <span>
-                            {item.severity} · {item.type}
-                            {item.taskTitle ? ` · ${item.taskTitle}` : ''}
+                            {item.rule.name} · {RULE_IMPACT_RECOMMENDATION_LABELS[item.recommendation]}
                           </span>
-                          <em>{item.message}</em>
-                          {item.rules.length > 0 && <small>规则：{item.rules.map((rule) => rule.name).join('、')}</small>}
-                          {item.suggestions.length > 0 && <small>建议：{item.suggestions.join('、')}</small>}
+                          <em>
+                            命中 {item.hitCount} · 冲突 {item.conflictCount} · 阻塞 {item.blockingConflictCount} · 影响任务 {item.affectedTaskCount}
+                          </em>
                         </div>
                       </li>
                     ))}
-                    {ruleConflicts.conflicts.length === 0 && <li className="goal-empty">暂无规则冲突</li>}
+                    {ruleImpactAnalysis.rules.length === 0 && <li className="goal-empty">还没有可分析的个人规则</li>}
                   </ul>
                 </div>
               )}
@@ -1591,6 +1786,12 @@ export default function GoalModule() {
                     const dragValue = getScheduleProposalStartOffsetMinutes(proposal.range, draftStartIso);
                     const dragMax = getScheduleProposalDragMaxOffsetMinutes(proposal.range, item);
                     const manualConflicts = listManualAdjustmentConflicts(proposal, item.taskId);
+                    const explanation = proposalExplanationByKey.get(item.changeKey) ?? proposalExplanationByKey.get(`task:${item.taskId}`);
+                    const matchedRules =
+                      explanation?.matchedRules.length
+                        ? explanation.matchedRules
+                        : item.ruleIds.map((id) => ({ id, name: ruleNames.get(id) ?? id }));
+                    const avoidedBlocks = explanation?.avoidedBlocks.length ? explanation.avoidedBlocks : item.avoidedBlocks;
                     return (
                       <li key={item.changeKey} className={item.conflict ? 'has-conflict' : undefined}>
                         {proposal.status === 'draft' && (
@@ -1660,18 +1861,19 @@ export default function GoalModule() {
                               ))}
                             </div>
                           )}
-                          <p>
-                            {item.reason}
-                            {item.ruleIds.length > 0 && ` · ${item.ruleIds.map((id) => ruleNames.get(id) ?? id).join('、')}`}
-                          </p>
-                          {item.avoidedBlocks.length > 0 && (
-                            <small>
-                              避让：{' '}
-                              {item.avoidedBlocks
-                                .map((block) => `${AVOIDED_SOURCE_LABELS[block.source]} ${block.title}`)
-                                .join('、')}
-                            </small>
-                          )}
+                          <div className="goal-proposal-explanation">
+                            <p>{explanation?.message || item.reason}</p>
+                            {matchedRules.length > 0 && <small>命中规则：{matchedRules.map((rule) => rule.name).join('、')}</small>}
+                            {avoidedBlocks.length > 0 && (
+                              <small>
+                                避让日程：{' '}
+                                {avoidedBlocks
+                                  .map((block) => `${AVOIDED_SOURCE_LABELS[block.source]} ${block.title}`)
+                                  .join('、')}
+                              </small>
+                            )}
+                            {explanation?.risks.length ? <small>风险原因：{explanation.risks.join('、')}</small> : null}
+                          </div>
                         </div>
                       </li>
                     );

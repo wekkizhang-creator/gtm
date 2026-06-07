@@ -82,6 +82,11 @@ router.post('/:id/schedule-proposals', (req, res) => {
   res.status(201).json({ proposal });
 });
 
+router.get('/:id/schedule-proposals/recent-confirmed', (req, res) => {
+  const proposal = scheduleRulesRepo.getLatestConfirmedScheduleProposal(requireUserId(req), req.params.id);
+  res.json({ proposal });
+});
+
 router.patch('/:id', (req, res) => {
   const goal = repo.updateGoal(requireUserId(req), req.params.id, req.body ?? {});
   if (!goal) throw new AppError(404, 'not_found', 'goal not found');

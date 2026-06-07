@@ -298,6 +298,16 @@ async function main() {
       'proposal should explain the avoided external calendar event',
     );
     assert(proposal.explanations[0].message.includes('Client Sync'), 'proposal explanation should mention the external calendar event');
+    assert(proposal.explanations[0].changeKey === proposal.changes[0].changeKey, 'proposal explanation should be tied to the concrete time-block change');
+    assert(
+      proposal.explanations[0].matchedRules.some((rule: any) => rule.id === ruleId && rule.name === 'No work after 21:30'),
+      'proposal explanation should expose matched rule metadata',
+    );
+    assert(
+      proposal.explanations[0].avoidedBlocks.some((block: any) => block.source === 'external' && block.title === 'Client Sync'),
+      'proposal explanation should expose avoided calendar blocks',
+    );
+    assert(Array.isArray(proposal.explanations[0].risks), 'proposal explanation should expose structured risk reasons');
     const plannedStart = new Date(proposal.changes[0].plannedStartAt);
     const plannedEnd = new Date(proposal.changes[0].plannedEndAt);
     assert(
@@ -329,6 +339,9 @@ async function main() {
       confirm.body.proposal.changes[0].createdReminderIds.length === 1,
       'confirmed proposal change should retain the created reminder id for undo',
     );
+    const latestConfirmed = await req(base, `/api/goals/${goalId}/schedule-proposals/recent-confirmed`, { cookie });
+    assert(latestConfirmed.res.status === 200, `latest confirmed proposal failed: ${latestConfirmed.res.status} ${JSON.stringify(latestConfirmed.body)}`);
+    assert(latestConfirmed.body.proposal?.id === proposal.id, 'latest confirmed proposal should expose the most recent undoable proposal');
 
     const dbAfterConfirm = new DatabaseSync(dbPath);
     try {
@@ -394,6 +407,9 @@ async function main() {
     assert(undo.body.proposal.status === 'undone', 'undo should mark the proposal as undone');
     assert(undo.body.tasks.length === 1, 'undo should return the restored task');
     assert(undo.body.tasks[0].reminders.length === 0, 'undo should remove reminders created by the confirmed proposal');
+    const latestAfterUndo = await req(base, `/api/goals/${goalId}/schedule-proposals/recent-confirmed`, { cookie });
+    assert(latestAfterUndo.res.status === 200, `latest after undo failed: ${latestAfterUndo.res.status} ${JSON.stringify(latestAfterUndo.body)}`);
+    assert(latestAfterUndo.body.proposal === null, 'latest confirmed proposal should disappear after undo');
 
     const undoAgain = await req(base, `/api/schedule-proposals/${proposal.id}/undo`, { method: 'POST', cookie });
     assert(undoAgain.res.status === 409, `second undo should be 409, got ${undoAgain.res.status}`);
@@ -443,6 +459,12 @@ async function main() {
     assert(
       conflictedChange.avoidedBlocks.some((block: any) => block.source === 'scheduled' && block.title === secondChange.title),
       'manual overlap should expose the affected proposal time block',
+    );
+    const editedExplanation = overlapEdit.body.proposal.explanations.find((explanation: any) => explanation.changeKey === selectedChange.changeKey);
+    assert(editedExplanation, 'manual overlap should keep a time-block explanation for the edited change');
+    assert(
+      editedExplanation.avoidedBlocks.some((block: any) => block.source === 'scheduled' && block.title === secondChange.title),
+      'manual overlap explanation should expose the affected proposal time block',
     );
     assert(
       overlapEdit.body.proposal.conflicts.some(
@@ -879,6 +901,24 @@ async function main() {
       overflowConflict.suggestions.some((suggestion: string) => suggestion.includes('deadline')),
       'rule conflict list should expose proposal suggestions',
     );
+    const conflictReplan = await req(base, `/api/goals/${overflowConflict.goalId}/schedule-proposals`, {
+      method: 'POST',
+      cookie,
+      body: JSON.stringify({
+        mode: 'reschedule',
+        trigger: `rule_conflict:${overflowConflict.id}`,
+        taskIds: overflowConflict.taskId ? [overflowConflict.taskId] : undefined,
+      }),
+    });
+    assert(conflictReplan.res.status === 201, `conflict action replan failed: ${conflictReplan.res.status} ${JSON.stringify(conflictReplan.body)}`);
+    assert(conflictReplan.body.proposal.goalId === overflowGoal.body.goal.id, 'conflict action should create a proposal for the conflict goal');
+    const conflictDisableRule = await req(base, `/api/schedule-rules/${ruleId}`, {
+      method: 'PATCH',
+      cookie,
+      body: JSON.stringify({ status: 'disabled' }),
+    });
+    assert(conflictDisableRule.res.status === 200, `conflict action disable rule failed: ${conflictDisableRule.res.status} ${JSON.stringify(conflictDisableRule.body)}`);
+    assert(conflictDisableRule.body.rule.status === 'disabled', 'conflict action should disable the referenced rule');
 
     const ruleDetails = await req(base, `/api/schedule-rules/${ruleId}/details`, { cookie });
     assert(ruleDetails.res.status === 200, `rule details failed: ${ruleDetails.res.status} ${JSON.stringify(ruleDetails.body)}`);
@@ -894,6 +934,16 @@ async function main() {
       ruleDetails.body.details.recentConflicts.some((conflict: any) => conflict.type === 'schedule_overflow'),
       'rule details should include the recent overflow conflict',
     );
+    const impactAnalysis = await req(base, '/api/schedule-rules/impact-analysis', { cookie });
+    assert(impactAnalysis.res.status === 200, `rule impact analysis failed: ${impactAnalysis.res.status} ${JSON.stringify(impactAnalysis.body)}`);
+    assert(impactAnalysis.body.analysis.summary.ruleCount >= 4, 'impact analysis should count persisted rules');
+    assert(impactAnalysis.body.analysis.summary.totalHits >= 1, 'impact analysis should count rule hits from real proposals');
+    assert(impactAnalysis.body.analysis.summary.totalConflicts >= 1, 'impact analysis should count rule conflicts from real proposals');
+    const analyzedBlockingRule = impactAnalysis.body.analysis.rules.find((item: any) => item.rule.id === ruleId);
+    assert(analyzedBlockingRule, 'impact analysis should include the blocking rule');
+    assert(analyzedBlockingRule.delayRiskCount >= 1, 'impact analysis should mark the blocking rule as a delay risk');
+    assert(analyzedBlockingRule.affectedTaskCount >= 1, 'impact analysis should count affected tasks for the rule');
+    assert(analyzedBlockingRule.recommendation === 'loosen_rule', 'delay-risk rules should recommend loosening the rule');
 
     const deletionImpactTask = await req(base, `/api/goals/${goalId}/tasks`, {
       method: 'POST',

@@ -11,6 +11,7 @@ import {
   type ScheduleProposalConflictDTO,
   type ScheduleProposalDTO,
   type ScheduleProposalExplanationDTO,
+  type ScheduleRuleImpactAnalysisDTO,
   type ScheduleRuleConflictListDTO,
   type ScheduleRuleDetailsDTO,
   type ScheduleRulePreviewDTO,
@@ -177,13 +178,29 @@ function mapProposal(row: ProposalRow): ScheduleProposalDTO {
         ? (change as any).confirmed
         : row.status === 'confirmed' || row.status === 'undone',
   }));
+  const explanations = parseJsonArray<ScheduleProposalExplanationDTO>(row.explanations_json).map((explanation): ScheduleProposalExplanationDTO => ({
+    ...explanation,
+    changeKey: typeof (explanation as any).changeKey === 'string' ? (explanation as any).changeKey : null,
+    ruleIds: Array.isArray((explanation as any).ruleIds) ? (explanation as any).ruleIds.filter((id: unknown): id is string => typeof id === 'string') : [],
+    matchedRules: Array.isArray((explanation as any).matchedRules)
+      ? (explanation as any).matchedRules.filter((rule: unknown): rule is ScheduleProposalExplanationDTO['matchedRules'][number] => {
+          const candidate = rule as Partial<ScheduleProposalExplanationDTO['matchedRules'][number]>;
+          return !!candidate && typeof candidate.id === 'string' && typeof candidate.name === 'string';
+        })
+      : [],
+    avoidedBlocks: Array.isArray((explanation as any).avoidedBlocks) ? (explanation as any).avoidedBlocks : [],
+    risks: Array.isArray((explanation as any).risks)
+      ? (explanation as any).risks.filter((risk: unknown): risk is string => typeof risk === 'string' && !!risk)
+      : [],
+    message: typeof (explanation as any).message === 'string' ? (explanation as any).message : '',
+  }));
   return {
     id: row.id,
     goalId: row.goal_id,
     status: row.status,
     range: { from: row.range_start, to: row.range_end },
     changes,
-    explanations: parseJsonArray<ScheduleProposalExplanationDTO>(row.explanations_json),
+    explanations,
     conflicts: parseJsonArray<ScheduleProposalConflictDTO>(row.conflicts_json),
     riskScore: row.risk_score,
     createdAt: row.created_at,
@@ -644,6 +661,51 @@ function matchingEnergyRuleIds(task: TaskRow, rules: PersonalScheduleRuleDTO[]):
     .map((rule) => rule.id);
 }
 
+function matchedRuleSummaries(
+  ruleIds: string[],
+  rules: PersonalScheduleRuleDTO[],
+): ScheduleProposalExplanationDTO['matchedRules'] {
+  const byId = new Map(rules.map((rule) => [rule.id, rule]));
+  return Array.from(new Set(ruleIds))
+    .map((id) => byId.get(id))
+    .filter((rule): rule is PersonalScheduleRuleDTO => !!rule)
+    .map((rule) => ({
+      id: rule.id,
+      name: rule.name,
+      type: rule.type,
+      priority: rule.priority,
+    }));
+}
+
+function scheduleRiskMessages(task: TaskRow, plannedEndAt: string): string[] {
+  const risks: string[] = [];
+  const due = typeof task.due_date === 'string' && task.due_date ? new Date(task.due_date) : null;
+  const end = new Date(plannedEndAt);
+  if (due && !Number.isNaN(due.getTime()) && !Number.isNaN(end.getTime()) && end > due) {
+    risks.push(`Planned end is later than the task deadline ${due.toISOString()}.`);
+  }
+  return risks;
+}
+
+function explanationMessage(input: {
+  base: string;
+  matchedRules: ScheduleProposalExplanationDTO['matchedRules'];
+  avoidedBlocks: ScheduleProposalAvoidedBlockDTO[];
+  risks: string[];
+}): string {
+  const parts = [input.base];
+  if (input.matchedRules.length) {
+    parts.push(`Matched rules: ${input.matchedRules.map((rule) => rule.name).join(', ')}.`);
+  }
+  if (input.avoidedBlocks.length) {
+    parts.push(`Avoided: ${input.avoidedBlocks.map((block) => `${block.title} (${block.source})`).join(', ')}.`);
+  }
+  if (input.risks.length) {
+    parts.push(`Risks: ${input.risks.join(' ')}`);
+  }
+  return parts.join(' ');
+}
+
 function riskScore(conflicts: ScheduleProposalConflictDTO[]): number {
   return Math.min(
     100,
@@ -857,6 +919,112 @@ export function listScheduleRuleConflicts(userId: string, opts: { limit?: number
       warning: conflicts.filter((item) => item.severity === 'warning').length,
       info: conflicts.filter((item) => item.severity === 'info').length,
     },
+  };
+}
+
+function ruleImpactRecommendation(input: {
+  hitCount: number;
+  conflictCount: number;
+  blockingConflictCount: number;
+  delayRiskCount: number;
+}): ScheduleRuleImpactAnalysisDTO['rules'][number]['recommendation'] {
+  if (input.delayRiskCount > 0 || input.blockingConflictCount > 0) return 'loosen_rule';
+  if (input.conflictCount > 0) return 'review_conflicts';
+  if (input.hitCount > 0) return 'keep_rule';
+  return 'unused_rule';
+}
+
+export function getScheduleRuleImpactAnalysis(userId: string): ScheduleRuleImpactAnalysisDTO {
+  const rules = listScheduleRules(userId, { includeDeleted: true });
+  const proposals = (
+    db.prepare('SELECT * FROM schedule_proposals WHERE user_id = ? ORDER BY created_at DESC LIMIT 500').all(userId) as ProposalRow[]
+  ).map(mapProposal);
+  type RuleStats = {
+    rule: PersonalScheduleRuleDTO;
+    hitCount: number;
+    conflictCount: number;
+    blockingConflictCount: number;
+    delayRiskCount: number;
+    affectedTaskIds: Set<string>;
+    latestImpactAt: string | null;
+  };
+  const stats = new Map<string, RuleStats>(
+    rules.map((rule) => [
+      rule.id,
+      {
+        rule,
+        hitCount: 0,
+        conflictCount: 0,
+        blockingConflictCount: 0,
+        delayRiskCount: 0,
+        affectedTaskIds: new Set<string>(),
+        latestImpactAt: null,
+      },
+    ]),
+  );
+  const touch = (ruleId: string, createdAt: string): RuleStats | null => {
+    const item = stats.get(ruleId);
+    if (!item) return null;
+    if (!item.latestImpactAt || createdAt > item.latestImpactAt) item.latestImpactAt = createdAt;
+    return item;
+  };
+  for (const proposal of proposals) {
+    for (const change of proposal.changes) {
+      for (const ruleId of Array.from(new Set(change.ruleIds))) {
+        const item = touch(ruleId, proposal.createdAt);
+        if (!item) continue;
+        item.hitCount += 1;
+        item.affectedTaskIds.add(change.taskId);
+      }
+    }
+    for (const conflict of proposal.conflicts) {
+      for (const ruleId of Array.from(new Set(conflict.ruleIds))) {
+        const item = touch(ruleId, proposal.createdAt);
+        if (!item) continue;
+        item.conflictCount += 1;
+        if (conflict.severity === 'blocking') item.blockingConflictCount += 1;
+        if (conflict.severity === 'blocking' || conflict.type === 'schedule_overflow') item.delayRiskCount += 1;
+        if (conflict.taskId) item.affectedTaskIds.add(conflict.taskId);
+      }
+    }
+  }
+  const items = [...stats.values()]
+    .map((item) => ({
+      rule: {
+        id: item.rule.id,
+        name: item.rule.name,
+        type: item.rule.type,
+        priority: item.rule.priority,
+        status: item.rule.status,
+        deletedAt: item.rule.deletedAt,
+      },
+      hitCount: item.hitCount,
+      conflictCount: item.conflictCount,
+      blockingConflictCount: item.blockingConflictCount,
+      delayRiskCount: item.delayRiskCount,
+      affectedTaskCount: item.affectedTaskIds.size,
+      latestImpactAt: item.latestImpactAt,
+      recommendation: ruleImpactRecommendation(item),
+    }))
+    .sort(
+      (a, b) =>
+        b.delayRiskCount - a.delayRiskCount ||
+        b.conflictCount - a.conflictCount ||
+        b.hitCount - a.hitCount ||
+        (b.latestImpactAt ?? '').localeCompare(a.latestImpactAt ?? '') ||
+        a.rule.name.localeCompare(b.rule.name),
+    );
+  return {
+    generatedAt: nowISO(),
+    proposalCount: proposals.length,
+    summary: {
+      ruleCount: items.length,
+      activeRuleCount: items.filter((item) => item.rule.status === 'enabled' && !item.rule.deletedAt).length,
+      totalHits: items.reduce((sum, item) => sum + item.hitCount, 0),
+      totalConflicts: items.reduce((sum, item) => sum + item.conflictCount, 0),
+      delayRiskRuleCount: items.filter((item) => item.delayRiskCount > 0).length,
+    },
+    rules: items,
   };
 }
 
@@ -1152,11 +1320,14 @@ export function createScheduleProposal(userId: string, goalId: string, input: Re
       const segmentLabel = isSplit ? ` segment ${index + 1}/${durations.length}` : '';
       const operation = isSplit ? 'create_split_segment' : 'schedule_task';
       const segmentIndex = isSplit ? index + 1 : null;
+      const changeKey = scheduleChangeKey({ taskId: row.id, operation, segmentIndex, plannedStartAt });
+      const matchedRules = matchedRuleSummaries(ruleIds, ruleList);
+      const risks = scheduleRiskMessages(row, plannedEndAt);
       const reason = avoidedText
         ? `Scheduled${segmentLabel} for ${duration} minutes inside ${window.startHour}:00-${window.endHour}:00 after avoiding ${avoidedText}.`
         : `Scheduled${segmentLabel} for ${duration} minutes inside ${window.startHour}:00-${window.endHour}:00 with no calendar conflicts.`;
       changes.push({
-        changeKey: scheduleChangeKey({ taskId: row.id, operation, segmentIndex, plannedStartAt }),
+        changeKey,
         taskId: row.id,
         title: isSplit ? `${row.title} (${index + 1}/${durations.length})` : row.title,
         operation,
@@ -1182,9 +1353,13 @@ export function createScheduleProposal(userId: string, goalId: string, input: Re
           ? `${row.title}${segmentLabel} matched its energy preference and was placed in the first conflict-free slot.`
           : `${row.title}${segmentLabel} was placed in the first conflict-free slot that satisfied the work window and blocking rules.`;
       explanations.push({
+        changeKey,
         taskId: row.id,
         ruleIds,
-        message: avoidedText ? `${baseExplanation} It avoided ${avoidedText}.` : baseExplanation,
+        matchedRules,
+        avoidedBlocks,
+        risks,
+        message: explanationMessage({ base: baseExplanation, matchedRules, avoidedBlocks, risks }),
       });
       busySlots.push({ start: slot.start, end: addMinutes(slot.end, bufferMinutes), source: 'scheduled', label: isSplit ? `${row.title} (${index + 1}/${durations.length})` : row.title });
       cursor = addMinutes(slot.end, bufferMinutes);
@@ -1232,6 +1407,21 @@ export function createScheduleProposal(userId: string, goalId: string, input: Re
 
 export function getScheduleProposal(userId: string, id: string): ScheduleProposalDTO | null {
   const row = db.prepare('SELECT * FROM schedule_proposals WHERE user_id = ? AND id = ?').get(userId, id) as ProposalRow | undefined;
+  return row ? mapProposal(row) : null;
+}
+
+export function getLatestConfirmedScheduleProposal(userId: string, goalId: string): ScheduleProposalDTO | null {
+  const goal = getGoal(userId, goalId);
+  if (!goal) throw new AppError(404, 'not_found', 'goal not found');
+  const row = db
+    .prepare(
+      `SELECT *
+       FROM schedule_proposals
+       WHERE user_id = ? AND goal_id = ? AND status = 'confirmed'
+       ORDER BY confirmed_at DESC, created_at DESC
+       LIMIT 1`,
+    )
+    .get(userId, goalId) as ProposalRow | undefined;
   return row ? mapProposal(row) : null;
 }
 
@@ -1311,8 +1501,32 @@ export function updateScheduleProposalChange(
     (conflict) => conflict.type !== 'manual_adjustment_conflict' || conflict.taskId !== target.taskId,
   );
   const conflicts = mergeConflicts(mergeConflicts(existingConflicts, ruleConflicts), manualConflicts);
-  db.prepare('UPDATE schedule_proposals SET changes_json = ?, conflicts_json = ?, risk_score = ? WHERE user_id = ? AND id = ?').run(
+  const taskRow = db.prepare('SELECT * FROM tasks WHERE user_id = ? AND id = ?').get(userId, target.taskId) as TaskRow | undefined;
+  const matchedRules = matchedRuleSummaries(target.ruleIds, ruleList);
+  const risks = taskRow ? scheduleRiskMessages(taskRow, target.plannedEndAt) : [];
+  const explanations = proposal.explanations.map((explanation) => ({ ...explanation }));
+  const explanationIndex = explanations.findIndex(
+    (explanation) => explanation.changeKey === target.changeKey || (!explanation.changeKey && explanation.taskId === target.taskId),
+  );
+  const manualExplanation: ScheduleProposalExplanationDTO = {
+    changeKey: target.changeKey,
+    taskId: target.taskId,
+    ruleIds: target.ruleIds,
+    matchedRules,
+    avoidedBlocks: target.avoidedBlocks,
+    risks,
+    message: explanationMessage({
+      base: target.reason,
+      matchedRules,
+      avoidedBlocks: target.avoidedBlocks,
+      risks,
+    }),
+  };
+  if (explanationIndex >= 0) explanations[explanationIndex] = manualExplanation;
+  else explanations.push(manualExplanation);
+  db.prepare('UPDATE schedule_proposals SET changes_json = ?, explanations_json = ?, conflicts_json = ?, risk_score = ? WHERE user_id = ? AND id = ?').run(
     JSON.stringify(changes),
+    JSON.stringify(explanations),
     JSON.stringify(conflicts),
     riskScore(conflicts),
     userId,

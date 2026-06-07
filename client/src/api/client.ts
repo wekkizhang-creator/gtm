@@ -60,6 +60,7 @@ import type {
   ScheduleProposal,
   ScheduleRuleConflictList,
   ScheduleRuleDetails,
+  ScheduleRuleImpactAnalysis,
   ScheduleRulePreview,
   ScheduleRulePriority,
   ScheduleRuleStatus,
@@ -547,6 +548,8 @@ export const api = {
       method: 'POST',
       body: JSON.stringify(input),
     }).then((r) => r.proposal),
+  getLatestConfirmedScheduleProposal: (goalId: string) =>
+    req<{ proposal: ScheduleProposal | null }>(`/goals/${goalId}/schedule-proposals/recent-confirmed`).then((r) => r.proposal),
   getScheduleProposal: (id: string) =>
     req<{ proposal: ScheduleProposal }>(`/schedule-proposals/${id}`).then((r) => r.proposal),
   updateScheduleProposalChange: (id: string, changeKey: string, input: { plannedStartAt: string; plannedEndAt: string }) =>
@@ -574,6 +577,8 @@ export const api = {
     req<{ preview: ScheduleRulePreview }>('/schedule-rules/preview', { method: 'POST', body: JSON.stringify(input) }).then((r) => r.preview),
   listScheduleRuleConflicts: (limit = 50) =>
     req<ScheduleRuleConflictList>(`/schedule-rules/conflicts?limit=${encodeURIComponent(String(limit))}`),
+  getScheduleRuleImpactAnalysis: () =>
+    req<{ analysis: ScheduleRuleImpactAnalysis }>('/schedule-rules/impact-analysis').then((r) => r.analysis),
   getScheduleRuleDetails: (id: string) =>
     req<{ details: ScheduleRuleDetails }>(`/schedule-rules/${id}/details`).then((r) => r.details),
   updateScheduleRule: (id: string, patch: UpdateScheduleRuleInput) =>

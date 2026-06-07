@@ -36,6 +36,10 @@ router.get('/conflicts', (req, res) => {
   res.json(repo.listScheduleRuleConflicts(requireUserId(req), { limit }));
 });
 
+router.get('/impact-analysis', (req, res) => {
+  res.json({ analysis: repo.getScheduleRuleImpactAnalysis(requireUserId(req)) });
+});
+
 router.get('/:id/details', (req, res) => {
   const details = repo.getScheduleRuleDetails(requireUserId(req), req.params.id);
   if (!details) throw new AppError(404, 'not_found', 'rule not found');

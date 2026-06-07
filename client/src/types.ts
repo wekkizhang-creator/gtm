@@ -330,8 +330,12 @@ export interface ScheduleProposalChange {
 }
 
 export interface ScheduleProposalExplanation {
+  changeKey?: string | null;
   taskId: string;
   ruleIds: string[];
+  matchedRules: Array<{ id: string; name: string; type: ScheduleRuleType; priority: ScheduleRulePriority }>;
+  avoidedBlocks: ScheduleProposalAvoidedBlock[];
+  risks: string[];
   message: string;
 }
 
@@ -454,6 +458,37 @@ export interface ScheduleRuleConflictList {
     warning: number;
     info: number;
   };
+}
+
+export interface ScheduleRuleImpactAnalysisItem {
+  rule: {
+    id: string;
+    name: string;
+    type: ScheduleRuleType;
+    priority: ScheduleRulePriority;
+    status: ScheduleRuleStatus;
+    deletedAt: string | null;
+  };
+  hitCount: number;
+  conflictCount: number;
+  blockingConflictCount: number;
+  delayRiskCount: number;
+  affectedTaskCount: number;
+  latestImpactAt: string | null;
+  recommendation: 'loosen_rule' | 'review_conflicts' | 'keep_rule' | 'unused_rule';
+}
+
+export interface ScheduleRuleImpactAnalysis {
+  generatedAt: string;
+  proposalCount: number;
+  summary: {
+    ruleCount: number;
+    activeRuleCount: number;
+    totalHits: number;
+    totalConflicts: number;
+    delayRiskRuleCount: number;
+  };
+  rules: ScheduleRuleImpactAnalysisItem[];
 }
 
 export interface Notification {

@@ -280,8 +280,12 @@ export interface ScheduleProposalChangeDTO {
 }
 
 export interface ScheduleProposalExplanationDTO {
+  changeKey?: string | null;
   taskId: string;
   ruleIds: string[];
+  matchedRules: Array<{ id: string; name: string; type: ScheduleRuleType; priority: ScheduleRulePriority }>;
+  avoidedBlocks: ScheduleProposalAvoidedBlockDTO[];
+  risks: string[];
   message: string;
 }
 
@@ -404,6 +408,37 @@ export interface ScheduleRuleConflictListDTO {
     warning: number;
     info: number;
   };
+}
+
+export interface ScheduleRuleImpactAnalysisItemDTO {
+  rule: {
+    id: string;
+    name: string;
+    type: ScheduleRuleType;
+    priority: ScheduleRulePriority;
+    status: ScheduleRuleStatus;
+    deletedAt: string | null;
+  };
+  hitCount: number;
+  conflictCount: number;
+  blockingConflictCount: number;
+  delayRiskCount: number;
+  affectedTaskCount: number;
+  latestImpactAt: string | null;
+  recommendation: 'loosen_rule' | 'review_conflicts' | 'keep_rule' | 'unused_rule';
+}
+
+export interface ScheduleRuleImpactAnalysisDTO {
+  generatedAt: string;
+  proposalCount: number;
+  summary: {
+    ruleCount: number;
+    activeRuleCount: number;
+    totalHits: number;
+    totalConflicts: number;
+    delayRiskRuleCount: number;
+  };
+  rules: ScheduleRuleImpactAnalysisItemDTO[];
 }
 
 export interface NotificationDTO {
