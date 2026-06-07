@@ -3272,3 +3272,33 @@ Optional environment knobs:
 ### Verification
 
 `npm run test:auth` now configures a two-attempt lockout, registers a real email-password account through SMTP, verifies the first wrong password returns `401 invalid_credentials`, verifies the second wrong password returns `423 password_login_locked`, verifies the correct password is still blocked while locked, resets the password through the real SMTP verification flow, logs in with the new password, and checks SQLite password credential state plus a `password_login_locked` security audit row.
+
+## Slice 124: Account Password Change
+
+AUTH-13 now exposes a real logged-in password-change flow in account settings. Users who know their current password can change the email-password credential without going through the password-reset email flow, and the backend writes the new password through the same salted `scrypt` credential path.
+
+### API Contract
+
+`PUT /api/account/password` requires an authenticated session and accepts:
+
+```json
+{
+  "currentPassword": "OldPassword123!",
+  "newPassword": "NewPassword123!"
+}
+```
+
+Behavior:
+
+- Missing or incorrect `currentPassword` returns `401 invalid_credentials`.
+- Invalid `newPassword` length returns `400 invalid_password`.
+- Accounts without a password credential return `409 password_not_set`.
+- Success returns `{ "user": ... }`, writes a new password hash, resets `failed_attempt_count`, `locked_until`, and `last_failed_at`, and writes an `account_password_changed` security audit row.
+
+### Client Contract
+
+The account settings page now shows a "修改登录密码" row with current password, new password, and confirmation inputs. The client performs only basic length and confirmation checks before calling the real API; backend errors are surfaced from the real response.
+
+### Verification
+
+`npm run test:auth` verifies wrong-current-password change fails, weak new password fails, a valid logged-in password change succeeds, the old password can no longer log in, the new password can log in, SQLite failed-password state is cleared, and one `account_password_changed` audit row is persisted.

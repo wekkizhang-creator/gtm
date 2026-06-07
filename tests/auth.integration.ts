@@ -497,6 +497,52 @@ async function main() {
     assert(newPasswordAfterReset.res.status === 200, `new password should login after reset, got ${newPasswordAfterReset.res.status}`);
     cookiesFrom(newPasswordAfterReset.res);
 
+    const wrongCurrentPasswordChange = await req(base, '/api/account/password', {
+      method: 'PUT',
+      cookie: userACookie,
+      body: JSON.stringify({ currentPassword: 'WrongCurrent123!', newPassword: 'ChangedPass123!' }),
+    });
+    assert(wrongCurrentPasswordChange.res.status === 401, `wrong current password change should be 401, got ${wrongCurrentPasswordChange.res.status}`);
+    assert(wrongCurrentPasswordChange.body.error.code === 'invalid_credentials', 'wrong current password change should return invalid_credentials');
+
+    const weakAccountPasswordChange = await req(base, '/api/account/password', {
+      method: 'PUT',
+      cookie: userACookie,
+      body: JSON.stringify({ currentPassword: 'NewPassword123!', newPassword: 'short' }),
+    });
+    assert(weakAccountPasswordChange.res.status === 400, `weak account password change should be 400, got ${weakAccountPasswordChange.res.status}`);
+    assert(weakAccountPasswordChange.body.error.code === 'invalid_password', 'weak account password change should return invalid_password');
+
+    const accountPasswordChange = await req(base, '/api/account/password', {
+      method: 'PUT',
+      cookie: userACookie,
+      body: JSON.stringify({ currentPassword: 'NewPassword123!', newPassword: 'ChangedPass123!' }),
+    });
+    assert(accountPasswordChange.res.status === 200, `account password change should succeed, got ${accountPasswordChange.res.status}`);
+    assert(accountPasswordChange.body.user.id === aliceStillActive.body.user.id, 'account password change should keep the same user id');
+
+    const oldChangedPasswordLogin = await req(base, '/api/auth/login/password', {
+      method: 'POST',
+      body: JSON.stringify({
+        email: 'alice@example.com',
+        password: 'NewPassword123!',
+        device: { deviceId: 'alice-old-changed-password', platform: 'Web' },
+      }),
+    });
+    assert(oldChangedPasswordLogin.res.status === 401, `old changed password should fail, got ${oldChangedPasswordLogin.res.status}`);
+    assert(oldChangedPasswordLogin.body.error.code === 'invalid_credentials', 'old changed password should return invalid_credentials');
+
+    const newChangedPasswordLogin = await req(base, '/api/auth/login/password', {
+      method: 'POST',
+      body: JSON.stringify({
+        email: 'alice@example.com',
+        password: 'ChangedPass123!',
+        device: { deviceId: 'alice-new-changed-password', platform: 'Web' },
+      }),
+    });
+    assert(newChangedPasswordLogin.res.status === 200, `changed password should login, got ${newChangedPasswordLogin.res.status}`);
+    cookiesFrom(newChangedPasswordLogin.res);
+
     const logout = await req(base, '/api/auth/logout', { method: 'POST', cookie: userACookie });
     assert(logout.res.status === 204, `logout failed: ${logout.res.status}`);
     const afterLogout = await req(base, '/api/tasks?view=active', { cookie: userACookie });
@@ -518,23 +564,36 @@ async function main() {
            WHERE ai.type = 'email' AND ai.identifier_hash = ?`,
         )
         .get(identifierHash('email', lockEmail)) as { failed_attempt_count: number; locked_until: string | null; last_failed_at: string | null };
+      const aliceCredential = db
+        .prepare(
+          `SELECT pc.failed_attempt_count, pc.locked_until, pc.last_failed_at
+           FROM auth_password_credentials pc
+           JOIN auth_identities ai ON ai.user_id = pc.user_id
+           WHERE ai.type = 'email' AND ai.identifier_hash = ?`,
+        )
+        .get(identifierHash('email', 'alice@example.com')) as { failed_attempt_count: number; locked_until: string | null; last_failed_at: string | null };
       const blockedIdentifierRows = db
         .prepare("SELECT COUNT(*) c FROM verification_codes WHERE display_identifier = 'ri**********@example.com'")
         .get() as { c: number };
       const auditRiskRows = db.prepare("SELECT COUNT(*) c FROM security_audit_logs WHERE action LIKE 'auth_risk_%'").get() as { c: number };
       const passwordLockAuditRows = db.prepare("SELECT COUNT(*) c FROM security_audit_logs WHERE action = 'password_login_locked'").get() as { c: number };
+      const passwordChangeAuditRows = db.prepare("SELECT COUNT(*) c FROM security_audit_logs WHERE action = 'account_password_changed'").get() as { c: number };
       assert(users.c === 4, `expected 4 users in DB, got ${users.c}`);
       assert(tasks.c === 1, `expected 1 task in DB, got ${tasks.c}`);
       assert(consumedCodes.c === 6, `expected 6 consumed codes, got ${consumedCodes.c}`);
-      assert(sessions.c === 9, `expected 9 login sessions, got ${sessions.c}`);
+      assert(sessions.c === 10, `expected 10 login sessions, got ${sessions.c}`);
       assert(revokedSessions.c === 2, `expected 2 revoked sessions, got ${revokedSessions.c}`);
       assert(passwordCredentials.c === 4, `expected 4 password credentials, got ${passwordCredentials.c}`);
       assert(lockCredential.failed_attempt_count === 0, 'password reset should clear failed password attempts');
       assert(lockCredential.locked_until === null, 'password reset should clear password login lock');
       assert(lockCredential.last_failed_at === null, 'password reset should clear last failed password timestamp');
+      assert(aliceCredential.failed_attempt_count === 0, 'successful account password change and login should clear Alice failed attempts');
+      assert(aliceCredential.locked_until === null, 'account password change should leave Alice password unlocked');
+      assert(aliceCredential.last_failed_at === null, 'successful changed-password login should clear Alice last failed timestamp');
       assert(blockedIdentifierRows.c === 0, 'blocked identifier should not create verification code rows');
       assert(auditRiskRows.c === 2, `expected 2 risk audit rows, got ${auditRiskRows.c}`);
       assert(passwordLockAuditRows.c === 1, `expected one password lock audit row, got ${passwordLockAuditRows.c}`);
+      assert(passwordChangeAuditRows.c === 1, `expected one password change audit row, got ${passwordChangeAuditRows.c}`);
     } finally {
       db.close();
     }

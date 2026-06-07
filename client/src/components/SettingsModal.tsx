@@ -213,6 +213,12 @@ export default function SettingsModal({ open, onClose }: { open: boolean; onClos
   const [bindMessage, setBindMessage] = useState<string | null>(null);
   const [bindError, setBindError] = useState<string | null>(null);
   const [accountEmailMasked, setAccountEmailMasked] = useState(user.emailMasked);
+  const [passwordCurrent, setPasswordCurrent] = useState('');
+  const [passwordNext, setPasswordNext] = useState('');
+  const [passwordConfirm, setPasswordConfirm] = useState('');
+  const [passwordBusy, setPasswordBusy] = useState(false);
+  const [passwordMessage, setPasswordMessage] = useState<string | null>(null);
+  const [passwordError, setPasswordError] = useState<string | null>(null);
   const [localCache, setLocalCache] = useState<(LocalCacheSummary & { pendingSyncCount: number }) | null>(null);
   const [syncStatus, setSyncStatus] = useState<AccountSyncStatus | null>(null);
   const [syncStatusError, setSyncStatusError] = useState<string | null>(null);
@@ -823,6 +829,31 @@ export default function SettingsModal({ open, onClose }: { open: boolean; onClos
       setBindError((err as Error).message);
     } finally {
       setBindBusy(false);
+    }
+  }
+
+  async function changeAccountPassword() {
+    setPasswordMessage(null);
+    setPasswordError(null);
+    if (passwordNext.length < 8 || passwordNext.length > 128) {
+      setPasswordError('密码需为 8 到 128 个字符');
+      return;
+    }
+    if (passwordNext !== passwordConfirm) {
+      setPasswordError('两次输入的新密码不一致');
+      return;
+    }
+    setPasswordBusy(true);
+    try {
+      await api.changeAccountPassword({ currentPassword: passwordCurrent, newPassword: passwordNext });
+      setPasswordCurrent('');
+      setPasswordNext('');
+      setPasswordConfirm('');
+      setPasswordMessage('登录密码已更新');
+    } catch (err) {
+      setPasswordError((err as Error).message);
+    } finally {
+      setPasswordBusy(false);
     }
   }
 
@@ -1986,6 +2017,45 @@ export default function SettingsModal({ open, onClose }: { open: boolean; onClos
               <Row label="账号状态"><span className="set-static">{user.status}</span></Row>
               <Row label="当前设备"><span className="set-static">{session.deviceName ?? session.deviceId}</span></Row>
               <Row label="最近活跃"><span className="set-static">{new Date(session.lastActiveAt).toLocaleString()}</span></Row>
+              <Row label="修改登录密码" hint="需要输入当前密码；保存后会使用新的邮箱密码登录。">
+                <div className="set-stack">
+                  <div className="set-actions compact">
+                    <input
+                      type="password"
+                      value={passwordCurrent}
+                      placeholder="当前密码"
+                      autoComplete="current-password"
+                      onChange={(e) => setPasswordCurrent(e.target.value)}
+                      disabled={passwordBusy}
+                    />
+                    <input
+                      type="password"
+                      value={passwordNext}
+                      placeholder="新密码"
+                      autoComplete="new-password"
+                      onChange={(e) => setPasswordNext(e.target.value)}
+                      disabled={passwordBusy}
+                    />
+                    <input
+                      type="password"
+                      value={passwordConfirm}
+                      placeholder="确认新密码"
+                      autoComplete="new-password"
+                      onChange={(e) => setPasswordConfirm(e.target.value)}
+                      disabled={passwordBusy}
+                    />
+                    <button
+                      className="btn-primary"
+                      onClick={() => void changeAccountPassword()}
+                      disabled={passwordBusy || !passwordCurrent || !passwordNext || !passwordConfirm}
+                    >
+                      {passwordBusy ? '保存中...' : '保存密码'}
+                    </button>
+                  </div>
+                  {passwordMessage && <div className="set-feedback success">{passwordMessage}</div>}
+                  {passwordError && <div className="set-feedback error">{passwordError}</div>}
+                </div>
+              </Row>
               <Row label="同步状态" hint="读取服务端同步操作记录，并合并当前浏览器的离线队列数量。">
                 <div className="set-stack">
                   <span className="set-static">

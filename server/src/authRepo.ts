@@ -834,6 +834,25 @@ export function updateAccount(userId: string, patch: { nickname?: unknown; avata
   return getAccount(userId);
 }
 
+export function changeAccountPassword(userId: string, input: { currentPassword?: unknown; newPassword?: unknown }): UserDTO {
+  const user = getAccount(userId);
+  assertActiveUser(user);
+  if (typeof input.currentPassword !== 'string') {
+    throw new AppError(401, 'invalid_credentials', 'current password is incorrect');
+  }
+  assertPassword(input.newPassword);
+  const credential = db.prepare('SELECT password_hash FROM auth_password_credentials WHERE user_id = ?').get(userId) as
+    | { password_hash: string }
+    | undefined;
+  if (!credential) throw new AppError(409, 'password_not_set', 'email account has not set a password');
+  if (!verifyPassword(input.currentPassword, credential.password_hash)) {
+    recordPasswordFailure(userId);
+    throw new AppError(401, 'invalid_credentials', 'current password is incorrect');
+  }
+  setPasswordCredential(userId, input.newPassword);
+  return getAccount(userId);
+}
+
 function mapIdentity(row: any): AccountIdentityDTO {
   return {
     id: row.id,

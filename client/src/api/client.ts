@@ -377,6 +377,8 @@ export const api = {
   getAccount: () => req<{ user: User }>('/account').then((r) => r.user),
   updateAccount: (patch: { nickname?: string | null; avatarUrl?: string | null }) =>
     req<{ user: User }>('/account', { method: 'PATCH', body: JSON.stringify(patch) }).then((r) => r.user),
+  changeAccountPassword: (input: { currentPassword: string; newPassword: string }) =>
+    req<{ user: User }>('/account/password', { method: 'PUT', body: JSON.stringify(input) }).then((r) => r.user),
   getAccountOnboarding: () => req<{ onboarding: AccountOnboarding }>('/account/onboarding').then((r) => r.onboarding),
   listAccountSessions: () => req<{ sessions: AuthSession[] }>('/account/sessions').then((r) => r.sessions),
   revokeAccountSession: (id: string) => req<void>(`/account/sessions/${id}`, { method: 'DELETE' }),

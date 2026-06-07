@@ -43,6 +43,18 @@ router.patch('/', (req, res) => {
   res.json({ user });
 });
 
+router.put('/password', (req, res, next) => {
+  try {
+    const user = auth.changeAccountPassword(req.auth!.userId, req.body ?? {});
+    auth.audit(user.id, 'account_password_changed', 'user', user.id, req.ip, req.headers['user-agent']);
+    track(req, 'auth_password_change', { success: true });
+    res.json({ user });
+  } catch (e) {
+    track(req, 'auth_password_change', { success: false, fail_reason: failReason(e) });
+    next(e);
+  }
+});
+
 router.get('/sessions', (req, res) => {
   res.json({ sessions: auth.listSessions(req.auth!.userId, req.auth!.sessionId) });
 });
