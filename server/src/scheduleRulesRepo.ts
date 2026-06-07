@@ -926,6 +926,65 @@ function mergeConflicts(
   return merged;
 }
 
+function assertScheduleProposalFresh(
+  userId: string,
+  proposal: ScheduleProposalDTO,
+  selectedChanges: ScheduleProposalChangeDTO[],
+): void {
+  const selectedTaskIds = Array.from(new Set(selectedChanges.map((change) => change.taskId)));
+  if (selectedTaskIds.length > 0) {
+    const placeholders = selectedTaskIds.map(() => '?').join(', ');
+    const task = db
+      .prepare(
+        `SELECT id, title, updated_at
+         FROM tasks
+         WHERE user_id = ?
+           AND goal_id = ?
+           AND id IN (${placeholders})
+           AND updated_at > ?
+         ORDER BY updated_at DESC
+         LIMIT 1`,
+      )
+      .get(userId, proposal.goalId, ...selectedTaskIds, proposal.createdAt) as { id: string; title: string; updated_at: string } | undefined;
+    if (task) {
+      throw new AppError(
+        409,
+        'proposal_stale',
+        `Schedule proposal is stale because task "${task.title}" changed after the proposal was generated. Regenerate the proposal before confirming.`,
+      );
+    }
+  }
+
+  const referencedRuleIds = new Set<string>();
+  for (const change of selectedChanges) {
+    for (const ruleId of change.ruleIds) referencedRuleIds.add(ruleId);
+  }
+  for (const conflict of proposal.conflicts) {
+    for (const ruleId of conflict.ruleIds) referencedRuleIds.add(ruleId);
+  }
+
+  const changedRules = (
+    db
+      .prepare(
+        `SELECT *
+         FROM personal_schedule_rules
+         WHERE user_id = ?
+           AND updated_at > ?
+         ORDER BY updated_at DESC
+         LIMIT 100`,
+      )
+      .all(userId, proposal.createdAt) as RuleRow[]
+  ).map(mapRule);
+  const staleRule = changedRules.find((rule) => scopedToGoal(rule, proposal.goalId) || referencedRuleIds.has(rule.id));
+  if (staleRule) {
+    throw new AppError(
+      409,
+      'proposal_stale',
+      `Schedule proposal is stale because rule "${staleRule.name}" changed after the proposal was generated. Regenerate the proposal before confirming.`,
+    );
+  }
+}
+
 function splitDurations(totalMinutes: number, minMinutes: number, enabled: boolean): number[] {
   const total = Math.max(15, totalMinutes);
   const min = Math.max(15, minMinutes);
@@ -1792,6 +1851,7 @@ export function confirmScheduleProposal(
   const changes = proposal.changes.map((change) => ({ ...change }));
   const selectedChanges = selectedKeys ? changes.filter((change) => selectedKeys.has(change.changeKey)) : changes;
   if (selectedChanges.length === 0) throw new AppError(400, 'no_changes_selected', 'selected proposal changes were not found');
+  assertScheduleProposalFresh(userId, proposal, selectedChanges);
   for (const change of changes) change.confirmed = selectedChanges.some((selected) => selected.changeKey === change.changeKey);
   const reminderRules = listScheduleRules(userId).filter(
     (rule) => rule.status === 'enabled' && rule.type === 'reminder' && scopedToGoal(rule, proposal.goalId),

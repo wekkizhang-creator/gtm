@@ -128,6 +128,10 @@ async function req(base: string, path: string, init: RequestInit & { cookie?: st
   return { res, body: await json(res) };
 }
 
+async function nextClockTick(): Promise<void> {
+  await new Promise((resolvePromise) => setTimeout(resolvePromise, 10));
+}
+
 async function login(base: string, email: string, smtpMessages: string[]): Promise<string> {
   return loginCookie(base, email, smtpMessages);
 }
@@ -564,6 +568,104 @@ async function main() {
       assert(storedAutoTask.due_date === autoCompat.body.scheduled[0].dueDate, 'auto schedule route should persist task due_date');
     } finally {
       dbAfterAutoCompat.close();
+    }
+
+    const staleTaskGoal = await req(base, '/api/goals', {
+      method: 'POST',
+      cookie,
+      body: JSON.stringify({
+        title: 'Stale task proposal plan',
+        startAt: new Date('2030-01-10T09:00:00+08:00').toISOString(),
+        deadlineAt: new Date('2030-01-10T12:00:00+08:00').toISOString(),
+        availableTimeRule: JSON.stringify({ startHour: 9, endHour: 12 }),
+      }),
+    });
+    assert(staleTaskGoal.res.status === 201, `stale task goal create failed: ${staleTaskGoal.res.status} ${JSON.stringify(staleTaskGoal.body)}`);
+    const staleTask = await req(base, `/api/goals/${staleTaskGoal.body.goal.id}/tasks`, {
+      method: 'POST',
+      cookie,
+      body: JSON.stringify({ title: 'Task changes after proposal', estimatedMinutes: 30 }),
+    });
+    assert(staleTask.res.status === 201, `stale task create failed: ${staleTask.res.status} ${JSON.stringify(staleTask.body)}`);
+    const staleTaskProposalRes = await req(base, `/api/goals/${staleTaskGoal.body.goal.id}/schedule-proposals`, { method: 'POST', cookie });
+    assert(
+      staleTaskProposalRes.res.status === 201,
+      `stale task proposal failed: ${staleTaskProposalRes.res.status} ${JSON.stringify(staleTaskProposalRes.body)}`,
+    );
+    await nextClockTick();
+    const staleTaskPatch = await req(base, `/api/tasks/${staleTask.body.task.id}`, {
+      method: 'PATCH',
+      cookie,
+      body: JSON.stringify({ estimatedMinutes: 45 }),
+    });
+    assert(staleTaskPatch.res.status === 200, `stale task patch failed: ${staleTaskPatch.res.status} ${JSON.stringify(staleTaskPatch.body)}`);
+    const staleTaskConfirm = await req(base, `/api/schedule-proposals/${staleTaskProposalRes.body.proposal.id}/confirm`, { method: 'POST', cookie });
+    assert(staleTaskConfirm.res.status === 409, `stale task confirm should be 409, got ${staleTaskConfirm.res.status}`);
+    assert(staleTaskConfirm.body.error.code === 'proposal_stale', `stale task confirm should return proposal_stale, got ${staleTaskConfirm.body.error.code}`);
+    const dbAfterStaleTask = new DatabaseSync(dbPath);
+    try {
+      const row = dbAfterStaleTask.prepare('SELECT start_date, due_date FROM tasks WHERE id = ?').get(staleTask.body.task.id) as
+        | { start_date: string | null; due_date: string | null }
+        | undefined;
+      assert(row?.start_date === null && row.due_date === null, 'stale task proposal must not write task dates');
+    } finally {
+      dbAfterStaleTask.close();
+    }
+
+    const staleRuleGoal = await req(base, '/api/goals', {
+      method: 'POST',
+      cookie,
+      body: JSON.stringify({
+        title: 'Stale rule proposal plan',
+        startAt: new Date('2030-01-10T13:00:00+08:00').toISOString(),
+        deadlineAt: new Date('2030-01-10T16:00:00+08:00').toISOString(),
+        availableTimeRule: JSON.stringify({ startHour: 13, endHour: 16 }),
+      }),
+    });
+    assert(staleRuleGoal.res.status === 201, `stale rule goal create failed: ${staleRuleGoal.res.status} ${JSON.stringify(staleRuleGoal.body)}`);
+    const staleRule = await req(base, '/api/schedule-rules', {
+      method: 'POST',
+      cookie,
+      body: JSON.stringify({
+        name: 'Stale proposal buffer',
+        type: 'buffer',
+        status: 'enabled',
+        priority: 'normal',
+        condition: {},
+        action: { effect: 'add_buffer', minutes: 15 },
+        scope: { goalIds: [staleRuleGoal.body.goal.id] },
+      }),
+    });
+    assert(staleRule.res.status === 201, `stale rule create failed: ${staleRule.res.status} ${JSON.stringify(staleRule.body)}`);
+    const staleRuleTask = await req(base, `/api/goals/${staleRuleGoal.body.goal.id}/tasks`, {
+      method: 'POST',
+      cookie,
+      body: JSON.stringify({ title: 'Rule changes after proposal', estimatedMinutes: 30 }),
+    });
+    assert(staleRuleTask.res.status === 201, `stale rule task create failed: ${staleRuleTask.res.status} ${JSON.stringify(staleRuleTask.body)}`);
+    const staleRuleProposalRes = await req(base, `/api/goals/${staleRuleGoal.body.goal.id}/schedule-proposals`, { method: 'POST', cookie });
+    assert(
+      staleRuleProposalRes.res.status === 201,
+      `stale rule proposal failed: ${staleRuleProposalRes.res.status} ${JSON.stringify(staleRuleProposalRes.body)}`,
+    );
+    await nextClockTick();
+    const staleRulePatch = await req(base, `/api/schedule-rules/${staleRule.body.rule.id}`, {
+      method: 'PATCH',
+      cookie,
+      body: JSON.stringify({ action: { effect: 'add_buffer', minutes: 30 } }),
+    });
+    assert(staleRulePatch.res.status === 200, `stale rule patch failed: ${staleRulePatch.res.status} ${JSON.stringify(staleRulePatch.body)}`);
+    const staleRuleConfirm = await req(base, `/api/schedule-proposals/${staleRuleProposalRes.body.proposal.id}/confirm`, { method: 'POST', cookie });
+    assert(staleRuleConfirm.res.status === 409, `stale rule confirm should be 409, got ${staleRuleConfirm.res.status}`);
+    assert(staleRuleConfirm.body.error.code === 'proposal_stale', `stale rule confirm should return proposal_stale, got ${staleRuleConfirm.body.error.code}`);
+    const dbAfterStaleRule = new DatabaseSync(dbPath);
+    try {
+      const row = dbAfterStaleRule.prepare('SELECT start_date, due_date FROM tasks WHERE id = ?').get(staleRuleTask.body.task.id) as
+        | { start_date: string | null; due_date: string | null }
+        | undefined;
+      assert(row?.start_date === null && row.due_date === null, 'stale rule proposal must not write task dates');
+    } finally {
+      dbAfterStaleRule.close();
     }
 
     const bufferGoal = await req(base, '/api/goals', {

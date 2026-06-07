@@ -2817,3 +2817,28 @@ The old repository-level `autoScheduleGoal` writer has been removed so the compa
 ### Verification
 
 `rg "\bautoScheduleGoal\b|\bparseTimeRule\b|\balignToWindow\b" server/src tests` must return no matches for the removed repository writer/helpers. `npm run test:schedule-rules` still verifies the compatibility route creates and confirms a real proposal before writing task dates, and `npm run test:goals` keeps the legacy API behavior covered for existing clients.
+
+## Slice 110: Stale Schedule Proposal Confirmation Guard
+
+Draft schedule proposals now have a freshness guard at confirmation time. If a task or scoped personal scheduling rule changes after the draft was generated, the server refuses to confirm the old proposal instead of writing stale times.
+
+### API Contract
+
+`POST /api/schedule-proposals/:id/confirm` keeps the existing request body:
+
+```json
+{
+  "changeKeys": ["optional-selected-change-key"]
+}
+```
+
+Before writing any task dates, the server checks the selected proposal changes against current SQLite state:
+
+- If a selected task's `updated_at` is later than the proposal `created_at`, return `409 proposal_stale`.
+- If a personal schedule rule changed after the proposal was generated and is either scoped to the proposal goal or referenced by the selected proposal/conflicts, return `409 proposal_stale`.
+- A stale confirmation writes no task `start_date`, `due_date`, `planned_start_at`, or `planned_end_at`.
+- Users should regenerate the proposal through `POST /api/goals/:id/schedule-proposals`; the old draft remains a draft audit artifact until discarded.
+
+### Verification
+
+`npm run test:schedule-rules` now creates one draft proposal, updates its selected task through `PATCH /api/tasks/:id`, verifies confirmation returns `409 proposal_stale`, and checks SQLite task dates remain empty. The same test creates another draft proposal, updates a scoped buffer rule through `PATCH /api/schedule-rules/:id`, verifies confirmation returns `409 proposal_stale`, and checks SQLite again to prove no stale schedule was written.
