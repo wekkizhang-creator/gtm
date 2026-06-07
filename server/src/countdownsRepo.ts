@@ -5,6 +5,7 @@ import { AppError, type CountdownDTO } from './types';
 
 const COUNTDOWN_MODES = ['countdown', 'countup'] as const;
 type CountdownMode = (typeof COUNTDOWN_MODES)[number];
+const HEX_COLOR_RE = /^#[0-9a-fA-F]{6}$/;
 
 function pad(n: number): string {
   return String(n).padStart(2, '0');
@@ -26,6 +27,24 @@ function assertCountdownMode(value: unknown): CountdownMode {
   if (value === undefined || value === null) return 'countdown';
   if (COUNTDOWN_MODES.includes(value as CountdownMode)) return value as CountdownMode;
   throw new AppError(400, 'invalid_countdown_mode', 'mode must be countdown or countup');
+}
+
+function normalizeCountdownColor(value: unknown): string | null {
+  if (value === undefined || value === null) return null;
+  if (typeof value !== 'string') throw new AppError(400, 'invalid_countdown_color', 'color must be a hex color');
+  const color = value.trim();
+  if (!color) return null;
+  if (!HEX_COLOR_RE.test(color)) throw new AppError(400, 'invalid_countdown_color', 'color must be a hex color');
+  return color.toLowerCase();
+}
+
+function normalizeCountdownNote(value: unknown): string | null {
+  if (value === undefined || value === null) return null;
+  if (typeof value !== 'string') throw new AppError(400, 'invalid_countdown_note', 'note must be a string');
+  const note = value.trim();
+  if (!note) return null;
+  if (note.length > 2000) throw new AppError(400, 'invalid_countdown_note', 'note must be at most 2000 characters');
+  return note;
 }
 
 /** next occurrence + signed day delta from today */
@@ -91,6 +110,8 @@ export function createCountdown(userId: string, input: {
   const id = randomUUID();
   const ts = nowISO();
   const mode = assertCountdownMode(input.mode);
+  const color = normalizeCountdownColor(input.color);
+  const note = normalizeCountdownNote(input.note);
   const max = db.prepare('SELECT COALESCE(MAX(sort_order), 0) AS m FROM countdowns WHERE user_id = ?').get(userId) as { m: number };
   db.prepare(
     `INSERT INTO countdowns (id, user_id, title, target_date, mode, icon, color, repeat_yearly, pinned, note, sort_order, created_at, updated_at)
@@ -102,10 +123,10 @@ export function createCountdown(userId: string, input: {
     input.targetDate,
     mode,
     input.icon,
-    input.color,
+    color,
     input.repeatYearly ? 1 : 0,
     input.pinned ? 1 : 0,
-    input.note,
+    note,
     (max.m ?? 0) + 1,
     ts,
     ts,
@@ -160,6 +181,8 @@ export function updateCountdown(userId: string, id: string, patch: Record<string
       let v = patch[k];
       if (k === 'repeatYearly' || k === 'pinned') v = v ? 1 : 0;
       if (k === 'mode') v = assertCountdownMode(v);
+      if (k === 'color') v = normalizeCountdownColor(v);
+      if (k === 'note') v = normalizeCountdownNote(v);
       cols.push(`${col} = ?`);
       vals.push(v ?? null);
     }

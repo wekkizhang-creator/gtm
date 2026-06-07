@@ -3,6 +3,7 @@ import { api } from '../api/client';
 import type { Countdown } from '../types';
 
 const EMOJIS = ['🎯', '🎂', '🚀', '💍', '🎓', '✈️', '🎉', '📅', '❤️', '🏆'];
+const DEFAULT_COUNTDOWN_COLOR = '#c96442';
 
 function todayInput(): string {
   const d = new Date();
@@ -17,6 +18,8 @@ export default function CountdownModule() {
   const [title, setTitle] = useState('');
   const [date, setDate] = useState(todayInput());
   const [mode, setMode] = useState<'countdown' | 'countup'>('countdown');
+  const [color, setColor] = useState(DEFAULT_COUNTDOWN_COLOR);
+  const [note, setNote] = useState('');
   const [repeat, setRepeat] = useState(false);
   const [icon, setIcon] = useState('🎯');
 
@@ -50,6 +53,8 @@ export default function CountdownModule() {
     setTitle('');
     setDate(todayInput());
     setMode('countdown');
+    setColor(DEFAULT_COUNTDOWN_COLOR);
+    setNote('');
     setRepeat(false);
     setIcon('🎯');
     setShowForm(true);
@@ -59,6 +64,8 @@ export default function CountdownModule() {
     setTitle(c.title);
     setDate(c.targetDate);
     setMode(c.mode);
+    setColor(c.color ?? DEFAULT_COUNTDOWN_COLOR);
+    setNote(c.note ?? '');
     setRepeat(c.repeatYearly);
     setIcon(c.icon ?? '🎯');
     setShowForm(true);
@@ -68,7 +75,7 @@ export default function CountdownModule() {
     e.preventDefault();
     const t = title.trim();
     if (!t) return;
-    const payload = { title: t, targetDate: date, mode, repeatYearly: repeat, icon };
+    const payload = { title: t, targetDate: date, mode, color, note: note.trim() || null, repeatYearly: repeat, icon };
     void mutate(async () => {
       if (editingId) await api.updateCountdown(editingId, payload);
       else await api.createCountdown(payload);
@@ -123,6 +130,10 @@ export default function CountdownModule() {
               正数
             </button>
           </div>
+          <label className="cd-color-field">
+            <span>颜色</span>
+            <input type="color" value={color} onChange={(e) => setColor(e.target.value)} />
+          </label>
           <div className="cd-emoji-row">
             {EMOJIS.map((em) => (
               <button type="button" key={em} className={`cd-emoji${icon === em ? ' active' : ''}`} onClick={() => setIcon(em)}>
@@ -130,6 +141,7 @@ export default function CountdownModule() {
               </button>
             ))}
           </div>
+          <textarea className="cd-note-input" placeholder="备注（可选）" value={note} maxLength={2000} onChange={(e) => setNote(e.target.value)} />
           <div className="cd-form-actions">
             <button type="submit">{editingId ? '保存' : '创建'}</button>
             <button type="button" onClick={() => setShowForm(false)}>
@@ -150,6 +162,7 @@ export default function CountdownModule() {
           const canMoveDown = index < items.length - 1 && items[index + 1].pinned === c.pinned;
           return (
             <div key={c.id} className={`cd-card${c.pinned ? ' pinned' : ''}`} onClick={() => openEdit(c)}>
+              {c.color && <span className="cd-color-strip" style={{ background: c.color }} />}
               <div className="cd-card-top">
                 <span className="cd-icon">{c.icon ?? '📅'}</span>
                 <span className="cd-card-title">{c.title}</span>
@@ -164,6 +177,7 @@ export default function CountdownModule() {
                 {c.effectiveDate}
                 {c.repeatYearly ? ' · 🔁 每年' : ''}
               </div>
+              {c.note && <p className="cd-note-preview">{c.note}</p>}
               <div className="cd-card-actions" onClick={(e) => e.stopPropagation()}>
                 <button
                   className="cd-pin"

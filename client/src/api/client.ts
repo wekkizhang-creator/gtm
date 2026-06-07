@@ -784,6 +784,7 @@ export const api = {
       targetDate: string;
       mode: 'countdown' | 'countup';
       icon: string | null;
+      color: string | null;
       repeatYearly: boolean;
       pinned: boolean;
       note: string | null;

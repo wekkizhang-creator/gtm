@@ -2976,3 +2976,31 @@ CD-02 now stores the countdown type selected by the user instead of deriving eve
 ### Verification
 
 `npm run test:countdowns` now creates a `countup` countdown, verifies the default missing mode is `countdown`, rejects an invalid mode with `400 invalid_countdown_mode`, patches an existing countdown to `countup`, keeps manual ordering behavior from Slice 114, and checks SQLite persists the expected `mode` values alongside `sort_order`.
+
+## Slice 116: Countdown Color And Note Editing
+
+CD-02 now exposes the remaining editable countdown fields in the real product surface. Color and note were already present in the persistence model, but the countdown page did not let users edit them and tests did not prove they were stored.
+
+### API Contract
+
+`POST /api/countdowns` and `PATCH /api/countdowns/:id` accept:
+
+```json
+{
+  "color": "#f97316",
+  "note": "Launch anniversary"
+}
+```
+
+- `color` is optional. Non-empty values must be `#RRGGBB`; invalid values return `400 invalid_countdown_color`.
+- `note` is optional. Non-empty values are trimmed and must be at most 2000 characters; invalid values return `400 invalid_countdown_note`.
+- Valid colors are normalized to lowercase before storing.
+- Import commit passes `payload.color` and `payload.note` through the same create path, so imports cannot bypass validation.
+
+### Client Contract
+
+`CountdownModule` adds a color picker and optional note textarea to the create/edit form. Cards show a narrow color strip when a color is set and render a two-line note preview when a note exists. Saves still call the real countdown create/update APIs.
+
+### Verification
+
+`npm run test:countdowns` now creates a countdown with uppercase hex color and note, verifies the API normalizes and returns the values, rejects an invalid color, patches another countdown's color and note, keeps ordering/type assertions from Slices 114-115, and checks SQLite `countdowns.color` / `countdowns.note` persist the expected values.

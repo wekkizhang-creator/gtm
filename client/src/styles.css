@@ -2691,6 +2691,25 @@ a.auth-link {
   box-shadow: 0 1px 3px rgba(0, 0, 0, 0.08);
 }
 
+.cd-color-field {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  margin: 0 0 10px 10px;
+  color: var(--muted);
+  font-size: 13px;
+}
+
+.cd-color-field input {
+  width: 34px;
+  height: 30px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: transparent;
+  cursor: pointer;
+  padding: 2px;
+}
+
 .cd-emoji-row {
   display: flex;
   gap: 6px;
@@ -2711,6 +2730,20 @@ a.auth-link {
 .cd-emoji.active {
   border-color: var(--accent);
   background: var(--accent-soft);
+}
+
+.cd-note-input {
+  width: 100%;
+  min-height: 72px;
+  resize: vertical;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 9px 11px;
+  margin-bottom: 12px;
+  background: var(--surface);
+  color: var(--text);
+  font-size: 13px;
+  line-height: 1.5;
 }
 
 .cd-form-actions {
@@ -2759,6 +2792,15 @@ a.auth-link {
 
 .cd-card.pinned {
   border-color: var(--accent);
+}
+
+.cd-color-strip {
+  position: absolute;
+  left: 0;
+  top: 14px;
+  bottom: 14px;
+  width: 4px;
+  border-radius: 0 4px 4px 0;
 }
 
 .cd-card-top {
@@ -2824,6 +2866,17 @@ a.auth-link {
   background: var(--accent-soft);
   color: var(--accent);
   font-size: 11px;
+}
+
+.cd-note-preview {
+  margin: 8px 0 0;
+  color: var(--muted);
+  font-size: 12px;
+  line-height: 1.45;
+  overflow: hidden;
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
 }
 
 .cd-card-actions {

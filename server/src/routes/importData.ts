@@ -104,10 +104,10 @@ router.post('/commit', (req, res) => {
         targetDate: row.payload.targetDate,
         mode: row.payload.mode,
         icon: null,
-        color: null,
+        color: row.payload.color ?? null,
         repeatYearly: false,
         pinned: false,
-        note: null,
+        note: row.payload.note ?? null,
       });
     else if (row.type === 'goals') tasks.createGoal(userId, { title: row.title, description: row.payload.description ?? null });
     created.push(row);
