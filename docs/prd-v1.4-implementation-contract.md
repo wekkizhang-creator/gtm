@@ -3004,3 +3004,41 @@ CD-02 now exposes the remaining editable countdown fields in the real product su
 ### Verification
 
 `npm run test:countdowns` now creates a countdown with uppercase hex color and note, verifies the API normalizes and returns the values, rejects an invalid color, patches another countdown's color and note, keeps ordering/type assertions from Slices 114-115, and checks SQLite `countdowns.color` / `countdowns.note` persist the expected values.
+
+## Slice 117: Countdown Leap-Day Yearly Repeat Policy
+
+CD-03 now has an explicit annual-repeat policy for leap-day anniversaries. A countdown whose original target date is `YYYY-02-29` keeps that original `targetDate` in storage, but its yearly `effectiveDate` resolves to February 28 in non-leap years and February 29 in leap years.
+
+### API Contract
+
+`POST /api/countdowns` keeps the existing shape:
+
+```json
+{
+  "title": "Leap day anniversary",
+  "targetDate": "2024-02-29",
+  "repeatYearly": true
+}
+```
+
+Response:
+
+```json
+{
+  "countdown": {
+    "targetDate": "2024-02-29",
+    "repeatYearly": true,
+    "effectiveDate": "2026-02-28",
+    "daysRemaining": 0
+  }
+}
+```
+
+- The response example assumes the current date is February 28, 2026.
+- The server never rewrites the stored original date from `2024-02-29` to `2026-02-28`; only the computed `effectiveDate` changes per year.
+- After the non-leap-year occurrence has passed, the next effective date advances to the following year's February 28 unless that following year is a leap year.
+- In leap years, the effective date is February 29.
+
+### Verification
+
+`npm run test:countdowns` now verifies the fixed date policy for 2026 and 2028, creates a real leap-day yearly countdown through `POST /api/countdowns`, checks the HTTP response uses the same policy, and checks SQLite persists `target_date = '2024-02-29'` plus `repeat_yearly = 1`.

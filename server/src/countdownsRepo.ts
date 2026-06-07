@@ -1,27 +1,12 @@
 // Countdown / anniversary days. Computes next occurrence + signed days remaining.
 import { randomUUID } from 'node:crypto';
+import { resolveCountdownOccurrence } from './countdownDates';
 import { db, nowISO } from './db';
 import { AppError, type CountdownDTO } from './types';
 
 const COUNTDOWN_MODES = ['countdown', 'countup'] as const;
 type CountdownMode = (typeof COUNTDOWN_MODES)[number];
 const HEX_COLOR_RE = /^#[0-9a-fA-F]{6}$/;
-
-function pad(n: number): string {
-  return String(n).padStart(2, '0');
-}
-function fmt(d: Date): string {
-  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`;
-}
-function todayDate(): Date {
-  const d = new Date();
-  d.setHours(0, 0, 0, 0);
-  return d;
-}
-function parseDate(s: string): Date {
-  const [y, m, d] = s.split('-').map(Number);
-  return new Date(y, m - 1, d);
-}
 
 function assertCountdownMode(value: unknown): CountdownMode {
   if (value === undefined || value === null) return 'countdown';
@@ -47,23 +32,8 @@ function normalizeCountdownNote(value: unknown): string | null {
   return note;
 }
 
-/** next occurrence + signed day delta from today */
-function compute(targetStr: string, repeat: boolean): { effectiveDate: string; daysRemaining: number } {
-  const today = todayDate();
-  let eff = parseDate(targetStr);
-  if (repeat) {
-    const t = parseDate(targetStr);
-    eff = new Date(today.getFullYear(), t.getMonth(), t.getDate());
-    if (eff.getTime() < today.getTime()) {
-      eff = new Date(today.getFullYear() + 1, t.getMonth(), t.getDate());
-    }
-  }
-  const daysRemaining = Math.round((eff.getTime() - today.getTime()) / 86_400_000);
-  return { effectiveDate: fmt(eff), daysRemaining };
-}
-
 function mapCountdown(r: any): CountdownDTO {
-  const { effectiveDate, daysRemaining } = compute(r.target_date, !!r.repeat_yearly);
+  const { effectiveDate, daysRemaining } = resolveCountdownOccurrence(r.target_date, !!r.repeat_yearly);
   return {
     id: r.id,
     title: r.title,

@@ -1,4 +1,5 @@
 import { loginByEmailPassword } from './auth-test-helper';
+import { resolveCountdownOccurrence } from '../server/src/countdownDates';
 import { DatabaseSync } from 'node:sqlite';
 import net from 'node:net';
 import { existsSync, unlinkSync } from 'node:fs';
@@ -11,6 +12,25 @@ const root = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 
 function assert(cond: unknown, msg: string): asserts cond {
   if (!cond) throw new Error(msg);
+}
+
+function assertLeapDayRepeatPolicy() {
+  assert(
+    resolveCountdownOccurrence('2024-02-29', true, new Date(2026, 0, 10)).effectiveDate === '2026-02-28',
+    'Feb 29 yearly repeat should resolve to Feb 28 in a non-leap year before occurrence',
+  );
+  assert(
+    resolveCountdownOccurrence('2024-02-29', true, new Date(2026, 1, 28)).daysRemaining === 0,
+    'Feb 29 yearly repeat should be due on Feb 28 in a non-leap year',
+  );
+  assert(
+    resolveCountdownOccurrence('2024-02-29', true, new Date(2026, 2, 1)).effectiveDate === '2027-02-28',
+    'Feb 29 yearly repeat should advance to next Feb 28 after non-leap occurrence',
+  );
+  assert(
+    resolveCountdownOccurrence('2024-02-29', true, new Date(2028, 0, 10)).effectiveDate === '2028-02-29',
+    'Feb 29 yearly repeat should use Feb 29 in leap years',
+  );
 }
 
 function freePort(): Promise<number> {
@@ -116,6 +136,7 @@ async function main() {
     const s = mod.app.listen(port, '127.0.0.1', () => resolvePromise(s));
   });
   await waitForHealth(base);
+  assertLeapDayRepeatPolicy();
 
   try {
     const alice = await loginByEmailPassword(base, 'countdowns-alice@example.com', smtp.messages);
@@ -218,6 +239,30 @@ async function main() {
       assert(rows.map((row) => row.sort_order).join('|') === '1|2|3', 'SQLite sort_order should be rewritten contiguously');
     } finally {
       db.close();
+    }
+
+    const expectedLeap = resolveCountdownOccurrence('2024-02-29', true);
+    const leapDay = await req(base, '/api/countdowns', {
+      method: 'POST',
+      cookie: alice.cookie,
+      body: JSON.stringify({ title: 'Leap day anniversary', targetDate: '2024-02-29', repeatYearly: true }),
+    });
+    assert(leapDay.res.status === 201, `leap day countdown should be created through HTTP, got ${leapDay.res.status}`);
+    assert(leapDay.body.countdown.repeatYearly === true, 'leap day countdown should round-trip repeatYearly');
+    assert(
+      leapDay.body.countdown.effectiveDate === expectedLeap.effectiveDate,
+      `leap day HTTP response should use yearly repeat policy, got ${leapDay.body.countdown.effectiveDate}`,
+    );
+    const dbAfterLeap = new DatabaseSync(dbPath);
+    try {
+      const row = dbAfterLeap.prepare('SELECT target_date, repeat_yearly FROM countdowns WHERE user_id = ? AND id = ?').get(
+        alice.userId,
+        leapDay.body.countdown.id,
+      ) as { target_date: string; repeat_yearly: number } | undefined;
+      assert(row?.target_date === '2024-02-29', 'SQLite should persist original leap day target date');
+      assert(row.repeat_yearly === 1, 'SQLite should persist leap day yearly repeat flag');
+    } finally {
+      dbAfterLeap.close();
     }
   } finally {
     await new Promise((resolvePromise) => server.close(() => resolvePromise(null)));
