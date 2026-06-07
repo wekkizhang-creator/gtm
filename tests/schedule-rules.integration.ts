@@ -220,6 +220,40 @@ async function main() {
     assert(rulePatch.res.status === 200, `patch rule failed: ${rulePatch.res.status} ${JSON.stringify(rulePatch.body)}`);
     assert(rulePatch.body.rule.name === 'No work after 21:30', 'patched rule name should be returned');
 
+    const competingGoal = await req(base, '/api/goals', {
+      method: 'POST',
+      cookie,
+      body: JSON.stringify({
+        title: 'Competing high priority plan',
+        startAt: start.toISOString(),
+        deadlineAt: deadline.toISOString(),
+        priority: 3,
+        availableTimeRule: JSON.stringify({ startHour: 20, endHour: 23 }),
+      }),
+    });
+    assert(competingGoal.res.status === 201, `competing goal create failed: ${competingGoal.res.status} ${JSON.stringify(competingGoal.body)}`);
+    const planPriorityRule = await req(base, '/api/schedule-rules', {
+      method: 'POST',
+      cookie,
+      body: JSON.stringify({
+        name: 'This week prioritize Night launch plan',
+        type: 'plan_priority',
+        status: 'enabled',
+        priority: 'hard',
+        condition: {},
+        action: { effect: 'prefer_priority' },
+        scope: { goalIds: [goalId] },
+      }),
+    });
+    assert(planPriorityRule.res.status === 201, `create plan priority rule failed: ${planPriorityRule.res.status} ${JSON.stringify(planPriorityRule.body)}`);
+    const planPriorityRuleId = planPriorityRule.body.rule.id;
+    const priorityDashboard = await req(base, '/api/goals/daypilot-dashboard', { cookie });
+    assert(priorityDashboard.res.status === 200, `priority dashboard failed: ${priorityDashboard.res.status} ${JSON.stringify(priorityDashboard.body)}`);
+    assert(
+      priorityDashboard.body.dashboard.activeGoals[0]?.id === goalId,
+      'plan_priority rule should make its scoped plan the first active dashboard goal despite another goal having higher numeric priority',
+    );
+
     const reminderRule = await req(base, '/api/schedule-rules', {
       method: 'POST',
       cookie,
@@ -257,6 +291,7 @@ async function main() {
     assert(proposal.changes.length === 1, `expected one proposal change, got ${proposal.changes.length}`);
     assert(proposal.explanations.length === 1, `expected one explanation, got ${proposal.explanations.length}`);
     assert(proposal.changes[0].ruleIds.includes(ruleId), 'proposal change should reference the blocking rule');
+    assert(proposal.changes[0].ruleIds.includes(planPriorityRuleId), 'proposal change should reference the scoped plan priority rule');
     assert(proposal.changes[0].ruleIds.includes(reminderRuleId), 'proposal change should reference the reminder rule');
     assert(
       proposal.changes[0].avoidedBlocks.some((block: any) => block.source === 'external' && block.title === 'Client Sync'),
@@ -346,7 +381,7 @@ async function main() {
       const rules = dbAfterPreview.prepare('SELECT COUNT(*) c FROM personal_schedule_rules WHERE user_id IS NOT NULL').get() as { c: number };
       const templates = dbAfterPreview.prepare('SELECT COUNT(*) c FROM schedule_rule_templates').get() as { c: number };
       assert(templates.c >= 4, `seeded rule templates should be persisted in SQLite, got ${templates.c}`);
-      assert(rules.c === 3, `rule preview should not persist a draft rule, got ${rules.c} rows`);
+      assert(rules.c === 4, `rule preview should not persist a draft rule, got ${rules.c} rows`);
     } finally {
       dbAfterPreview.close();
     }
@@ -1004,6 +1039,9 @@ async function main() {
         confirmed_at: string | null;
       };
       const reminderCount = db.prepare('SELECT COUNT(*) c FROM task_reminders WHERE task_id = ?').get(deepTask.body.task.id) as { c: number };
+      const planPriorityScope = db.prepare('SELECT scope_json FROM personal_schedule_rules WHERE id = ?').get(planPriorityRuleId) as
+        | { scope_json: string }
+        | undefined;
       const ruleEditProposalRow = db.prepare('SELECT status, range_start, range_end FROM schedule_proposals WHERE id = ?').get(ruleEditReplan.body.proposal.id) as
         | { status: string; range_start: string; range_end: string }
         | undefined;
@@ -1012,6 +1050,7 @@ async function main() {
       assert(task.schedule_energy_type === 'high' && task.schedule_task_type === 'writing', 'task scheduling metadata should persist');
       assert(proposalRow.status === 'undone' && proposalRow.confirmed_at, 'proposal row should be undone in DB while retaining confirmation audit time');
       assert(reminderCount.c === 0, 'undo should delete reminders created by the confirmed proposal');
+      assert(JSON.parse(planPriorityScope?.scope_json ?? '{}').goalIds?.[0] === goalId, 'plan priority rule scope should persist the target goal');
       assert(ruleEditProposalRow?.status === 'draft', 'rule edit replan proposal should be persisted as a draft');
       assert(ruleEditProposalRow.range_start === new Date('2030-01-08T00:00:00+08:00').toISOString(), 'rule edit replan range start should persist');
       assert(ruleEditProposalRow.range_end === new Date('2030-01-15T00:00:00+08:00').toISOString(), 'rule edit replan range end should persist');

@@ -4912,6 +4912,12 @@ html[data-animations='off'] * {
   opacity: 0.55;
 }
 
+.goal-rule-scope-note {
+  color: var(--muted);
+  font-size: 12px;
+  line-height: 1.3;
+}
+
 .goal-rule-natural {
   display: grid;
   grid-template-columns: minmax(220px, 1fr) auto;

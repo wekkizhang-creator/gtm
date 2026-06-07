@@ -1319,6 +1319,7 @@ export default function GoalModule() {
                 {ruleType === 'task_category' && (
                   <input placeholder="任务类型" value={ruleTaskType} onChange={(e) => setRuleTaskType(e.target.value)} />
                 )}
+                {ruleType === 'plan_priority' && selected && <small className="goal-rule-scope-note">优先推进：{selected.title}</small>}
                 <button type="submit" disabled={!ruleName.trim()}>
                   {editingRuleId ? (ruleEditApplyMode === 'recalculate_7d' ? '更新并重排' : '更新规则') : '保存规则'}
                 </button>
