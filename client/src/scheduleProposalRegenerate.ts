@@ -19,3 +19,14 @@ export function buildScheduleProposalRegenerateInput(proposal: ScheduleProposal)
     taskIds: isReschedule ? rescheduleTaskIds : undefined,
   };
 }
+
+export function isScheduleProposalStaleError(err: unknown): boolean {
+  return !!err && typeof err === 'object' && (err as { code?: string }).code === 'proposal_stale';
+}
+
+export function describeScheduleProposalConfirmError(err: unknown): string {
+  if (isScheduleProposalStaleError(err)) {
+    return '排期方案已过期。任务或规则已变更，请点击“重新生成”获取最新方案后再确认。';
+  }
+  return err instanceof Error ? err.message : String(err);
+}

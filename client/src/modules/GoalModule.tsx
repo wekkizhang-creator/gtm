@@ -15,7 +15,7 @@ import {
   listManualAdjustmentConflicts,
 } from '../scheduleProposalManualAdjust';
 import { buildScheduleProposalImpact } from '../scheduleProposalImpact';
-import { buildScheduleProposalRegenerateInput } from '../scheduleProposalRegenerate';
+import { buildScheduleProposalRegenerateInput, describeScheduleProposalConfirmError } from '../scheduleProposalRegenerate';
 import { buildScheduleRuleConflictActions, type ScheduleRuleConflictAction } from '../scheduleRuleConflictActions';
 import { buildScheduleRuleEditProposalInput, type ScheduleRuleEditApplyMode } from '../scheduleRuleEditEffect';
 import { useSettings } from '../settings';
@@ -797,10 +797,14 @@ export default function GoalModule() {
 
   async function confirmProposal() {
     if (!proposal) return;
-    await mutate(async () => {
+    try {
       const result = await api.confirmScheduleProposal(proposal.id, { changeKeys: [...selectedProposalChangeKeys] });
       setProposalWithSelection(result.proposal);
-    });
+      await reload();
+      setError(null);
+    } catch (e) {
+      setError(describeScheduleProposalConfirmError(e));
+    }
   }
 
   async function regenerateProposal() {

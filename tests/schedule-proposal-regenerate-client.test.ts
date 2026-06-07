@@ -1,4 +1,8 @@
-import { buildScheduleProposalRegenerateInput } from '../client/src/scheduleProposalRegenerate';
+import {
+  buildScheduleProposalRegenerateInput,
+  describeScheduleProposalConfirmError,
+  isScheduleProposalStaleError,
+} from '../client/src/scheduleProposalRegenerate';
 import type { ScheduleProposal } from '../client/src/types';
 
 function assert(cond: unknown, msg: string): asserts cond {
@@ -97,5 +101,15 @@ const replanInput = buildScheduleProposalRegenerateInput(
 assert(replanInput.mode === 'reschedule', 'replan regeneration should keep reschedule mode');
 assert(replanInput.taskIds?.join('|') === 'task-2', 'replan regeneration should scope to affected tasks');
 assert(replanInput.trigger === 'regenerate:proposal-2', 'replan trigger should keep the source proposal id');
+
+const staleError = new Error('server english stale message') as Error & { code?: string };
+staleError.code = 'proposal_stale';
+assert(isScheduleProposalStaleError(staleError), 'proposal_stale API errors should be recognized by the client');
+assert(
+  describeScheduleProposalConfirmError(staleError).includes('重新生成'),
+  'stale confirmation errors should guide the user to regenerate the proposal',
+);
+const normalError = new Error('ordinary confirm failure');
+assert(describeScheduleProposalConfirmError(normalError) === 'ordinary confirm failure', 'non-stale confirmation errors should keep their original message');
 
 console.log('schedule-proposal-regenerate-client: all assertions passed');

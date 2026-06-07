@@ -2842,3 +2842,21 @@ Before writing any task dates, the server checks the selected proposal changes a
 ### Verification
 
 `npm run test:schedule-rules` now creates one draft proposal, updates its selected task through `PATCH /api/tasks/:id`, verifies confirmation returns `409 proposal_stale`, and checks SQLite task dates remain empty. The same test creates another draft proposal, updates a scoped buffer rule through `PATCH /api/schedule-rules/:id`, verifies confirmation returns `409 proposal_stale`, and checks SQLite again to prove no stale schedule was written.
+
+## Slice 111: Stale Proposal Regenerate Guidance
+
+The schedule proposal confirmation page now turns the server's `proposal_stale` error into an actionable regenerate prompt instead of showing the raw backend message. The draft remains visible, and the existing `重新生成` button stays enabled so the user can immediately request a fresh proposal.
+
+### Client Contract
+
+When `api.confirmScheduleProposal` throws an error with `code:"proposal_stale"`:
+
+- The goal module displays `排期方案已过期。任务或规则已变更，请点击“重新生成”获取最新方案后再确认。`
+- The current draft proposal is not cleared.
+- The current selected change keys are not reset.
+- The existing regenerate action calls `POST /api/goals/:id/schedule-proposals` with `trigger:"regenerate:<proposalId>"` and the original range.
+- Non-stale confirmation errors keep their original API error message.
+
+### Verification
+
+`npm run test:schedule-proposal-regenerate-client` verifies the regenerate request still preserves the original proposal range and trigger, verifies reschedule proposals keep their affected task IDs, verifies `proposal_stale` errors are recognized, and verifies stale confirmation errors render a message that tells the user to `重新生成`.
