@@ -77,6 +77,14 @@ function codeDeviceMaxPerWindow(): number {
   return positiveIntEnv('AUTH_CODE_DEVICE_MAX_PER_WINDOW', 10);
 }
 
+function passwordMaxFailedAttempts(): number {
+  return positiveIntEnv('AUTH_PASSWORD_MAX_FAILED_ATTEMPTS', 5);
+}
+
+function passwordLockSec(): number {
+  return positiveIntEnv('AUTH_PASSWORD_LOCK_SEC', 15 * 60);
+}
+
 function reRegistrationPolicy(): ReRegistrationPolicy {
   const raw = (process.env.ACCOUNT_REREGISTRATION_POLICY ?? 'allow').trim().toLowerCase();
   return raw === 'block' ? 'block' : 'allow';
@@ -396,11 +404,28 @@ function setAuthCookies(res: Response, accessToken: string, refreshToken: string
 }
 
 function emailIdentityForHash(idHash: string):
-  | { id: string; user_id: string; display_identifier: string; status: string; password_hash: string | null }
+  | {
+      id: string;
+      user_id: string;
+      display_identifier: string;
+      status: string;
+      password_hash: string | null;
+      failed_attempt_count: number | null;
+      locked_until: string | null;
+      last_failed_at: string | null;
+    }
   | undefined {
   return db
     .prepare(
-      `SELECT ai.id, ai.user_id, ai.display_identifier, u.status, pc.password_hash
+      `SELECT
+         ai.id,
+         ai.user_id,
+         ai.display_identifier,
+         u.status,
+         pc.password_hash,
+         pc.failed_attempt_count,
+         pc.locked_until,
+         pc.last_failed_at
        FROM auth_identities ai
        JOIN users u ON u.id = ai.user_id
        LEFT JOIN auth_password_credentials pc ON pc.user_id = ai.user_id
@@ -408,16 +433,67 @@ function emailIdentityForHash(idHash: string):
        LIMIT 1`,
     )
     .get(idHash) as
-    | { id: string; user_id: string; display_identifier: string; status: string; password_hash: string | null }
+    | {
+        id: string;
+        user_id: string;
+        display_identifier: string;
+        status: string;
+        password_hash: string | null;
+        failed_attempt_count: number | null;
+        locked_until: string | null;
+        last_failed_at: string | null;
+      }
     | undefined;
 }
 
 function setPasswordCredential(userId: string, password: string, ts = nowISO()): void {
   db.prepare(
-    `INSERT INTO auth_password_credentials (user_id, password_hash, created_at, updated_at)
-     VALUES (?, ?, ?, ?)
-     ON CONFLICT(user_id) DO UPDATE SET password_hash = excluded.password_hash, updated_at = excluded.updated_at`,
+    `INSERT INTO auth_password_credentials
+       (user_id, password_hash, failed_attempt_count, locked_until, last_failed_at, created_at, updated_at)
+     VALUES (?, ?, 0, NULL, NULL, ?, ?)
+     ON CONFLICT(user_id) DO UPDATE SET
+       password_hash = excluded.password_hash,
+       failed_attempt_count = 0,
+       locked_until = NULL,
+       last_failed_at = NULL,
+       updated_at = excluded.updated_at`,
   ).run(userId, hashPassword(password), ts, ts);
+}
+
+function assertPasswordCredentialNotLocked(credential: { locked_until?: string | null }): void {
+  if (credential.locked_until && credential.locked_until > nowISO()) {
+    throw new AppError(423, 'password_login_locked', 'password login is temporarily locked');
+  }
+}
+
+function recordPasswordFailure(userId: string, ts = nowISO()): void {
+  const row = db.prepare('SELECT failed_attempt_count, locked_until FROM auth_password_credentials WHERE user_id = ?').get(userId) as
+    | { failed_attempt_count: number; locked_until: string | null }
+    | undefined;
+  if (!row) throw new AppError(401, 'invalid_credentials', 'email or password is incorrect');
+  if (row.locked_until && row.locked_until > ts) {
+    throw new AppError(423, 'password_login_locked', 'password login is temporarily locked');
+  }
+  const previousAttempts = row.locked_until && row.locked_until <= ts ? 0 : Math.max(0, Number(row.failed_attempt_count) || 0);
+  const attempts = previousAttempts + 1;
+  const lockedUntil = attempts >= passwordMaxFailedAttempts() ? addSeconds(ts, passwordLockSec()) : null;
+  db.prepare(
+    `UPDATE auth_password_credentials
+     SET failed_attempt_count = ?, locked_until = ?, last_failed_at = ?, updated_at = ?
+     WHERE user_id = ?`,
+  ).run(attempts, lockedUntil, ts, ts, userId);
+  if (lockedUntil) {
+    audit(userId, 'password_login_locked', 'user', userId, undefined, undefined);
+    throw new AppError(423, 'password_login_locked', 'password login is temporarily locked');
+  }
+}
+
+function resetPasswordFailures(userId: string, ts = nowISO()): void {
+  db.prepare(
+    `UPDATE auth_password_credentials
+     SET failed_attempt_count = 0, locked_until = NULL, last_failed_at = NULL, updated_at = ?
+     WHERE user_id = ?`,
+  ).run(ts, userId);
 }
 
 function normalizeDeviceInput(device: { deviceId: string; deviceName?: string | null; platform?: string | null; appVersion?: string | null }) {
@@ -613,13 +689,16 @@ export function loginWithPassword(input: {
   const identity = emailIdentityForHash(idHash);
   if (!identity) throw new AppError(401, 'invalid_credentials', 'email or password is incorrect');
   if (!identity.password_hash) throw new AppError(409, 'password_not_set', 'email account has not set a password');
+  assertPasswordCredentialNotLocked(identity);
   if (!verifyPassword(input.password, identity.password_hash)) {
+    recordPasswordFailure(identity.user_id);
     throw new AppError(401, 'invalid_credentials', 'email or password is incorrect');
   }
   const user = userById(identity.user_id);
   if (!user) throw new AppError(401, 'invalid_credentials', 'email or password is incorrect');
   assertSessionAllowedUser(user);
   const ts = nowISO();
+  resetPasswordFailures(user.id, ts);
   db.prepare('UPDATE users SET last_login_at = ? WHERE id = ?').run(ts, user.id);
   const session = createSessionForUser(user.id, device, input.res, ts);
   return { user: userById(user.id)!, session, isNewUser: false };

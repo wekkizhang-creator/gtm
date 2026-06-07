@@ -195,6 +195,8 @@ async function main() {
     AUTH_RISK_BLOCKED_IDENTIFIERS: 'risk-blocked@example.com',
     AUTH_RISK_BLOCKED_DEVICE_IDS: 'blocked-device',
     AUTH_RISK_SUPPORT_CONTACT: 'security@example.com',
+    AUTH_PASSWORD_MAX_FAILED_ATTEMPTS: '2',
+    AUTH_PASSWORD_LOCK_SEC: '3600',
     EFFICIENCY_LIST_NO_LISTEN: '1',
   });
   const mod = await import(pathToFileURL(resolve(root, 'server', 'src', 'index.ts')).href);
@@ -369,6 +371,64 @@ async function main() {
     const aliceStillActive = await req(base, '/api/auth/session', { cookie: userACookie });
     assert(aliceStillActive.res.status === 200, `Alice current session should remain active, got ${aliceStillActive.res.status}`);
 
+    const lockEmail = 'lockout@example.com';
+    await login(base, lockEmail, smtp.messages, {
+      deviceId: 'lockout-initial-device',
+      deviceName: 'Lockout Initial',
+      platform: 'Web',
+    });
+    const lockoutFail1 = await req(base, '/api/auth/login/password', {
+      method: 'POST',
+      body: JSON.stringify({
+        email: lockEmail,
+        password: 'WrongPass123!',
+        device: { deviceId: 'lockout-wrong-1', platform: 'Web' },
+      }),
+    });
+    assert(lockoutFail1.res.status === 401, `first wrong password should be 401, got ${lockoutFail1.res.status}`);
+    assert(lockoutFail1.body.error.code === 'invalid_credentials', 'first wrong password should return invalid_credentials');
+    const lockoutFail2 = await req(base, '/api/auth/login/password', {
+      method: 'POST',
+      body: JSON.stringify({
+        email: lockEmail,
+        password: 'StillWrong123!',
+        device: { deviceId: 'lockout-wrong-2', platform: 'Web' },
+      }),
+    });
+    assert(lockoutFail2.res.status === 423, `second wrong password should lock login with 423, got ${lockoutFail2.res.status}`);
+    assert(lockoutFail2.body.error.code === 'password_login_locked', 'second wrong password should return password_login_locked');
+    const correctWhileLocked = await req(base, '/api/auth/login/password', {
+      method: 'POST',
+      body: JSON.stringify({
+        email: lockEmail,
+        password: TEST_PASSWORD,
+        device: { deviceId: 'lockout-correct-while-locked', platform: 'Web' },
+      }),
+    });
+    assert(correctWhileLocked.res.status === 423, `correct password during lock should remain 423, got ${correctWhileLocked.res.status}`);
+    assert(correctWhileLocked.body.error.code === 'password_login_locked', 'correct password during lock should return password_login_locked');
+    const lockResetChallenge = await requestPasswordResetCode(base, lockEmail, smtp.messages);
+    const lockReset = await req(base, '/api/auth/password-reset/complete', {
+      method: 'POST',
+      body: JSON.stringify({
+        ...lockResetChallenge,
+        password: 'UnlockedPass123!',
+        device: { deviceId: 'lockout-reset-device', platform: 'Web' },
+      }),
+    });
+    assert(lockReset.res.status === 200, `password reset should unlock account, got ${lockReset.res.status}`);
+    cookiesFrom(lockReset.res);
+    const loginAfterUnlock = await req(base, '/api/auth/login/password', {
+      method: 'POST',
+      body: JSON.stringify({
+        email: lockEmail,
+        password: 'UnlockedPass123!',
+        device: { deviceId: 'lockout-after-reset-login', platform: 'Web' },
+      }),
+    });
+    assert(loginAfterUnlock.res.status === 200, `login after reset should succeed, got ${loginAfterUnlock.res.status}`);
+    cookiesFrom(loginAfterUnlock.res);
+
     const exportA = await req(base, '/api/settings/export', { cookie: userACookie });
     const exportB = await req(base, '/api/settings/export', { cookie: userBCookie });
     assert(exportA.body.tasks.length === 1, `expected Alice export to include one task`);
@@ -450,18 +510,31 @@ async function main() {
       const sessions = db.prepare('SELECT COUNT(*) c FROM login_sessions').get() as { c: number };
       const revokedSessions = db.prepare('SELECT COUNT(*) c FROM login_sessions WHERE revoked_at IS NOT NULL').get() as { c: number };
       const passwordCredentials = db.prepare('SELECT COUNT(*) c FROM auth_password_credentials').get() as { c: number };
+      const lockCredential = db
+        .prepare(
+          `SELECT pc.failed_attempt_count, pc.locked_until, pc.last_failed_at
+           FROM auth_password_credentials pc
+           JOIN auth_identities ai ON ai.user_id = pc.user_id
+           WHERE ai.type = 'email' AND ai.identifier_hash = ?`,
+        )
+        .get(identifierHash('email', lockEmail)) as { failed_attempt_count: number; locked_until: string | null; last_failed_at: string | null };
       const blockedIdentifierRows = db
         .prepare("SELECT COUNT(*) c FROM verification_codes WHERE display_identifier = 'ri**********@example.com'")
         .get() as { c: number };
       const auditRiskRows = db.prepare("SELECT COUNT(*) c FROM security_audit_logs WHERE action LIKE 'auth_risk_%'").get() as { c: number };
-      assert(users.c === 3, `expected 3 users in DB, got ${users.c}`);
+      const passwordLockAuditRows = db.prepare("SELECT COUNT(*) c FROM security_audit_logs WHERE action = 'password_login_locked'").get() as { c: number };
+      assert(users.c === 4, `expected 4 users in DB, got ${users.c}`);
       assert(tasks.c === 1, `expected 1 task in DB, got ${tasks.c}`);
-      assert(consumedCodes.c === 4, `expected 4 consumed codes, got ${consumedCodes.c}`);
-      assert(sessions.c === 6, `expected 6 login sessions, got ${sessions.c}`);
+      assert(consumedCodes.c === 6, `expected 6 consumed codes, got ${consumedCodes.c}`);
+      assert(sessions.c === 9, `expected 9 login sessions, got ${sessions.c}`);
       assert(revokedSessions.c === 2, `expected 2 revoked sessions, got ${revokedSessions.c}`);
-      assert(passwordCredentials.c === 3, `expected 3 password credentials, got ${passwordCredentials.c}`);
+      assert(passwordCredentials.c === 4, `expected 4 password credentials, got ${passwordCredentials.c}`);
+      assert(lockCredential.failed_attempt_count === 0, 'password reset should clear failed password attempts');
+      assert(lockCredential.locked_until === null, 'password reset should clear password login lock');
+      assert(lockCredential.last_failed_at === null, 'password reset should clear last failed password timestamp');
       assert(blockedIdentifierRows.c === 0, 'blocked identifier should not create verification code rows');
       assert(auditRiskRows.c === 2, `expected 2 risk audit rows, got ${auditRiskRows.c}`);
+      assert(passwordLockAuditRows.c === 1, `expected one password lock audit row, got ${passwordLockAuditRows.c}`);
     } finally {
       db.close();
     }

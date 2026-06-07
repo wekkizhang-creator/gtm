@@ -43,10 +43,13 @@ db.exec(`
   );
 
   CREATE TABLE IF NOT EXISTS auth_password_credentials (
-    user_id       TEXT PRIMARY KEY REFERENCES users(id) ON DELETE CASCADE,
-    password_hash TEXT NOT NULL,
-    created_at    TEXT NOT NULL,
-    updated_at    TEXT NOT NULL
+    user_id              TEXT PRIMARY KEY REFERENCES users(id) ON DELETE CASCADE,
+    password_hash        TEXT NOT NULL,
+    failed_attempt_count INTEGER NOT NULL DEFAULT 0,
+    locked_until         TEXT,
+    last_failed_at       TEXT,
+    created_at           TEXT NOT NULL,
+    updated_at           TEXT NOT NULL
   );
 
   CREATE TABLE IF NOT EXISTS deleted_identity_reservations (
@@ -729,6 +732,9 @@ db.exec(`
   addCol('tasks', 'manual_progress', 'manual_progress INTEGER');
   addCol('tasks', 'pinned', 'pinned INTEGER NOT NULL DEFAULT 0');
   addCol('tasks', 'status', "status TEXT NOT NULL DEFAULT 'todo'");
+  addCol('auth_password_credentials', 'failed_attempt_count', 'failed_attempt_count INTEGER NOT NULL DEFAULT 0');
+  addCol('auth_password_credentials', 'locked_until', 'locked_until TEXT');
+  addCol('auth_password_credentials', 'last_failed_at', 'last_failed_at TEXT');
   addCol('verification_codes', 'display_identifier', 'display_identifier TEXT');
   addCol('verification_codes', 'requester_ip_hash', 'requester_ip_hash TEXT');
   addCol('verification_codes', 'requester_device_hash', 'requester_device_hash TEXT');

@@ -3235,3 +3235,40 @@ The email registration and password-reset start steps send the real web device I
 ### Verification
 
 `npm run test:auth-rate-limit` starts a real local SMTP server and Express app, sends verification-code requests through HTTP, verifies same-identifier resend, shared-device throttling, and request-IP throttling all return `429 rate_limited`, verifies blocked requests do not add SMTP messages, and checks SQLite contains only successful send rows with hashed IP/device dimensions.
+
+## Slice 123: Password Login Lockout
+
+AUTH-13 now includes a real account lockout rule for the email-password login flow. Wrong password attempts are tracked in SQLite on the password credential row, and after the configured threshold the account's password-login route is temporarily locked. Registration, password reset, and successful password login clear stale failure state.
+
+### Data Contract
+
+`auth_password_credentials` adds:
+
+- `failed_attempt_count INTEGER NOT NULL DEFAULT 0`
+- `locked_until TEXT`
+- `last_failed_at TEXT`
+
+These fields are account-scoped through the existing `user_id` primary key. They are never exposed in settings export or auth responses.
+
+### API Contract
+
+`POST /api/auth/login/password` behavior:
+
+- Unknown email and wrong password still return `401 invalid_credentials`.
+- Legacy email identities without a password still return `409 password_not_set`.
+- Once the wrong-password threshold is reached, the route returns `423 password_login_locked`.
+- While `locked_until` is in the future, even the correct password returns `423 password_login_locked`.
+- A successful password reset clears `failed_attempt_count`, `locked_until`, and `last_failed_at`, then creates a normal session.
+
+Optional environment knobs:
+
+- `AUTH_PASSWORD_MAX_FAILED_ATTEMPTS`, default `5`
+- `AUTH_PASSWORD_LOCK_SEC`, default `900`
+
+### Client Contract
+
+`password_login_locked` is mapped to localized auth copy so the login page does not show the server's English error string. Users can recover through the existing "forgot password" email-verification flow.
+
+### Verification
+
+`npm run test:auth` now configures a two-attempt lockout, registers a real email-password account through SMTP, verifies the first wrong password returns `401 invalid_credentials`, verifies the second wrong password returns `423 password_login_locked`, verifies the correct password is still blocked while locked, resets the password through the real SMTP verification flow, logs in with the new password, and checks SQLite password credential state plus a `password_login_locked` security audit row.

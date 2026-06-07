@@ -14,6 +14,7 @@ export const AUTH_ERROR_MESSAGES: Record<string, string> = {
   email_already_registered: '该邮箱已注册，请直接登录',
   email_not_registered: '该邮箱尚未注册，请先注册',
   password_not_set: '该邮箱尚未设置密码，请用“忘记密码”设置后登录',
+  password_login_locked: '密码错误次数过多，账号已临时锁定，请稍后再试或重置密码',
   invalid_password: '密码需为 8 到 128 个字符',
   invalid_code: '验证码不正确，请重新输入',
   code_expired: '验证码已过期，请重新获取',
