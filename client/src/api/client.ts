@@ -770,6 +770,7 @@ export const api = {
   createCountdown: (input: {
     title: string;
     targetDate: string;
+    mode?: 'countdown' | 'countup';
     icon?: string | null;
     color?: string | null;
     repeatYearly?: boolean;
@@ -778,7 +779,16 @@ export const api = {
   }) => req<{ countdown: Countdown }>('/countdowns', { method: 'POST', body: JSON.stringify(input) }).then((r) => r.countdown),
   updateCountdown: (
     id: string,
-    patch: Partial<{ title: string; targetDate: string; icon: string | null; repeatYearly: boolean; pinned: boolean; note: string | null; sortOrder: number }>,
+    patch: Partial<{
+      title: string;
+      targetDate: string;
+      mode: 'countdown' | 'countup';
+      icon: string | null;
+      repeatYearly: boolean;
+      pinned: boolean;
+      note: string | null;
+      sortOrder: number;
+    }>,
   ) => req<{ countdown: Countdown }>(`/countdowns/${id}`, { method: 'PATCH', body: JSON.stringify(patch) }).then((r) => r.countdown),
   reorderCountdowns: (orderedIds: string[]) =>
     req<{ countdowns: Countdown[] }>('/countdowns/reorder', { method: 'POST', body: JSON.stringify({ orderedIds }) }).then((r) => r.countdowns),

@@ -23,6 +23,7 @@ router.post('/', (req, res) => {
   const countdown = cd.createCountdown(requireUserId(req), {
     title: b.title.trim(),
     targetDate: b.targetDate,
+    mode: b.mode,
     icon: b.icon ?? null,
     color: b.color ?? null,
     repeatYearly: !!b.repeatYearly,

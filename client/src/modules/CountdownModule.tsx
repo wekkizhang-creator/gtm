@@ -16,6 +16,7 @@ export default function CountdownModule() {
   const [editingId, setEditingId] = useState<string | null>(null);
   const [title, setTitle] = useState('');
   const [date, setDate] = useState(todayInput());
+  const [mode, setMode] = useState<'countdown' | 'countup'>('countdown');
   const [repeat, setRepeat] = useState(false);
   const [icon, setIcon] = useState('🎯');
 
@@ -48,6 +49,7 @@ export default function CountdownModule() {
     setEditingId(null);
     setTitle('');
     setDate(todayInput());
+    setMode('countdown');
     setRepeat(false);
     setIcon('🎯');
     setShowForm(true);
@@ -56,6 +58,7 @@ export default function CountdownModule() {
     setEditingId(c.id);
     setTitle(c.title);
     setDate(c.targetDate);
+    setMode(c.mode);
     setRepeat(c.repeatYearly);
     setIcon(c.icon ?? '🎯');
     setShowForm(true);
@@ -65,7 +68,7 @@ export default function CountdownModule() {
     e.preventDefault();
     const t = title.trim();
     if (!t) return;
-    const payload = { title: t, targetDate: date, repeatYearly: repeat, icon };
+    const payload = { title: t, targetDate: date, mode, repeatYearly: repeat, icon };
     void mutate(async () => {
       if (editingId) await api.updateCountdown(editingId, payload);
       else await api.createCountdown(payload);
@@ -112,6 +115,14 @@ export default function CountdownModule() {
               <input type="checkbox" checked={repeat} onChange={(e) => setRepeat(e.target.checked)} /> 每年重复
             </label>
           </div>
+          <div className="cd-mode-row" role="group" aria-label="倒数日类型">
+            <button type="button" className={mode === 'countdown' ? 'active' : ''} onClick={() => setMode('countdown')}>
+              倒数
+            </button>
+            <button type="button" className={mode === 'countup' ? 'active' : ''} onClick={() => setMode('countup')}>
+              正数
+            </button>
+          </div>
           <div className="cd-emoji-row">
             {EMOJIS.map((em) => (
               <button type="button" key={em} className={`cd-emoji${icon === em ? ' active' : ''}`} onClick={() => setIcon(em)}>
@@ -149,6 +160,7 @@ export default function CountdownModule() {
                 {d !== 0 && <span className="cd-unit">天</span>}
               </div>
               <div className="cd-meta">
+                <span className="cd-mode-badge">{c.mode === 'countup' ? '正数' : '倒数'}</span>
                 {c.effectiveDate}
                 {c.repeatYearly ? ' · 🔁 每年' : ''}
               </div>

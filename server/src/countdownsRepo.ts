@@ -3,6 +3,9 @@ import { randomUUID } from 'node:crypto';
 import { db, nowISO } from './db';
 import { AppError, type CountdownDTO } from './types';
 
+const COUNTDOWN_MODES = ['countdown', 'countup'] as const;
+type CountdownMode = (typeof COUNTDOWN_MODES)[number];
+
 function pad(n: number): string {
   return String(n).padStart(2, '0');
 }
@@ -17,6 +20,12 @@ function todayDate(): Date {
 function parseDate(s: string): Date {
   const [y, m, d] = s.split('-').map(Number);
   return new Date(y, m - 1, d);
+}
+
+function assertCountdownMode(value: unknown): CountdownMode {
+  if (value === undefined || value === null) return 'countdown';
+  if (COUNTDOWN_MODES.includes(value as CountdownMode)) return value as CountdownMode;
+  throw new AppError(400, 'invalid_countdown_mode', 'mode must be countdown or countup');
 }
 
 /** next occurrence + signed day delta from today */
@@ -40,6 +49,7 @@ function mapCountdown(r: any): CountdownDTO {
     id: r.id,
     title: r.title,
     targetDate: r.target_date,
+    mode: assertCountdownMode(r.mode),
     icon: r.icon ?? null,
     color: r.color ?? null,
     repeatYearly: !!r.repeat_yearly,
@@ -71,6 +81,7 @@ export function listCountdowns(userId: string): CountdownDTO[] {
 export function createCountdown(userId: string, input: {
   title: string;
   targetDate: string;
+  mode?: unknown;
   icon: string | null;
   color: string | null;
   repeatYearly: boolean;
@@ -79,15 +90,17 @@ export function createCountdown(userId: string, input: {
 }): CountdownDTO {
   const id = randomUUID();
   const ts = nowISO();
+  const mode = assertCountdownMode(input.mode);
   const max = db.prepare('SELECT COALESCE(MAX(sort_order), 0) AS m FROM countdowns WHERE user_id = ?').get(userId) as { m: number };
   db.prepare(
-    `INSERT INTO countdowns (id, user_id, title, target_date, icon, color, repeat_yearly, pinned, note, sort_order, created_at, updated_at)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+    `INSERT INTO countdowns (id, user_id, title, target_date, mode, icon, color, repeat_yearly, pinned, note, sort_order, created_at, updated_at)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
   ).run(
     id,
     userId,
     input.title,
     input.targetDate,
+    mode,
     input.icon,
     input.color,
     input.repeatYearly ? 1 : 0,
@@ -132,6 +145,7 @@ export function updateCountdown(userId: string, id: string, patch: Record<string
   const map: Record<string, string> = {
     title: 'title',
     targetDate: 'target_date',
+    mode: 'mode',
     icon: 'icon',
     color: 'color',
     repeatYearly: 'repeat_yearly',
@@ -145,6 +159,7 @@ export function updateCountdown(userId: string, id: string, patch: Record<string
     if (k in patch) {
       let v = patch[k];
       if (k === 'repeatYearly' || k === 'pinned') v = v ? 1 : 0;
+      if (k === 'mode') v = assertCountdownMode(v);
       cols.push(`${col} = ?`);
       vals.push(v ?? null);
     }

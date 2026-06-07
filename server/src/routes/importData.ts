@@ -99,7 +99,16 @@ router.post('/commit', (req, res) => {
     else if (row.type === 'habits')
       habits.createHabit(userId, { name: row.title, icon: row.payload.icon ?? null, color: row.payload.color ?? null, daysOfWeek: null, note: row.payload.note ?? null });
     else if (row.type === 'countdowns')
-      countdowns.createCountdown(userId, { title: row.title, targetDate: row.payload.targetDate, icon: null, color: null, repeatYearly: false, pinned: false, note: null });
+      countdowns.createCountdown(userId, {
+        title: row.title,
+        targetDate: row.payload.targetDate,
+        mode: row.payload.mode,
+        icon: null,
+        color: null,
+        repeatYearly: false,
+        pinned: false,
+        note: null,
+      });
     else if (row.type === 'goals') tasks.createGoal(userId, { title: row.title, description: row.payload.description ?? null });
     created.push(row);
   }

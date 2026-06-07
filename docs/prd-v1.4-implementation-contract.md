@@ -2937,3 +2937,42 @@ Response:
 ### Verification
 
 `npm run test:countdowns` registers two real email/password users through the SMTP test server, creates three countdowns through HTTP, calls `POST /api/countdowns/reorder`, verifies `GET /api/countdowns` preserves the new order, verifies another account cannot reorder Alice's countdown, rejects duplicate ids with `400 invalid_countdown_order`, and checks SQLite `countdowns.sort_order` rows are rewritten as `1/2/3`.
+
+## Slice 115: Countdown Explicit Type
+
+CD-02 now stores the countdown type selected by the user instead of deriving everything from whether the target date is in the future or past. This keeps "倒数日" and "正数日" as editable product fields while preserving the existing signed day calculation for display and widgets.
+
+### Data Model
+
+`countdowns`
+
+- `mode TEXT NOT NULL DEFAULT 'countdown'`
+- Allowed values are `countdown` and `countup`.
+- Existing rows migrate to `countdown` through the repo-local SQLite migration path.
+
+### API Contract
+
+`POST /api/countdowns` accepts:
+
+```json
+{
+  "title": "Anniversary",
+  "targetDate": "2030-01-01",
+  "mode": "countup"
+}
+```
+
+`PATCH /api/countdowns/:id` accepts `{ "mode": "countdown" }` or `{ "mode": "countup" }`.
+
+- Missing `mode` defaults to `countdown` for backward compatibility.
+- Invalid values return `400 invalid_countdown_mode`.
+- `GET /api/countdowns` and desktop countdown widget data include `mode` on every `CountdownDTO`.
+- Import commit passes `payload.mode` through the same create path, so imported countdowns cannot bypass validation.
+
+### Client Contract
+
+`CountdownModule` adds a compact "倒数 / 正数" selector to the create/edit form and displays a type badge on each card. Creating or editing a countdown sends the selected `mode` through the real API.
+
+### Verification
+
+`npm run test:countdowns` now creates a `countup` countdown, verifies the default missing mode is `countdown`, rejects an invalid mode with `400 invalid_countdown_mode`, patches an existing countdown to `countup`, keeps manual ordering behavior from Slice 114, and checks SQLite persists the expected `mode` values alongside `sort_order`.

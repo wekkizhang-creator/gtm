@@ -597,6 +597,7 @@ db.exec(`
     user_id       TEXT NOT NULL,
     title         TEXT NOT NULL,
     target_date   TEXT NOT NULL,
+    mode          TEXT NOT NULL DEFAULT 'countdown',
     icon          TEXT,
     color         TEXT,
     repeat_yearly INTEGER NOT NULL DEFAULT 0,
@@ -728,6 +729,7 @@ db.exec(`
   addCol('habits', 'reminder_time', 'reminder_time TEXT');
   addCol('habit_checkins', 'value', 'value INTEGER');
   addCol('habit_checkins', 'note', 'note TEXT');
+  addCol('countdowns', 'mode', "mode TEXT NOT NULL DEFAULT 'countdown'");
 
   const settingsCols = db.prepare('PRAGMA table_info(settings)').all() as Array<{ name: string; pk: number }>;
   const hasUserId = settingsCols.some((c) => c.name === 'user_id');

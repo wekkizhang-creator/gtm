@@ -124,7 +124,7 @@ async function main() {
     const first = await req(base, '/api/countdowns', {
       method: 'POST',
       cookie: alice.cookie,
-      body: JSON.stringify({ title: 'First date', targetDate: '2030-01-01' }),
+      body: JSON.stringify({ title: 'First date', targetDate: '2030-01-01', mode: 'countup' }),
     });
     const second = await req(base, '/api/countdowns', {
       method: 'POST',
@@ -137,6 +137,24 @@ async function main() {
       body: JSON.stringify({ title: 'Third date', targetDate: '2030-01-03' }),
     });
     assert(first.res.status === 201 && second.res.status === 201 && third.res.status === 201, 'countdowns should be created through HTTP');
+    assert(first.body.countdown.mode === 'countup', 'countup mode should round-trip from create response');
+    assert(second.body.countdown.mode === 'countdown', 'missing mode should default to countdown');
+
+    const invalidMode = await req(base, '/api/countdowns', {
+      method: 'POST',
+      cookie: alice.cookie,
+      body: JSON.stringify({ title: 'Invalid mode', targetDate: '2030-01-04', mode: 'timer' }),
+    });
+    assert(invalidMode.res.status === 400, `invalid countdown mode should be 400, got ${invalidMode.res.status}`);
+    assert(invalidMode.body.error.code === 'invalid_countdown_mode', 'invalid countdown mode should return invalid_countdown_mode');
+
+    const patchedMode = await req(base, `/api/countdowns/${second.body.countdown.id}`, {
+      method: 'PATCH',
+      cookie: alice.cookie,
+      body: JSON.stringify({ mode: 'countup' }),
+    });
+    assert(patchedMode.res.status === 200, `countdown mode patch failed: ${patchedMode.res.status} ${JSON.stringify(patchedMode.body)}`);
+    assert(patchedMode.body.countdown.mode === 'countup', 'patched countdown mode should round-trip');
 
     const reordered = await req(base, '/api/countdowns/reorder', {
       method: 'POST',
@@ -174,11 +192,13 @@ async function main() {
 
     const db = new DatabaseSync(dbPath);
     try {
-      const rows = db.prepare('SELECT title, sort_order FROM countdowns WHERE user_id = ? ORDER BY sort_order ASC').all(alice.userId) as {
+      const rows = db.prepare('SELECT title, mode, sort_order FROM countdowns WHERE user_id = ? ORDER BY sort_order ASC').all(alice.userId) as {
         title: string;
+        mode: string;
         sort_order: number;
       }[];
       assert(rows.map((row) => row.title).join('|') === 'Third date|First date|Second date', 'SQLite sort_order should persist manual order');
+      assert(rows.map((row) => row.mode).join('|') === 'countdown|countup|countup', 'SQLite mode should persist create and patch values');
       assert(rows.map((row) => row.sort_order).join('|') === '1|2|3', 'SQLite sort_order should be rewritten contiguously');
     } finally {
       db.close();

@@ -1102,6 +1102,7 @@ export interface Countdown {
   id: string;
   title: string;
   targetDate: string;
+  mode: 'countdown' | 'countup';
   icon: string | null;
   color: string | null;
   repeatYearly: boolean;

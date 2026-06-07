@@ -1085,6 +1085,7 @@ export interface CountdownDTO {
   id: string;
   title: string;
   targetDate: string; // 'YYYY-MM-DD'
+  mode: 'countdown' | 'countup';
   icon: string | null;
   color: string | null;
   repeatYearly: boolean;
