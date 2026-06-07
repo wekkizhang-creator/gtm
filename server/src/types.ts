@@ -489,6 +489,14 @@ export interface SearchResultDTO {
   updatedAt: string;
 }
 
+export interface SearchHistoryDTO {
+  id: string;
+  query: string;
+  types: SearchResultDTO['type'][];
+  resultCount: number;
+  searchedAt: string;
+}
+
 export interface SavedFilterDTO {
   id: string;
   name: string;
@@ -1244,6 +1252,7 @@ export interface AccountDeletionPreviewDTO {
     habits: number;
     countdowns: number;
     notes: number;
+    searchHistory: number;
     settings: number;
   };
 }

@@ -3077,3 +3077,61 @@ Invalid response:
 ### Verification
 
 `npm run test:countdowns` now asserts the pure date policy, rejects `POST /api/countdowns` with `2030-02-31`, rejects `PATCH /api/countdowns/:id` with `2026-02-29`, and checks SQLite still contains only the original valid `target_date` values.
+
+## Slice 119: Global Search History And Type Filters
+
+SR-01 now has a real search-history path and a visible type-filter control in the global search panel. Search history is account-scoped SQLite data, not browser-local state.
+
+### Data Model
+
+`search_history`
+
+- `id TEXT PRIMARY KEY`
+- `user_id TEXT NOT NULL`
+- `query TEXT NOT NULL`
+- `types_json TEXT NOT NULL DEFAULT '[]'`
+- `result_count INTEGER NOT NULL DEFAULT 0`
+- `searched_at TEXT NOT NULL`
+- `created_at TEXT NOT NULL`
+- `updated_at TEXT NOT NULL`
+- `UNIQUE(user_id, query, types_json)`
+
+The table is exported through `/api/settings/export`, counted in the account deletion preview, and deleted by the account deletion finalizer.
+
+### API Contract
+
+`GET /api/search?q=Neptune&types=goals`
+
+- Runs the real existing search across the requested result types.
+- Supported types are `tasks`, `lists`, `tags`, `habits`, `countdowns`, and `goals`.
+- Unsupported types return `400 invalid_search_type`.
+- Successful searches upsert one `search_history` row for the current account, query, and type filter.
+
+`GET /api/search/history?limit=8`
+
+```json
+{
+  "history": [
+    {
+      "id": "history-id",
+      "query": "Neptune",
+      "types": ["goals"],
+      "resultCount": 1,
+      "searchedAt": "2026-06-07T00:00:00.000Z"
+    }
+  ]
+}
+```
+
+`DELETE /api/search/history/:id`
+
+- Deletes only the current account's history row.
+- Other-account history ids return `404 not_found`.
+
+### Client Contract
+
+`GlobalSearch` loads `/api/search/history` when opened, renders recent search chips, and lets the user re-run a previous query by clicking a chip. The type buttons serialize to the existing `types=` query parameter; clearing all type buttons searches across every supported type.
+
+### Verification
+
+`npm run test:search` now creates real rows for every searchable type, searches all types, searches only goals, rejects an unsupported type, verifies account-scoped search history through HTTP, deletes one history row, and checks SQLite `search_history` contains only the remaining account-scoped rows. `npm run test:search-client` verifies type-toggle serialization and search-history labels.

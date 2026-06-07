@@ -5685,6 +5685,45 @@ html[data-animations='off'] * {
   padding: 9px 12px;
 }
 
+.global-search-types,
+.global-search-history {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-top: 10px;
+}
+
+.global-search-types button,
+.global-search-history button {
+  border-color: var(--border);
+  background: var(--surface-2);
+  color: var(--text);
+  padding: 6px 9px;
+}
+
+.global-search-types button.active {
+  border-color: var(--accent);
+  background: var(--accent-soft);
+  color: var(--accent);
+}
+
+.global-search-history span {
+  display: inline-flex;
+  overflow: hidden;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+}
+
+.global-search-history span button {
+  border: 0;
+  border-radius: 0;
+}
+
+.global-search-history span button + button {
+  border-left: 1px solid var(--border);
+  padding-inline: 8px;
+}
+
 .global-search-panel ul {
   list-style: none;
   margin: 10px 0 0;

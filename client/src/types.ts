@@ -539,6 +539,14 @@ export interface SearchResult {
   updatedAt: string;
 }
 
+export interface SearchHistory {
+  id: string;
+  query: string;
+  types: SearchResult['type'][];
+  resultCount: number;
+  searchedAt: string;
+}
+
 export interface SavedFilter {
   id: string;
   name: string;
@@ -1261,6 +1269,7 @@ export interface AccountDeletionPreview {
     habits: number;
     countdowns: number;
     notes: number;
+    searchHistory: number;
     settings: number;
   };
 }

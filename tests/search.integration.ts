@@ -1,4 +1,5 @@
 import { loginCookie } from './auth-test-helper';
+import { DatabaseSync } from 'node:sqlite';
 import net from 'node:net';
 import { existsSync, unlinkSync } from 'node:fs';
 import { dirname, resolve } from 'node:path';
@@ -153,9 +154,46 @@ async function main() {
     const onlyGoals = await req(base, `/api/search?q=${encodeURIComponent(key)}&types=goals`, { cookie });
     assert(onlyGoals.body.results.length === 1 && onlyGoals.body.results[0].type === 'goals', 'typed search should only return goals');
 
+    const invalidType = await req(base, `/api/search?q=${encodeURIComponent(key)}&types=unknown`, { cookie });
+    assert(invalidType.res.status === 400, `invalid search type should be 400, got ${invalidType.res.status}`);
+    assert(invalidType.body.error.code === 'invalid_search_type', 'invalid search type should return invalid_search_type');
+
     const bob = await req(base, `/api/search?q=${encodeURIComponent(key)}`, { cookie: bobCookie });
     assert(bob.body.results.length === 1, `expected Bob to see one own result, got ${bob.body.results.length}`);
     assert(String(bob.body.results[0].title).includes('bob'), 'Bob search did not return own row');
+
+    const history = await req(base, '/api/search/history?limit=5', { cookie });
+    assert(history.res.status === 200, `search history failed: ${history.res.status}`);
+    const broadHistory = history.body.history.find((item: any) => item.query === key && item.types.length === 0);
+    const typedHistory = history.body.history.find((item: any) => item.query === key && item.types.join(',') === 'goals');
+    assert(broadHistory?.resultCount === all.body.results.length, 'broad search history should store result count');
+    assert(typedHistory?.resultCount === onlyGoals.body.results.length, 'typed search history should store filtered result count');
+
+    const bobHistory = await req(base, '/api/search/history', { cookie: bobCookie });
+    assert(bobHistory.body.history.length === 1, `expected Bob one history row, got ${bobHistory.body.history.length}`);
+    assert(bobHistory.body.history[0].resultCount === 1, 'Bob history should only count own results');
+
+    const aliceDeletingBobHistory = await req(base, `/api/search/history/${bobHistory.body.history[0].id}`, { method: 'DELETE', cookie });
+    assert(aliceDeletingBobHistory.res.status === 404, `Alice deleting Bob history should be 404, got ${aliceDeletingBobHistory.res.status}`);
+
+    const deletedTypedHistory = await req(base, `/api/search/history/${typedHistory.id}`, { method: 'DELETE', cookie });
+    assert(deletedTypedHistory.res.status === 204, `delete typed history should be 204, got ${deletedTypedHistory.res.status}`);
+    const afterDelete = await req(base, '/api/search/history', { cookie });
+    assert(!afterDelete.body.history.some((item: any) => item.id === typedHistory.id), 'deleted search history should disappear from API');
+
+    const db = new DatabaseSync(dbPath);
+    try {
+      const rows = db.prepare('SELECT query, types_json, result_count FROM search_history ORDER BY result_count DESC, types_json ASC').all() as Array<{
+        query: string;
+        types_json: string;
+        result_count: number;
+      }>;
+      assert(rows.length === 2, `expected two remaining search_history rows, got ${rows.length}`);
+      assert(rows.some((row) => row.query === key && row.types_json === '[]' && row.result_count === all.body.results.length), 'SQLite should keep Alice broad search history');
+      assert(rows.some((row) => row.query === key && row.types_json === '[]' && row.result_count === 1), 'SQLite should keep Bob scoped search history');
+    } finally {
+      db.close();
+    }
   } finally {
     await new Promise((resolvePromise) => server.close(() => resolvePromise(null)));
     const dbModule = await import(pathToFileURL(resolve(root, 'server', 'src', 'db.ts')).href);

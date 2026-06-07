@@ -23,6 +23,7 @@ import {
   type NotificationSoundDTO,
   type Priority,
   type SavedFilterDTO,
+  type SearchHistoryDTO,
   type SearchResultDTO,
   type SmartCounts,
   type TaskActivityDTO,
@@ -198,6 +199,23 @@ function mapSavedFilter(r: any): SavedFilterDTO {
     sortOrder: r.sort_order,
     createdAt: r.created_at,
     updatedAt: r.updated_at,
+  };
+}
+
+function mapSearchHistory(r: any): SearchHistoryDTO {
+  let types: SearchResultDTO['type'][] = [];
+  try {
+    const parsed = JSON.parse(r.types_json);
+    types = Array.isArray(parsed) ? normalizeSearchTypeFilter(parsed.map(String)) ?? [] : [];
+  } catch {
+    types = [];
+  }
+  return {
+    id: r.id,
+    query: r.query,
+    types,
+    resultCount: Number(r.result_count ?? 0),
+    searchedAt: r.searched_at,
   };
 }
 
@@ -3275,14 +3293,75 @@ export function runReminderTick(userId: string): { created: number; notification
   return { created: out.length, notifications: out };
 }
 
+export const SEARCH_RESULT_TYPES: SearchResultDTO['type'][] = ['tasks', 'lists', 'tags', 'habits', 'countdowns', 'goals'];
+
+function normalizeSearchTypeFilter(types?: string[]): SearchResultDTO['type'][] | null {
+  if (!types?.length) return null;
+  const allowed = new Set<string>(SEARCH_RESULT_TYPES);
+  const seen = new Set<string>();
+  const out: SearchResultDTO['type'][] = [];
+  for (const type of types) {
+    if (!allowed.has(type)) throw new AppError(400, 'invalid_search_type', 'types contains an unsupported search result type');
+    if (!seen.has(type)) {
+      seen.add(type);
+      out.push(type as SearchResultDTO['type']);
+    }
+  }
+  return out;
+}
+
+function recordSearchHistory(userId: string, q: string, types: SearchResultDTO['type'][], resultCount: number): void {
+  const query = q.trim();
+  if (!query) return;
+  const typesJson = JSON.stringify(types);
+  const ts = nowISO();
+  const existing = db.prepare('SELECT id FROM search_history WHERE user_id = ? AND query = ? AND types_json = ?').get(userId, query, typesJson) as
+    | { id: string }
+    | undefined;
+  if (existing) {
+    db.prepare('UPDATE search_history SET result_count = ?, searched_at = ?, updated_at = ? WHERE user_id = ? AND id = ?').run(
+      resultCount,
+      ts,
+      ts,
+      userId,
+      existing.id,
+    );
+  } else {
+    db.prepare(
+      `INSERT INTO search_history (id, user_id, query, types_json, result_count, searched_at, created_at, updated_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+    ).run(randomUUID(), userId, query, typesJson, resultCount, ts, ts, ts);
+  }
+  db.prepare(
+    `DELETE FROM search_history
+     WHERE user_id = ?
+       AND id NOT IN (
+         SELECT id FROM search_history WHERE user_id = ? ORDER BY searched_at DESC, updated_at DESC LIMIT 30
+       )`,
+  ).run(userId, userId);
+}
+
+export function listSearchHistory(userId: string, limit = 10): SearchHistoryDTO[] {
+  const n = Math.max(1, Math.min(30, Number.isFinite(limit) ? Math.floor(limit) : 10));
+  return (
+    db
+      .prepare('SELECT * FROM search_history WHERE user_id = ? ORDER BY searched_at DESC, updated_at DESC LIMIT ?')
+      .all(userId, n) as any[]
+  ).map(mapSearchHistory);
+}
+
+export function deleteSearchHistory(userId: string, id: string): boolean {
+  return db.prepare('DELETE FROM search_history WHERE user_id = ? AND id = ?').run(userId, id).changes > 0;
+}
+
 export function searchAll(
   userId: string,
   input: { q: string; types?: string[]; limit?: number },
 ): SearchResultDTO[] {
   const q = input.q.trim();
   if (!q) return [];
-  const allowed = new Set(['tasks', 'lists', 'tags', 'habits', 'countdowns', 'goals']);
-  const requested = input.types?.length ? input.types.filter((t) => allowed.has(t)) : [...allowed];
+  const typeFilter = normalizeSearchTypeFilter(input.types);
+  const requested = typeFilter ?? SEARCH_RESULT_TYPES;
   const typeSet = new Set(requested);
   const like = `%${q}%`;
   const limit = Math.max(1, Math.min(100, input.limit ?? 50));
@@ -3328,7 +3407,9 @@ export function searchAll(
       .all(userId, like, like, limit) as any[];
     for (const r of rows) push('goals', r.id, r.title, r.description ?? null, [r.title?.includes(q) ? 'title' : 'description'], r.updated_at);
   }
-  return out.sort((a, b) => b.updatedAt.localeCompare(a.updatedAt)).slice(0, limit);
+  const results = out.sort((a, b) => b.updatedAt.localeCompare(a.updatedAt)).slice(0, limit);
+  recordSearchHistory(userId, q, typeFilter ?? [], results.length);
+  return results;
 }
 
 export function listSavedFilters(userId: string): SavedFilterDTO[] {

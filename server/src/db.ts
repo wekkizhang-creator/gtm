@@ -395,6 +395,18 @@ db.exec(`
     UNIQUE(user_id, name)
   );
 
+  CREATE TABLE IF NOT EXISTS search_history (
+    id           TEXT PRIMARY KEY,
+    user_id      TEXT NOT NULL,
+    query        TEXT NOT NULL,
+    types_json   TEXT NOT NULL DEFAULT '[]',
+    result_count INTEGER NOT NULL DEFAULT 0,
+    searched_at  TEXT NOT NULL,
+    created_at   TEXT NOT NULL,
+    updated_at   TEXT NOT NULL,
+    UNIQUE(user_id, query, types_json)
+  );
+
   CREATE TABLE IF NOT EXISTS desktop_widgets (
     id            TEXT PRIMARY KEY,
     user_id       TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
@@ -792,6 +804,7 @@ db.exec(`
   CREATE INDEX IF NOT EXISTS idx_notification_permissions_user ON notification_permissions(user_id, updated_at);
   CREATE INDEX IF NOT EXISTS idx_notification_sounds_user ON notification_sounds(user_id, created_at);
   CREATE INDEX IF NOT EXISTS idx_saved_filters_user_sort ON saved_filters(user_id, sort_order, created_at);
+  CREATE INDEX IF NOT EXISTS idx_search_history_user_recent ON search_history(user_id, searched_at);
   CREATE INDEX IF NOT EXISTS idx_desktop_widgets_user ON desktop_widgets(user_id, enabled, updated_at);
   CREATE INDEX IF NOT EXISTS idx_desktop_shortcuts_user ON desktop_shortcuts(user_id, enabled, updated_at);
   CREATE INDEX IF NOT EXISTS idx_desktop_focus_timers_user ON desktop_focus_timers(user_id, updated_at);

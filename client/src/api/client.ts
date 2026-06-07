@@ -67,6 +67,7 @@ import type {
   ScheduleRuleStatus,
   ScheduleRuleTemplate,
   ScheduleRuleType,
+  SearchHistory,
   SearchResult,
   SavedFilter,
   Settings,
@@ -617,10 +618,15 @@ export const api = {
   runReminderTick: () => req<{ created: number; notifications: Notification[] }>('/reminder-runner/tick', { method: 'POST' }),
 
   // search
-  search: (q: string, types?: string) =>
-    req<{ results: SearchResult[] }>(
-      `/search?q=${encodeURIComponent(q)}${types ? `&types=${encodeURIComponent(types)}` : ''}`,
-    ).then((r) => r.results),
+  search: (q: string, types?: string | SearchResult['type'][]) => {
+    const typeParam = Array.isArray(types) ? types.join(',') : types;
+    return req<{ results: SearchResult[] }>(
+      `/search?q=${encodeURIComponent(q)}${typeParam ? `&types=${encodeURIComponent(typeParam)}` : ''}`,
+    ).then((r) => r.results);
+  },
+  listSearchHistory: (limit = 8) =>
+    req<{ history: SearchHistory[] }>(`/search/history?limit=${encodeURIComponent(String(limit))}`).then((r) => r.history),
+  deleteSearchHistory: (id: string) => req<void>(`/search/history/${id}`, { method: 'DELETE' }),
   listSavedFilters: () => req<{ filters: SavedFilter[] }>('/filters').then((r) => r.filters),
   createSavedFilter: (input: { name: string; query: Record<string, unknown>; sortOrder?: number }) =>
     req<{ filter: SavedFilter }>('/filters', { method: 'POST', body: JSON.stringify(input) }).then((r) => r.filter),

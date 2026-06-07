@@ -988,6 +988,7 @@ export function accountDeletionPreview(userId: string): AccountDeletionPreviewDT
       habits: countFor(userId, 'SELECT COUNT(*) c FROM habits WHERE user_id = ?'),
       countdowns: countFor(userId, 'SELECT COUNT(*) c FROM countdowns WHERE user_id = ?'),
       notes: countFor(userId, 'SELECT COUNT(*) c FROM sticky_notes WHERE user_id = ?'),
+      searchHistory: countFor(userId, 'SELECT COUNT(*) c FROM search_history WHERE user_id = ?'),
       settings: countFor(userId, 'SELECT COUNT(*) c FROM settings WHERE user_id = ?'),
     },
   };
@@ -1094,6 +1095,7 @@ export function finalizeDueAccountDeletions(now = nowISO()): { finalized: number
     'notification_permissions',
     'notification_sounds',
     'saved_filters',
+    'search_history',
     'desktop_widgets',
     'desktop_shortcuts',
     'desktop_shell_state',

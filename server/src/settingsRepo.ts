@@ -488,6 +488,7 @@ export function exportAll(userId: string): Record<string, unknown> {
     notificationPermissions: all('SELECT * FROM notification_permissions WHERE user_id = ?'),
     notificationSounds: all('SELECT id, name, purpose, mime_type, size_bytes, created_at FROM notification_sounds WHERE user_id = ?'),
     savedFilters: all('SELECT * FROM saved_filters WHERE user_id = ?'),
+    searchHistory: all('SELECT * FROM search_history WHERE user_id = ?'),
     desktopWidgets: all('SELECT * FROM desktop_widgets WHERE user_id = ?'),
     desktopShortcuts: all('SELECT * FROM desktop_shortcuts WHERE user_id = ?'),
     desktopShellState: all('SELECT * FROM desktop_shell_state WHERE user_id = ?'),
