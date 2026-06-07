@@ -2800,3 +2800,20 @@ The legacy `POST /api/goals/:id/auto-schedule` shortcut now uses the same propos
 ### Verification
 
 `npm run test:schedule-rules` now creates a goal inside an active 21:30 time-boundary rule, calls the legacy `/auto-schedule` route, verifies the response includes a confirmed proposal with the personal rule id, verifies the scheduled task lands at 20:00-21:30, and checks SQLite `schedule_proposals` plus `tasks.start_date/due_date` to prove the shortcut went through the real proposal confirmation path.
+
+## Slice 109: Remove Rule-Blind Auto-Schedule Writer
+
+The old repository-level `autoScheduleGoal` writer has been removed so the compatibility route cannot be accidentally reconnected to a rule-blind scheduler. The only automatic scheduling entry point left is the proposal engine, followed by normal proposal confirmation.
+
+### Contract
+
+`POST /api/goals/:id/auto-schedule` remains the compatibility API from Slice 108:
+
+- The route generates a real schedule proposal.
+- Blocking proposal conflicts return `409` before task dates are written.
+- Successful scheduling confirms the proposal and writes through the same confirmation path as the DayPilot page.
+- There is no exported `repo.autoScheduleGoal` fallback that can update task dates without `schedule_proposals` audit data.
+
+### Verification
+
+`rg "\bautoScheduleGoal\b|\bparseTimeRule\b|\balignToWindow\b" server/src tests` must return no matches for the removed repository writer/helpers. `npm run test:schedule-rules` still verifies the compatibility route creates and confirms a real proposal before writing task dates, and `npm run test:goals` keeps the legacy API behavior covered for existing clients.
