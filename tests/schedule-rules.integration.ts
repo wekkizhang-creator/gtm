@@ -212,6 +212,20 @@ async function main() {
     });
     assert(ruleRes.res.status === 201, `create rule failed: ${ruleRes.res.status} ${JSON.stringify(ruleRes.body)}`);
     const ruleId = ruleRes.body.rule.id;
+    const inactiveTimeRule = await req(base, '/api/schedule-rules', {
+      method: 'POST',
+      cookie,
+      body: JSON.stringify({
+        name: 'Sunday-only deep work block',
+        type: 'time_boundary',
+        status: 'enabled',
+        priority: 'hard',
+        condition: { daysOfWeek: [0], startTime: '20:00', endTime: '21:00' },
+        action: { effect: 'block' },
+        scope: { goalIds: [goalId] },
+      }),
+    });
+    assert(inactiveTimeRule.res.status === 201, `create inactive time rule failed: ${inactiveTimeRule.res.status} ${JSON.stringify(inactiveTimeRule.body)}`);
     const rulePatch = await req(base, `/api/schedule-rules/${ruleId}`, {
       method: 'PATCH',
       cookie,
@@ -253,6 +267,44 @@ async function main() {
       priorityDashboard.body.dashboard.activeGoals[0]?.id === goalId,
       'plan_priority rule should make its scoped plan the first active dashboard goal despite another goal having higher numeric priority',
     );
+    const sharedDashboardDue = new Date('2030-01-08T18:00:00+08:00').toISOString();
+    const competingDashboardTask = await req(base, `/api/goals/${competingGoal.body.goal.id}/tasks`, {
+      method: 'POST',
+      cookie,
+      body: JSON.stringify({ title: 'Same urgency task in competing plan', priority: 1, estimatedMinutes: 30 }),
+    });
+    assert(
+      competingDashboardTask.res.status === 201,
+      `competing dashboard task create failed: ${competingDashboardTask.res.status} ${JSON.stringify(competingDashboardTask.body)}`,
+    );
+    await req(base, `/api/tasks/${competingDashboardTask.body.task.id}`, {
+      method: 'PATCH',
+      cookie,
+      body: JSON.stringify({ dueDate: sharedDashboardDue, isAllDay: true, autoScheduleEnabled: false }),
+    });
+    const priorityDashboardTask = await req(base, `/api/goals/${goalId}/tasks`, {
+      method: 'POST',
+      cookie,
+      body: JSON.stringify({ title: 'Same urgency task in priority plan', priority: 1, estimatedMinutes: 30 }),
+    });
+    assert(
+      priorityDashboardTask.res.status === 201,
+      `priority dashboard task create failed: ${priorityDashboardTask.res.status} ${JSON.stringify(priorityDashboardTask.body)}`,
+    );
+    await req(base, `/api/tasks/${priorityDashboardTask.body.task.id}`, {
+      method: 'PATCH',
+      cookie,
+      body: JSON.stringify({ dueDate: sharedDashboardDue, isAllDay: true, autoScheduleEnabled: false }),
+    });
+    const taskPriorityDashboard = await req(base, `/api/goals/daypilot-dashboard?date=${encodeURIComponent(sharedDashboardDue)}`, { cookie });
+    assert(taskPriorityDashboard.res.status === 200, `task priority dashboard failed: ${taskPriorityDashboard.res.status} ${JSON.stringify(taskPriorityDashboard.body)}`);
+    const topTaskIds = taskPriorityDashboard.body.dashboard.topTasks.map((task: any) => task.id);
+    assert(topTaskIds.includes(priorityDashboardTask.body.task.id), 'top tasks should include the task from the plan-priority goal');
+    assert(topTaskIds.includes(competingDashboardTask.body.task.id), 'top tasks should include the competing task with the same urgency');
+    assert(
+      topTaskIds.indexOf(priorityDashboardTask.body.task.id) < topTaskIds.indexOf(competingDashboardTask.body.task.id),
+      'plan_priority rule should break same-urgency top-task ties in favor of the scoped plan',
+    );
 
     const reminderRule = await req(base, '/api/schedule-rules', {
       method: 'POST',
@@ -269,6 +321,37 @@ async function main() {
     });
     assert(reminderRule.res.status === 201, `create reminder rule failed: ${reminderRule.res.status} ${JSON.stringify(reminderRule.body)}`);
     const reminderRuleId = reminderRule.body.rule.id;
+    const unmatchedEnergyRule = await req(base, '/api/schedule-rules', {
+      method: 'POST',
+      cookie,
+      body: JSON.stringify({
+        name: 'Low energy admin window',
+        type: 'energy_preference',
+        status: 'enabled',
+        priority: 'preference',
+        condition: { energyType: 'low', startTime: '20:00', endTime: '22:00' },
+        action: { effect: 'prefer', period: 'evening' },
+        scope: { goalIds: [goalId] },
+      }),
+    });
+    assert(unmatchedEnergyRule.res.status === 201, `create unmatched energy rule failed: ${unmatchedEnergyRule.res.status} ${JSON.stringify(unmatchedEnergyRule.body)}`);
+    const unmatchedCategoryRule = await req(base, '/api/schedule-rules', {
+      method: 'POST',
+      cookie,
+      body: JSON.stringify({
+        name: 'Meeting blocks at least two hours',
+        type: 'task_category',
+        status: 'enabled',
+        priority: 'normal',
+        condition: { taskType: 'meeting' },
+        action: { effect: 'min_block', minScheduleMinutes: 120 },
+        scope: { goalIds: [goalId] },
+      }),
+    });
+    assert(
+      unmatchedCategoryRule.res.status === 201,
+      `create unmatched category rule failed: ${unmatchedCategoryRule.res.status} ${JSON.stringify(unmatchedCategoryRule.body)}`,
+    );
 
     const subscription = await req(base, '/api/calendar/subscriptions', {
       method: 'POST',
@@ -294,6 +377,18 @@ async function main() {
     assert(proposal.changes[0].ruleIds.includes(planPriorityRuleId), 'proposal change should reference the scoped plan priority rule');
     assert(proposal.changes[0].ruleIds.includes(reminderRuleId), 'proposal change should reference the reminder rule');
     assert(
+      !proposal.changes[0].ruleIds.includes(inactiveTimeRule.body.rule.id),
+      'proposal change should not reference a time-boundary rule that produced no blocks in this proposal range',
+    );
+    assert(
+      !proposal.changes[0].ruleIds.includes(unmatchedEnergyRule.body.rule.id),
+      'proposal change should not reference an energy rule whose energy type does not match the task',
+    );
+    assert(
+      !proposal.changes[0].ruleIds.includes(unmatchedCategoryRule.body.rule.id),
+      'proposal change should not reference a task-category rule whose task type does not match the task',
+    );
+    assert(
       proposal.changes[0].avoidedBlocks.some((block: any) => block.source === 'external' && block.title === 'Client Sync'),
       'proposal should explain the avoided external calendar event',
     );
@@ -302,6 +397,14 @@ async function main() {
     assert(
       proposal.explanations[0].matchedRules.some((rule: any) => rule.id === ruleId && rule.name === 'No work after 21:30'),
       'proposal explanation should expose matched rule metadata',
+    );
+    assert(
+      !proposal.explanations[0].matchedRules.some((rule: any) => rule.id === unmatchedEnergyRule.body.rule.id || rule.id === unmatchedCategoryRule.body.rule.id),
+      'proposal explanation should omit unmatched task attribute rules',
+    );
+    assert(
+      !proposal.explanations[0].matchedRules.some((rule: any) => rule.id === inactiveTimeRule.body.rule.id),
+      'proposal explanation should omit time-boundary rules that produced no concrete blocks in the proposal range',
     );
     assert(
       proposal.explanations[0].avoidedBlocks.some((block: any) => block.source === 'external' && block.title === 'Client Sync'),
@@ -394,7 +497,7 @@ async function main() {
       const rules = dbAfterPreview.prepare('SELECT COUNT(*) c FROM personal_schedule_rules WHERE user_id IS NOT NULL').get() as { c: number };
       const templates = dbAfterPreview.prepare('SELECT COUNT(*) c FROM schedule_rule_templates').get() as { c: number };
       assert(templates.c >= 4, `seeded rule templates should be persisted in SQLite, got ${templates.c}`);
-      assert(rules.c === 4, `rule preview should not persist a draft rule, got ${rules.c} rows`);
+      assert(rules.c === 7, `rule preview should not persist a draft rule, got ${rules.c} rows`);
     } finally {
       dbAfterPreview.close();
     }
@@ -413,6 +516,197 @@ async function main() {
 
     const undoAgain = await req(base, `/api/schedule-proposals/${proposal.id}/undo`, { method: 'POST', cookie });
     assert(undoAgain.res.status === 409, `second undo should be 409, got ${undoAgain.res.status}`);
+
+    const autoCompatGoal = await req(base, '/api/goals', {
+      method: 'POST',
+      cookie,
+      body: JSON.stringify({
+        title: 'Auto schedule proposal compatibility plan',
+        startAt: new Date('2030-01-07T20:00:00+08:00').toISOString(),
+        deadlineAt: new Date('2030-01-07T23:00:00+08:00').toISOString(),
+        availableTimeRule: JSON.stringify({ startHour: 20, endHour: 23 }),
+      }),
+    });
+    assert(autoCompatGoal.res.status === 201, `auto compatibility goal create failed: ${autoCompatGoal.res.status} ${JSON.stringify(autoCompatGoal.body)}`);
+    const autoCompatTask = await req(base, `/api/goals/${autoCompatGoal.body.goal.id}/tasks`, {
+      method: 'POST',
+      cookie,
+      body: JSON.stringify({ title: 'Auto route respects rules', estimatedMinutes: 90, scheduleTaskType: 'writing' }),
+    });
+    assert(autoCompatTask.res.status === 201, `auto compatibility task create failed: ${autoCompatTask.res.status} ${JSON.stringify(autoCompatTask.body)}`);
+    const autoCompat = await req(base, `/api/goals/${autoCompatGoal.body.goal.id}/auto-schedule`, { method: 'POST', cookie });
+    assert(autoCompat.res.status === 200, `rule-aware auto schedule failed: ${autoCompat.res.status} ${JSON.stringify(autoCompat.body)}`);
+    assert(autoCompat.body.scheduled.length === 1, `rule-aware auto schedule should update one task, got ${autoCompat.body.scheduled.length}`);
+    assert(autoCompat.body.proposal.status === 'confirmed', 'auto schedule should create and confirm a real schedule proposal');
+    assert(
+      autoCompat.body.proposal.changes[0].ruleIds.includes(ruleId),
+      'auto schedule proposal should carry the active personal rule id',
+    );
+    assert(
+      autoCompat.body.scheduled[0].plannedStartAt === new Date('2030-01-07T20:00:00+08:00').toISOString() &&
+        autoCompat.body.scheduled[0].plannedEndAt === new Date('2030-01-07T21:30:00+08:00').toISOString(),
+      'auto schedule compatibility route should write the proposal time that respects the time-boundary rule',
+    );
+    const dbAfterAutoCompat = new DatabaseSync(dbPath);
+    try {
+      const storedAutoProposal = dbAfterAutoCompat.prepare('SELECT status, confirmed_at, changes_json FROM schedule_proposals WHERE id = ?').get(autoCompat.body.proposal.id) as {
+        status: string;
+        confirmed_at: string | null;
+        changes_json: string;
+      };
+      const storedAutoTask = dbAfterAutoCompat.prepare('SELECT start_date, due_date FROM tasks WHERE id = ?').get(autoCompatTask.body.task.id) as {
+        start_date: string | null;
+        due_date: string | null;
+      };
+      assert(storedAutoProposal.status === 'confirmed' && storedAutoProposal.confirmed_at, 'auto schedule proposal should be confirmed in SQLite');
+      assert(JSON.parse(storedAutoProposal.changes_json)[0].ruleIds.includes(ruleId), 'stored auto schedule proposal should keep the rule id');
+      assert(storedAutoTask.start_date === autoCompat.body.scheduled[0].startDate, 'auto schedule route should persist task start_date');
+      assert(storedAutoTask.due_date === autoCompat.body.scheduled[0].dueDate, 'auto schedule route should persist task due_date');
+    } finally {
+      dbAfterAutoCompat.close();
+    }
+
+    const bufferGoal = await req(base, '/api/goals', {
+      method: 'POST',
+      cookie,
+      body: JSON.stringify({
+        title: 'Buffer capacity plan',
+        startAt: new Date('2030-01-10T09:00:00+08:00').toISOString(),
+        deadlineAt: new Date('2030-01-10T11:00:00+08:00').toISOString(),
+        availableTimeRule: JSON.stringify({ startHour: 9, endHour: 11 }),
+      }),
+    });
+    assert(bufferGoal.res.status === 201, `buffer goal create failed: ${bufferGoal.res.status} ${JSON.stringify(bufferGoal.body)}`);
+    const bufferRule = await req(base, '/api/schedule-rules', {
+      method: 'POST',
+      cookie,
+      body: JSON.stringify({
+        name: 'Leave transition buffer',
+        type: 'buffer',
+        status: 'enabled',
+        priority: 'normal',
+        condition: {},
+        action: { effect: 'add_buffer', minutes: 15 },
+        scope: { goalIds: [bufferGoal.body.goal.id] },
+      }),
+    });
+    assert(bufferRule.res.status === 201, `buffer rule create failed: ${bufferRule.res.status} ${JSON.stringify(bufferRule.body)}`);
+    const bufferFirst = await req(base, `/api/goals/${bufferGoal.body.goal.id}/tasks`, {
+      method: 'POST',
+      cookie,
+      body: JSON.stringify({ title: 'First focus block', estimatedMinutes: 60, scheduleEnergyType: 'low' }),
+    });
+    const bufferSecond = await req(base, `/api/goals/${bufferGoal.body.goal.id}/tasks`, {
+      method: 'POST',
+      cookie,
+      body: JSON.stringify({ title: 'Second focus block', estimatedMinutes: 60, scheduleEnergyType: 'low' }),
+    });
+    assert(bufferFirst.res.status === 201 && bufferSecond.res.status === 201, 'buffer test tasks should be created');
+    const bufferProposalRes = await req(base, `/api/goals/${bufferGoal.body.goal.id}/schedule-proposals`, { method: 'POST', cookie });
+    assert(bufferProposalRes.res.status === 201, `buffer proposal failed: ${bufferProposalRes.res.status} ${JSON.stringify(bufferProposalRes.body)}`);
+    const bufferProposal = bufferProposalRes.body.proposal;
+    assert(bufferProposal.changes.length === 1, `expected one schedulable buffer change, got ${bufferProposal.changes.length}`);
+    assert(bufferProposal.changes[0].taskId === bufferFirst.body.task.id, 'buffer proposal should schedule the first task only');
+    assert(bufferProposal.changes[0].ruleIds.includes(bufferRule.body.rule.id), 'buffer proposal change should reference the buffer rule');
+    assert(bufferProposal.changes[0].reason.includes('15-minute buffer'), 'buffer proposal reason should mention the active buffer duration');
+    assert(bufferProposal.explanations[0].message.includes('15-minute buffer'), 'buffer proposal explanation should mention the active buffer duration');
+    const bufferOverflow = bufferProposal.conflicts.find((conflict: any) => conflict.type === 'schedule_overflow' && conflict.taskId === bufferSecond.body.task.id);
+    assert(bufferOverflow, 'buffer proposal should record overflow for the second task');
+    assert(bufferOverflow.ruleIds.includes(bufferRule.body.rule.id), 'buffer overflow conflict should reference the buffer rule');
+    assert(bufferOverflow.message.includes('15 minutes'), 'buffer overflow conflict should explain the buffer capacity impact');
+    const dbAfterBufferProposal = new DatabaseSync(dbPath);
+    try {
+      const bufferProposalRow = dbAfterBufferProposal.prepare('SELECT changes_json, conflicts_json FROM schedule_proposals WHERE id = ?').get(bufferProposal.id) as {
+        changes_json: string;
+        conflicts_json: string;
+      };
+      assert(JSON.parse(bufferProposalRow.changes_json)[0].reason.includes('15-minute buffer'), 'stored buffer proposal change should keep buffer reason');
+      assert(
+        JSON.parse(bufferProposalRow.conflicts_json).some(
+          (conflict: any) => conflict.type === 'schedule_overflow' && conflict.message.includes('15 minutes') && conflict.ruleIds.includes(bufferRule.body.rule.id),
+        ),
+        'stored buffer proposal conflict should keep buffer impact details',
+      );
+    } finally {
+      dbAfterBufferProposal.close();
+    }
+
+    const bufferManualGoal = await req(base, '/api/goals', {
+      method: 'POST',
+      cookie,
+      body: JSON.stringify({
+        title: 'Manual buffer validation plan',
+        startAt: new Date('2030-01-10T09:00:00+08:00').toISOString(),
+        deadlineAt: new Date('2030-01-10T11:30:00+08:00').toISOString(),
+        availableTimeRule: JSON.stringify({ startHour: 9, endHour: 12 }),
+      }),
+    });
+    assert(bufferManualGoal.res.status === 201, `manual buffer goal create failed: ${bufferManualGoal.res.status} ${JSON.stringify(bufferManualGoal.body)}`);
+    const bufferManualRule = await req(base, '/api/schedule-rules', {
+      method: 'POST',
+      cookie,
+      body: JSON.stringify({
+        name: 'Manual edit transition buffer',
+        type: 'buffer',
+        status: 'enabled',
+        priority: 'normal',
+        condition: {},
+        action: { effect: 'add_buffer', minutes: 15 },
+        scope: { goalIds: [bufferManualGoal.body.goal.id] },
+      }),
+    });
+    assert(bufferManualRule.res.status === 201, `manual buffer rule create failed: ${bufferManualRule.res.status} ${JSON.stringify(bufferManualRule.body)}`);
+    const bufferManualFirst = await req(base, `/api/goals/${bufferManualGoal.body.goal.id}/tasks`, {
+      method: 'POST',
+      cookie,
+      body: JSON.stringify({ title: 'Manual buffer first block', estimatedMinutes: 60 }),
+    });
+    const bufferManualSecond = await req(base, `/api/goals/${bufferManualGoal.body.goal.id}/tasks`, {
+      method: 'POST',
+      cookie,
+      body: JSON.stringify({ title: 'Manual buffer second block', estimatedMinutes: 60 }),
+    });
+    assert(bufferManualFirst.res.status === 201 && bufferManualSecond.res.status === 201, 'manual buffer tasks should be created');
+    const bufferManualProposalRes = await req(base, `/api/goals/${bufferManualGoal.body.goal.id}/schedule-proposals`, { method: 'POST', cookie });
+    assert(
+      bufferManualProposalRes.res.status === 201,
+      `manual buffer proposal failed: ${bufferManualProposalRes.res.status} ${JSON.stringify(bufferManualProposalRes.body)}`,
+    );
+    const bufferManualProposal = bufferManualProposalRes.body.proposal;
+    assert(bufferManualProposal.changes.length === 2, `expected two manual buffer proposal changes, got ${bufferManualProposal.changes.length}`);
+    const bufferManualSecondChange = bufferManualProposal.changes.find((change: any) => change.taskId === bufferManualSecond.body.task.id);
+    assert(bufferManualSecondChange, 'manual buffer proposal should include the second task change');
+    const bufferTailStart = new Date('2030-01-10T10:00:00+08:00').toISOString();
+    const bufferTailEnd = new Date('2030-01-10T11:00:00+08:00').toISOString();
+    const bufferManualEdit = await req(base, `/api/schedule-proposals/${bufferManualProposal.id}/changes/${encodeURIComponent(bufferManualSecondChange.changeKey)}`, {
+      method: 'PATCH',
+      cookie,
+      body: JSON.stringify({ plannedStartAt: bufferTailStart, plannedEndAt: bufferTailEnd }),
+    });
+    assert(bufferManualEdit.res.status === 200, `manual buffer edit failed: ${bufferManualEdit.res.status} ${JSON.stringify(bufferManualEdit.body)}`);
+    const bufferTailChange = bufferManualEdit.body.proposal.changes.find((change: any) => change.taskId === bufferManualSecond.body.task.id);
+    assert(bufferTailChange.conflict === true, 'manual edit inside a buffer tail should mark the change as conflicting');
+    assert(bufferTailChange.reason.includes('15-minute buffer'), 'manual edit reason should explain the buffer-tail conflict');
+    assert(
+      bufferManualEdit.body.proposal.conflicts.some(
+        (conflict: any) =>
+          conflict.type === 'manual_adjustment_conflict' &&
+          conflict.taskId === bufferManualSecond.body.task.id &&
+          conflict.message.includes('15-minute buffer'),
+      ),
+      'manual buffer edit should add a manual_adjustment_conflict that explains the buffer tail',
+    );
+    const dbAfterBufferManualEdit = new DatabaseSync(dbPath);
+    try {
+      const row = dbAfterBufferManualEdit.prepare('SELECT changes_json, conflicts_json FROM schedule_proposals WHERE id = ?').get(bufferManualProposal.id) as {
+        changes_json: string;
+        conflicts_json: string;
+      };
+      assert(JSON.parse(row.changes_json).some((change: any) => change.reason.includes('15-minute buffer')), 'stored manual buffer change should keep buffer reason');
+      assert(JSON.parse(row.conflicts_json).some((conflict: any) => conflict.message.includes('15-minute buffer')), 'stored manual buffer conflict should keep buffer reason');
+    } finally {
+      dbAfterBufferManualEdit.close();
+    }
 
     const partialGoal = await req(base, '/api/goals', {
       method: 'POST',
@@ -805,6 +1099,22 @@ async function main() {
       }),
     });
     assert(mediumEnergyRule.res.status === 201, `medium energy rule create failed: ${mediumEnergyRule.res.status} ${JSON.stringify(mediumEnergyRule.body)}`);
+    const laterMediumEnergyRule = await req(base, '/api/schedule-rules', {
+      method: 'POST',
+      cookie,
+      body: JSON.stringify({
+        name: 'Medium energy after lunch',
+        type: 'energy_preference',
+        priority: 'preference',
+        condition: { energyType: 'medium', startTime: '14:00', endTime: '16:00' },
+        action: { effect: 'prefer', period: 'afternoon' },
+        scope: { goalIds: [energyGoal.body.goal.id] },
+      }),
+    });
+    assert(
+      laterMediumEnergyRule.res.status === 201,
+      `later medium energy rule create failed: ${laterMediumEnergyRule.res.status} ${JSON.stringify(laterMediumEnergyRule.body)}`,
+    );
     const invalidEnergyRule = await req(base, '/api/schedule-rules', {
       method: 'POST',
       cookie,
@@ -845,10 +1155,15 @@ async function main() {
       'energy preference proposal change should reference the matched energy rule',
     );
     assert(
+      !energyProposal.changes[0].ruleIds.includes(laterMediumEnergyRule.body.rule.id),
+      'energy preference proposal change should not reference a later matching rule when an earlier preferred window was used',
+    );
+    assert(
       energyProposal.changes[0].reason.includes('preferred energy window') &&
         energyProposal.explanations[0].message.includes('preferred time window') &&
-        energyProposal.explanations[0].matchedRules.some((rule: any) => rule.id === mediumEnergyRule.body.rule.id),
-      'energy preference proposal should explain the preferred time-window placement',
+        energyProposal.explanations[0].matchedRules.some((rule: any) => rule.id === mediumEnergyRule.body.rule.id) &&
+        !energyProposal.explanations[0].matchedRules.some((rule: any) => rule.id === laterMediumEnergyRule.body.rule.id),
+      'energy preference proposal should explain the preferred time-window placement with only the applied rule',
     );
     const energyConfirm = await req(base, `/api/schedule-proposals/${energyProposal.id}/confirm`, { method: 'POST', cookie });
     assert(energyConfirm.res.status === 200, `energy confirm failed: ${energyConfirm.res.status} ${JSON.stringify(energyConfirm.body)}`);
@@ -867,6 +1182,10 @@ async function main() {
       assert(
         JSON.parse(energyProposalRow.changes_json)[0].ruleIds.includes(mediumEnergyRule.body.rule.id),
         'stored energy proposal change should keep the energy rule id',
+      );
+      assert(
+        !JSON.parse(energyProposalRow.changes_json)[0].ruleIds.includes(laterMediumEnergyRule.body.rule.id),
+        'stored energy proposal change should omit matching-but-unused energy rule ids',
       );
       assert(
         JSON.parse(energyProposalRow.explanations_json)[0].message.includes('preferred time window'),
@@ -1076,9 +1395,9 @@ async function main() {
       cookie,
       body: JSON.stringify({
         title: 'Overflow plan',
-        startAt: new Date('2030-01-12T20:00:00+08:00').toISOString(),
-        deadlineAt: new Date('2030-01-12T21:00:00+08:00').toISOString(),
-        availableTimeRule: JSON.stringify({ startHour: 20, endHour: 21 }),
+        startAt: new Date('2030-01-07T20:00:00+08:00').toISOString(),
+        deadlineAt: new Date('2030-01-07T23:00:00+08:00').toISOString(),
+        availableTimeRule: JSON.stringify({ startHour: 20, endHour: 23 }),
       }),
     });
     assert(overflowGoal.res.status === 201, `overflow goal create failed: ${overflowGoal.res.status} ${JSON.stringify(overflowGoal.body)}`);

@@ -88,6 +88,7 @@ type BusySlot = {
   source: 'task' | 'external' | 'rule' | 'scheduled';
   ruleId?: string;
   label: string;
+  bufferTailStart?: Date;
 };
 
 type ProposalMode = 'initial_schedule' | 'reschedule';
@@ -604,6 +605,19 @@ function busySourceLabel(source: BusySlot['source']): string {
   return 'existing task';
 }
 
+function withBuffer(slot: BusySlot, bufferMinutes: number): BusySlot {
+  if (bufferMinutes <= 0) return slot;
+  return { ...slot, end: addMinutes(slot.end, bufferMinutes), bufferTailStart: slot.end };
+}
+
+function isBufferTailConflict(slot: BusySlot | null, start: Date): slot is BusySlot & { bufferTailStart: Date } {
+  return !!slot?.bufferTailStart && start >= slot.bufferTailStart && start < slot.end;
+}
+
+function bufferTailConflictText(slot: BusySlot & { bufferTailStart: Date }, bufferMinutes: number): string {
+  return `the ${bufferMinutes}-minute buffer after ${busySourceLabel(slot.source)} "${slot.label}"`;
+}
+
 function findSlot(
   startFrom: Date,
   durationMinutes: number,
@@ -671,6 +685,10 @@ function totalBufferMinutes(rules: PersonalScheduleRuleDTO[]): number {
   );
 }
 
+function bufferExplanation(bufferMinutes: number): string {
+  return bufferMinutes > 0 ? ` A ${bufferMinutes}-minute buffer is reserved after scheduled or busy blocks.` : '';
+}
+
 function reminderMinutes(rule: PersonalScheduleRuleDTO): number | null {
   const minutes = Number(rule.action.minutesBefore ?? rule.condition.minutesBefore ?? rule.action.minutes ?? rule.condition.minutes ?? 10);
   return Number.isInteger(minutes) && minutes >= 0 && minutes <= 10080 ? minutes : null;
@@ -710,10 +728,9 @@ function removeScheduleProposalReminders(userId: string, taskId: string, reminde
 
 function matchingEnergyRuleIds(task: TaskRow, rules: PersonalScheduleRuleDTO[]): string[] {
   const energy = task.schedule_energy_type as ScheduleEnergyType | null;
-  if (!energy) return [];
   return rules
     .filter((rule) => rule.status === 'enabled' && rule.type === 'energy_preference')
-    .filter((rule) => !rule.condition.energyType || rule.condition.energyType === energy)
+    .filter((rule) => !energy || !rule.condition.energyType || rule.condition.energyType === energy)
     .map((rule) => rule.id);
 }
 
@@ -740,10 +757,9 @@ function clipDateRange(
 
 function matchingEnergyRules(task: TaskRow, rules: PersonalScheduleRuleDTO[]): PersonalScheduleRuleDTO[] {
   const energy = task.schedule_energy_type as ScheduleEnergyType | null;
-  if (!energy) return [];
   return rules
     .filter((rule) => rule.status === 'enabled' && rule.type === 'energy_preference')
-    .filter((rule) => !rule.condition.energyType || rule.condition.energyType === energy);
+    .filter((rule) => !energy || !rule.condition.energyType || rule.condition.energyType === energy);
 }
 
 function findPreferredEnergySlot(
@@ -809,6 +825,16 @@ function taskCategoryMinMinutes(rule: PersonalScheduleRuleDTO): number | null {
 
 function matchingTaskCategoryRules(task: TaskRow, rules: PersonalScheduleRuleDTO[]): PersonalScheduleRuleDTO[] {
   return rules.filter((rule) => rule.status === 'enabled' && rule.type === 'task_category' && taskCategoryMatches(task, rule));
+}
+
+function generalScheduleRuleIds(rules: PersonalScheduleRuleDTO[], activeTimeBlockRuleIds: Set<string>): string[] {
+  return rules
+    .filter((rule) => {
+      if (rule.type === 'energy_preference' || rule.type === 'task_category') return false;
+      if (rule.type === 'time_boundary' || rule.type === 'fixed_habit') return activeTimeBlockRuleIds.has(rule.id);
+      return true;
+    })
+    .map((rule) => rule.id);
 }
 
 function matchedRuleSummaries(
@@ -1378,9 +1404,10 @@ export function createScheduleProposal(userId: string, goalId: string, input: Re
     suggestions: ['Confirm this proposal to apply the one-time override, or regenerate without the override to follow the rule again.'],
   }));
   const ruleSlots = expandRuleBlocks(ruleList, range, conflicts);
+  const activeTimeBlockRuleIds = new Set(ruleSlots.map((slot) => slot.ruleId).filter((id): id is string => typeof id === 'string' && !!id));
   const bufferMinutes = totalBufferMinutes(ruleList);
   const window = parseGoalWindow(goal.availableTimeRule);
-  const existingBusy = listExistingBusySlots(userId, goalId, range).map((slot) => ({ ...slot, end: addMinutes(slot.end, bufferMinutes) }));
+  const existingBusy = listExistingBusySlots(userId, goalId, range).map((slot) => withBuffer(slot, bufferMinutes));
   const busySlots: BusySlot[] = [...existingBusy, ...ruleSlots];
   let rows = db
     .prepare(
@@ -1437,7 +1464,7 @@ export function createScheduleProposal(userId: string, goalId: string, input: Re
       return true;
     });
     const movingIds = new Set(rows.map((row) => row.id as string));
-    busySlots.push(...listGoalBusySlots(userId, goalId, range, movingIds).map((slot) => ({ ...slot, end: addMinutes(slot.end, bufferMinutes) })));
+    busySlots.push(...listGoalBusySlots(userId, goalId, range, movingIds).map((slot) => withBuffer(slot, bufferMinutes)));
   }
   let ordered: TaskRow[] = [];
   try {
@@ -1455,7 +1482,7 @@ export function createScheduleProposal(userId: string, goalId: string, input: Re
   const changes: ScheduleProposalChangeDTO[] = [];
   const explanations: ScheduleProposalExplanationDTO[] = [];
   let cursor = new Date(range.fromDate);
-  const enabledRuleIds = ruleList.map((rule) => rule.id);
+  const generalRuleIds = generalScheduleRuleIds(ruleList, activeTimeBlockRuleIds);
   const candidateIds = new Set(ordered.map((row) => row.id as string));
   const scheduledTaskIds = new Set<string>();
   for (const row of ordered) {
@@ -1484,21 +1511,25 @@ export function createScheduleProposal(userId: string, goalId: string, input: Re
     const minScheduleMinutes = Math.max(15, Number(row.min_schedule_minutes) || 15, categoryMinScheduleMinutes);
     const durations = splitDurations(estimatedMinutes, minScheduleMinutes, !!row.is_splittable);
     const isSplit = durations.length > 1;
-    const energyRuleIds = matchingEnergyRuleIds(row, ruleList);
+    const candidateEnergyRuleIds = matchingEnergyRuleIds(row, ruleList);
     const categoryRuleIds = categoryRules.map((rule) => rule.id);
-    const ruleIds = Array.from(new Set([...enabledRuleIds, ...energyRuleIds, ...categoryRuleIds]));
+    const candidateRuleIds = Array.from(new Set([...generalRuleIds, ...candidateEnergyRuleIds, ...categoryRuleIds]));
     let scheduledSegments = 0;
     for (let index = 0; index < durations.length; index += 1) {
       const duration = durations[index];
       const preferredSlot = findPreferredEnergySlot(cursor, duration, range, window, row, ruleList, busySlots);
       const slot = preferredSlot ?? findSlot(cursor, duration, range.toDate, window, busySlots);
+      const appliedEnergyRuleIds = preferredSlot ? preferredSlot.preferredRuleIds : candidateEnergyRuleIds;
+      const ruleIds = Array.from(new Set([...generalRuleIds, ...appliedEnergyRuleIds, ...categoryRuleIds]));
       if (!slot) {
+        const bufferText =
+          bufferMinutes > 0 ? ` The active buffer rule reserves ${bufferMinutes} minutes after scheduled or busy blocks, reducing available capacity.` : '';
         conflicts.push({
           type: 'schedule_overflow',
           severity: 'blocking',
           taskId: row.id,
-          ruleIds: enabledRuleIds,
-          message: `Task "${row.title}" cannot fit segment ${index + 1}/${durations.length} before the range end under current rules.`,
+          ruleIds: candidateRuleIds,
+          message: `Task "${row.title}" cannot fit segment ${index + 1}/${durations.length} before the range end under current rules.${bufferText}`,
           suggestions: ['Extend the goal deadline.', 'Reduce the task estimate.', 'Disable or loosen blocking rules.'],
         });
         break;
@@ -1513,13 +1544,14 @@ export function createScheduleProposal(userId: string, goalId: string, input: Re
       const changeKey = scheduleChangeKey({ taskId: row.id, operation, segmentIndex, plannedStartAt });
       const matchedRules = matchedRuleSummaries(ruleIds, ruleList);
       const risks = scheduleRiskMessages(row, plannedEndAt);
+      const bufferText = bufferExplanation(bufferMinutes);
       const reason = preferredSlot
         ? avoidedText
-          ? `Scheduled${segmentLabel} for ${duration} minutes inside the preferred energy window after avoiding ${avoidedText}.`
-          : `Scheduled${segmentLabel} for ${duration} minutes inside the preferred energy window.`
+          ? `Scheduled${segmentLabel} for ${duration} minutes inside the preferred energy window after avoiding ${avoidedText}.${bufferText}`
+          : `Scheduled${segmentLabel} for ${duration} minutes inside the preferred energy window.${bufferText}`
         : avoidedText
-          ? `Scheduled${segmentLabel} for ${duration} minutes inside ${window.startHour}:00-${window.endHour}:00 after avoiding ${avoidedText}.`
-          : `Scheduled${segmentLabel} for ${duration} minutes inside ${window.startHour}:00-${window.endHour}:00 with no calendar conflicts.`;
+          ? `Scheduled${segmentLabel} for ${duration} minutes inside ${window.startHour}:00-${window.endHour}:00 after avoiding ${avoidedText}.${bufferText}`
+          : `Scheduled${segmentLabel} for ${duration} minutes inside ${window.startHour}:00-${window.endHour}:00 with no calendar conflicts.${bufferText}`;
       changes.push({
         changeKey,
         taskId: row.id,
@@ -1544,13 +1576,14 @@ export function createScheduleProposal(userId: string, goalId: string, input: Re
       });
       const baseExplanation = preferredSlot
         ? `${row.title}${segmentLabel} matched its energy preference and was placed inside the preferred time window.`
-        : energyRuleIds.length > 0
+        : candidateEnergyRuleIds.length > 0
           ? `${row.title}${segmentLabel} matched energy preference rules, but no preferred slot was available; it used the first conflict-free fallback slot.`
           : `${row.title}${segmentLabel} was placed in the first conflict-free slot that satisfied the work window and blocking rules.`;
       const categoryExplanation =
         categoryRules.length > 0 && categoryMinScheduleMinutes > 0
           ? `${baseExplanation} Task category rules require each block to be at least ${categoryMinScheduleMinutes} minutes.`
           : baseExplanation;
+      const bufferedExplanation = `${categoryExplanation}${bufferText}`;
       explanations.push({
         changeKey,
         taskId: row.id,
@@ -1558,9 +1591,9 @@ export function createScheduleProposal(userId: string, goalId: string, input: Re
         matchedRules,
         avoidedBlocks,
         risks,
-        message: explanationMessage({ base: categoryExplanation, matchedRules, avoidedBlocks, risks }),
+        message: explanationMessage({ base: bufferedExplanation, matchedRules, avoidedBlocks, risks }),
       });
-      busySlots.push({ start: slot.start, end: addMinutes(slot.end, bufferMinutes), source: 'scheduled', label: isSplit ? `${row.title} (${index + 1}/${durations.length})` : row.title });
+      busySlots.push(withBuffer({ start: slot.start, end: slot.end, source: 'scheduled', label: isSplit ? `${row.title} (${index + 1}/${durations.length})` : row.title }, bufferMinutes));
       cursor = addMinutes(slot.end, bufferMinutes);
       scheduledSegments += 1;
     }
@@ -1660,17 +1693,22 @@ export function updateScheduleProposalChange(
   const bufferMinutes = totalBufferMinutes(ruleList);
   const proposalTaskIds = new Set(changes.map((change) => change.taskId));
   const busySlots: BusySlot[] = [
-    ...listExistingBusySlots(userId, proposal.goalId, proposal.range).map((slot) => ({ ...slot, end: addMinutes(slot.end, bufferMinutes) })),
-    ...listGoalBusySlots(userId, proposal.goalId, proposal.range, proposalTaskIds).map((slot) => ({ ...slot, end: addMinutes(slot.end, bufferMinutes) })),
+    ...listExistingBusySlots(userId, proposal.goalId, proposal.range).map((slot) => withBuffer(slot, bufferMinutes)),
+    ...listGoalBusySlots(userId, proposal.goalId, proposal.range, proposalTaskIds).map((slot) => withBuffer(slot, bufferMinutes)),
     ...ruleSlots,
     ...changes
       .filter((change) => change.changeKey !== target.changeKey)
-      .map((change) => ({
-        start: new Date(change.plannedStartAt),
-        end: addMinutes(new Date(change.plannedEndAt), bufferMinutes),
-        source: 'scheduled' as const,
-        label: change.title,
-      })),
+      .map((change) =>
+        withBuffer(
+          {
+            start: new Date(change.plannedStartAt),
+            end: new Date(change.plannedEndAt),
+            source: 'scheduled' as const,
+            label: change.title,
+          },
+          bufferMinutes,
+        ),
+      ),
   ].filter((slot) => !Number.isNaN(slot.start.getTime()) && !Number.isNaN(slot.end.getTime()) && slot.start < slot.end);
   const blocking = findBlockingSlot(busySlots, start, end);
   const ruleIds = new Set(target.ruleIds);
@@ -1681,8 +1719,10 @@ export function updateScheduleProposalChange(
   target.ruleIds = [...ruleIds];
   target.avoidedBlocks = blocking ? mapAvoidedBlocks([blocking]) : [];
   target.conflict = !!blocking;
+  const bufferTailConflict = isBufferTailConflict(blocking, start);
+  const conflictLabel = bufferTailConflict ? bufferTailConflictText(blocking, bufferMinutes) : blocking ? `${busySourceLabel(blocking.source)} "${blocking.label}"` : '';
   target.reason = blocking
-    ? `Manually adjusted to this time, but it overlaps ${busySourceLabel(blocking.source)} "${blocking.label}".`
+    ? `Manually adjusted to this time, but it overlaps ${conflictLabel}.`
     : 'Manually adjusted to this time after server-side conflict validation.';
   const manualConflicts: ScheduleProposalConflictDTO[] = blocking
     ? [
@@ -1691,7 +1731,7 @@ export function updateScheduleProposalChange(
           severity: 'warning',
           taskId: target.taskId,
           ruleIds: blocking.ruleId ? [blocking.ruleId] : [],
-          message: `Manual adjustment for "${target.title}" overlaps ${busySourceLabel(blocking.source)} "${blocking.label}".`,
+          message: `Manual adjustment for "${target.title}" overlaps ${conflictLabel}.`,
           suggestions: ['Choose a free time slot before confirming this proposal change.'],
         },
       ]

@@ -2656,3 +2656,147 @@ SCHED-03 and the PRD's energy-preference rule now affect actual slot selection i
 ### Verification
 
 `npm run test:schedule-rules` now creates a scoped medium-energy preference rule for 10:00-12:00, rejects an invalid one-sided time window with `400 invalid_schedule_rule`, creates a real medium-energy task, generates a proposal that starts at 10:00 instead of the goal's 09:00 work-window start, confirms it, and checks SQLite for the stored rule id plus preferred-window explanation in `schedule_proposals`.
+
+## Slice 102: Precise Task Attribute Rule Matching
+
+RULE-05/SCHED-03 explanations now distinguish general active scheduling constraints from task-attribute rules. `energy_preference` and `task_category` rules are attached to a proposal change only when the current task's `scheduleEnergyType` or `scheduleTaskType` actually matches the rule.
+
+### API Contract
+
+`POST /api/goals/:id/schedule-proposals` still returns the same proposal shape:
+
+```json
+{
+  "changes": [{ "ruleIds": ["matched-rule-id"] }],
+  "explanations": [{ "matchedRules": [{ "id": "matched-rule-id" }] }]
+}
+```
+
+- General constraints (`time_boundary`, `fixed_habit`, `buffer`, `reminder`, `plan_priority`) remain active schedule constraints for the scoped goal and can appear in `ruleIds`.
+- `energy_preference` appears when its `condition.energyType` matches the task's `scheduleEnergyType`. If the task has not been classified with an energy type yet, energy-preference rules remain candidate guidance so DayPilot can still show that the proposal was shaped by pending energy rules.
+- `task_category` appears only when `condition.taskType` / `condition.taskTypes` matches the task's `scheduleTaskType`; unmatched category rules no longer make the confirmation page or DayPilot dashboard look as if they influenced the task.
+- Overflow conflicts use the same precise rule-id set for that task, so mismatch-only metadata rules are not reported as blockers.
+
+### Verification
+
+`npm run test:schedule-rules` now creates a high-energy writing task plus two scoped but non-matching rules: a low-energy preference and a meeting-category minimum block. The generated HTTP proposal keeps hard boundary, reminder, plan-priority, and matching high-energy rules, but excludes the non-matching energy/category rules from `changes[].ruleIds` and `explanations[].matchedRules`; the existing SQLite checks still prove preview and proposal rows are persisted through the real database.
+
+## Slice 103: Applied Energy Preference Rule Precision
+
+SCHED-03 explanations now report the energy-preference rule that actually selected the time window for a proposal segment, not every matching energy rule for the task. This keeps the confirmation page and DayPilot rule-impact list from overstating why a task landed in a specific slot.
+
+### API Contract
+
+`POST /api/goals/:id/schedule-proposals` keeps the existing proposal shape, but energy-preference `ruleIds` are now segment-specific:
+
+- When a preferred energy window is used, `changes[].ruleIds` and `explanations[].matchedRules` include only the applied energy rule for that segment.
+- Other matching energy rules that were not used for the selected time window are omitted from that segment.
+- If no preferred energy window can fit and the scheduler falls back to the normal work window, the proposal keeps matching energy rule IDs so the explanation can say preference rules existed but were unavailable.
+- General scoped constraints and matching task-category rules continue to be included as before.
+
+### Verification
+
+`npm run test:schedule-rules` now creates two medium-energy preference rules for the same task: 10:00-12:00 and 14:00-16:00. The generated proposal starts at 10:00, includes only the 10:00 rule in the HTTP change and explanation, excludes the later-but-matching rule, confirms the proposal, and checks SQLite `schedule_proposals.changes_json` preserves the same applied-rule precision.
+
+## Slice 104: DayPilot Plan Priority Task Ordering
+
+DayPilot plan-priority rules now affect task execution ordering, not only the active-plan card order. The dashboard still treats overdue/today tasks as the first sort dimension, then uses enabled `plan_priority` rules to break ties between tasks with the same urgency.
+
+### API Contract
+
+`GET /api/goals/daypilot-dashboard` keeps the same response shape, but `topTasks` and `unscheduledTasks` are sorted from real SQLite rows with this precedence:
+
+1. Task urgency bucket: overdue, due today, then later/no due date.
+2. Enabled `plan_priority` score for the task's goal, derived from `personal_schedule_rules`.
+3. Task `priority`.
+4. Task due date or goal deadline.
+5. Task creation time.
+
+`scheduledTasks` remain ordered by actual scheduled time because that list is a chronological agenda.
+
+### Verification
+
+`npm run test:schedule-rules` now creates two same-priority, same-due-date dashboard tasks: one in a competing high-priority goal and one in the goal scoped by a `plan_priority` rule. The competing task is created first to prove creation order is not the tie-breaker. The real `/api/goals/daypilot-dashboard` response returns both tasks in `topTasks` and orders the task from the plan-priority goal first.
+
+## Slice 105: Buffer Rule Capacity Explanation
+
+RULE-05 explanations now make buffer-rule capacity impact visible. Buffer rules already reserve time after scheduled or busy blocks; proposal changes and overflow conflicts now say how many buffer minutes were applied so the confirmation page and DayPilot rule-impact list can explain why a slot moved or no longer fits.
+
+### API Contract
+
+`POST /api/goals/:id/schedule-proposals` keeps the existing proposal shape:
+
+- When a scoped `buffer` rule is active, successful `changes[].reason` includes the applied buffer duration.
+- The matching `explanations[].message` includes the same buffer duration and keeps the buffer rule in `matchedRules`.
+- If buffer time reduces capacity enough that a task cannot fit, the `schedule_overflow` conflict message includes the buffer duration and keeps the buffer rule id in `ruleIds`.
+- Buffer rules continue to be read from `personal_schedule_rules`; no new storage table or client-side rule state is introduced.
+
+### Verification
+
+`npm run test:schedule-rules` now creates a two-hour goal window, a scoped 15-minute buffer rule, and two real 60-minute tasks. The proposal schedules only the first task, records a `schedule_overflow` for the second task, includes the buffer rule id in both the change and conflict, mentions the 15-minute buffer in HTTP reason/explanation/conflict text, and verifies the same reason/conflict details are persisted in SQLite `schedule_proposals.changes_json` and `conflicts_json`.
+
+## Slice 106: Active Time-Block Rule Precision
+
+RULE-05 explanations now distinguish active time-block constraints from enabled but irrelevant time-boundary rules. A `time_boundary` or `fixed_habit` rule is attached to proposal changes only when it expands into at least one concrete blocked slot inside the generated proposal range.
+
+### API Contract
+
+`POST /api/goals/:id/schedule-proposals` keeps the same response shape:
+
+- `time_boundary` and `fixed_habit` rules appear in `changes[].ruleIds` / `explanations[].matchedRules` only when `expandRuleBlocks` creates real blocks for the proposal range.
+- Enabled time-block rules scoped to the goal but outside the date range or wrong weekday remain stored and enabled, but do not appear as matched rules for that proposal.
+- Other general rules (`buffer`, `reminder`, `plan_priority`) keep their existing scoped-goal behavior.
+- Task-attribute precision from Slice 102 and applied-energy precision from Slice 103 continue to apply.
+
+### Verification
+
+`npm run test:schedule-rules` now creates a Sunday-only time-boundary rule scoped to a Monday-Wednesday proposal range. The generated HTTP proposal still includes the active `No work after 21:30` rule, but excludes the Sunday-only rule from `changes[].ruleIds` and `explanations[].matchedRules`; the preview test also verifies the draft preview route still does not persist any additional rule rows in SQLite.
+
+## Slice 107: Manual Adjustment Buffer-Tail Conflict Explanation
+
+Manual adjustment validation now explains when a dragged proposal change conflicts with a buffer tail rather than the scheduled block itself. This keeps the confirmation page's "manual adjustment conflict" reason aligned with the actual server-side validation.
+
+### API Contract
+
+`PATCH /api/schedule-proposals/:id/changes/:changeKey` keeps the same request and response shape:
+
+```json
+{
+  "plannedStartAt": "ISO timestamp",
+  "plannedEndAt": "ISO timestamp"
+}
+```
+
+- The server continues to validate the manual time against existing tasks, external events, rule blocks, other proposal changes, and scoped buffer rules.
+- If the edited time overlaps only the buffer tail after a busy/proposal block, `changes[].reason` and the `manual_adjustment_conflict.message` name the active buffer duration.
+- The conflict still uses `type:"manual_adjustment_conflict"` and remains a draft warning; no task dates are written until normal confirmation.
+- Public DTO fields are unchanged; the buffer-tail marker is internal validation state only.
+
+### Verification
+
+`npm run test:schedule-rules` now creates a two-task proposal with a scoped 15-minute buffer rule, then calls the real manual-change PATCH route to move the second task into the first task's buffer tail. The HTTP response marks the change conflicting, mentions the `15-minute buffer` in both the change reason and manual conflict message, and SQLite `schedule_proposals.changes_json` / `conflicts_json` preserve the same explanation.
+
+## Slice 108: Auto-Schedule Compatibility Route Uses Proposals
+
+The legacy `POST /api/goals/:id/auto-schedule` shortcut now uses the same proposal engine as the DayPilot confirmation flow. It no longer writes task times through a separate rule-blind scheduler.
+
+### API Contract
+
+`POST /api/goals/:id/auto-schedule` keeps the existing compatibility response and adds the confirmed proposal:
+
+```json
+{
+  "goal": {},
+  "scheduled": [],
+  "proposal": { "status": "confirmed" }
+}
+```
+
+- The route internally calls the real schedule-proposal generator, then confirms the draft proposal.
+- Personal schedule rules, calendar busy blocks, dependency ordering, split-task behavior, reminders, and proposal explanations follow the same logic as `POST /api/goals/:id/schedule-proposals` plus `POST /api/schedule-proposals/:id/confirm`.
+- If the generated proposal has a blocking conflict, the route returns `409` before writing task dates, instead of partially scheduling through the old direct writer.
+- If there are no eligible changes and no blocking conflicts, it returns `scheduled:[]` with the generated draft proposal for compatibility.
+
+### Verification
+
+`npm run test:schedule-rules` now creates a goal inside an active 21:30 time-boundary rule, calls the legacy `/auto-schedule` route, verifies the response includes a confirmed proposal with the personal rule id, verifies the scheduled task lands at 20:00-21:30, and checks SQLite `schedule_proposals` plus `tasks.start_date/due_date` to prove the shortcut went through the real proposal confirmation path.

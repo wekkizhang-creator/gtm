@@ -74,7 +74,22 @@ router.post('/:id/tasks/structure', async (req, res, next) => {
 });
 
 router.post('/:id/auto-schedule', (req, res) => {
-  res.json(repo.autoScheduleGoal(requireUserId(req), req.params.id));
+  const userId = requireUserId(req);
+  const proposal = scheduleRulesRepo.createScheduleProposal(userId, req.params.id, req.body ?? {});
+  const blocking = proposal.conflicts.find((conflict) => conflict.severity === 'blocking');
+  if (blocking) {
+    throw new AppError(409, blocking.type === 'schedule_overflow' ? 'schedule_overflow' : 'schedule_conflict', blocking.message);
+  }
+  if (proposal.changes.length === 0) {
+    const goal = repo.getGoal(userId, req.params.id);
+    if (!goal) throw new AppError(404, 'not_found', 'goal not found');
+    res.json({ goal, scheduled: [], proposal });
+    return;
+  }
+  const confirmed = scheduleRulesRepo.confirmScheduleProposal(userId, proposal.id);
+  const goal = repo.getGoal(userId, req.params.id);
+  if (!goal) throw new AppError(404, 'not_found', 'goal not found');
+  res.json({ goal, scheduled: confirmed.tasks, proposal: confirmed.proposal });
 });
 
 router.post('/:id/schedule-proposals', (req, res) => {

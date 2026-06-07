@@ -544,7 +544,7 @@ export const api = {
   ) => req<{ task: Task }>(`/goals/${id}/tasks`, { method: 'POST', body: JSON.stringify(input) }).then((r) => r.task),
   structureGoalTasks: (id: string, input: { taskIds?: string[] | null } = {}) =>
     req<AITaskStructureResult>(`/goals/${id}/tasks/structure`, { method: 'POST', body: JSON.stringify(input) }),
-  autoScheduleGoal: (id: string) => req<{ goal: Goal; scheduled: Task[] }>(`/goals/${id}/auto-schedule`, { method: 'POST' }),
+  autoScheduleGoal: (id: string) => req<{ goal: Goal; scheduled: Task[]; proposal: ScheduleProposal }>(`/goals/${id}/auto-schedule`, { method: 'POST' }),
   createScheduleProposal: (goalId: string, input: CreateScheduleProposalInput = {}) =>
     req<{ proposal: ScheduleProposal }>(`/goals/${goalId}/schedule-proposals`, {
       method: 'POST',

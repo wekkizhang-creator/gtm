@@ -467,6 +467,31 @@ function attachDashboardDependencyState(userId: string, tasks: DayPilotDashboard
   }));
 }
 
+function dashboardTaskDeadline(row: any): string {
+  return row.due_date ?? row.goal_deadline_at ?? '9999-12-31T23:59:59.999Z';
+}
+
+function compareDashboardTaskRows(
+  a: any,
+  b: any,
+  planPriorityScores: Map<string, number>,
+  urgencyBucket: (row: any) => number,
+): number {
+  const aBucket = urgencyBucket(a);
+  const bBucket = urgencyBucket(b);
+  if (aBucket !== bBucket) return aBucket - bBucket;
+  const aPlanScore = planPriorityScores.get(a.goal_id) ?? 0;
+  const bPlanScore = planPriorityScores.get(b.goal_id) ?? 0;
+  if (aPlanScore !== bPlanScore) return bPlanScore - aPlanScore;
+  const aPriority = Number(a.priority ?? 0);
+  const bPriority = Number(b.priority ?? 0);
+  if (aPriority !== bPriority) return bPriority - aPriority;
+  const aDeadline = dashboardTaskDeadline(a);
+  const bDeadline = dashboardTaskDeadline(b);
+  if (aDeadline !== bDeadline) return aDeadline.localeCompare(bDeadline);
+  return String(a.created_at ?? '').localeCompare(String(b.created_at ?? ''));
+}
+
 function parseJsonArraySafe(raw: unknown): any[] {
   if (!raw) return [];
   try {
@@ -2270,10 +2295,9 @@ export function getDayPilotDashboard(userId: string, input: { date?: string | nu
         SELECT 1 FROM tasks child
         WHERE child.user_id = t.user_id AND child.parent_id = t.id AND child.deleted_at IS NULL AND child.status <> 'skipped'
       )`;
-  const topTasks = attachDashboardDependencyState(userId, (
-    db
-      .prepare(
-        `SELECT t.*, g.title goal_title
+  const topTaskRows = db
+    .prepare(
+      `SELECT t.*, g.title goal_title, g.deadline_at goal_deadline_at
          ${baseTaskWhere}
          ORDER BY
            CASE
@@ -2284,10 +2308,20 @@ export function getDayPilotDashboard(userId: string, input: { date?: string | nu
            t.priority DESC,
            COALESCE(t.due_date, g.deadline_at, '9999-12-31T23:59:59.999Z') ASC,
            t.created_at ASC
-         LIMIT 3`,
+         LIMIT 50`,
+    )
+    .all(userId, range.from, range.to) as any[];
+  const topTasks = attachDashboardDependencyState(
+    userId,
+    topTaskRows
+      .sort((a, b) =>
+        compareDashboardTaskRows(a, b, planPriorityScores, (row) =>
+          row.due_date != null && row.due_date < range.from ? 0 : row.due_date != null && row.due_date <= range.to ? 1 : 2,
+        ),
       )
-      .all(userId, range.from, range.to) as any[]
-  ).map(mapDashboardTask));
+      .slice(0, 3)
+      .map(mapDashboardTask),
+  );
   const scheduledTasks = attachDashboardDependencyState(userId, (
     db
       .prepare(
@@ -2303,10 +2337,9 @@ export function getDayPilotDashboard(userId: string, input: { date?: string | nu
       )
       .all(userId, range.to, range.from) as any[]
   ).map(mapDashboardTask));
-  const unscheduledTasks = attachDashboardDependencyState(userId, (
-    db
-      .prepare(
-        `SELECT t.*, g.title goal_title
+  const unscheduledTaskRows = db
+    .prepare(
+      `SELECT t.*, g.title goal_title, g.deadline_at goal_deadline_at
          ${baseTaskWhere}
            AND t.auto_schedule_enabled = 1
            AND t.is_locked_schedule = 0
@@ -2317,10 +2350,16 @@ export function getDayPilotDashboard(userId: string, input: { date?: string | nu
            t.priority DESC,
            COALESCE(t.due_date, g.deadline_at, '9999-12-31T23:59:59.999Z') ASC,
            t.created_at ASC
-         LIMIT 8`,
-      )
-      .all(userId, range.to) as any[]
-  ).map(mapDashboardTask));
+         LIMIT 50`,
+    )
+    .all(userId, range.to) as any[];
+  const unscheduledTasks = attachDashboardDependencyState(
+    userId,
+    unscheduledTaskRows
+      .sort((a, b) => compareDashboardTaskRows(a, b, planPriorityScores, (row) => (row.due_date != null && row.due_date <= range.to ? 0 : 1)))
+      .slice(0, 8)
+      .map(mapDashboardTask),
+  );
 
   const ruleRows = db
     .prepare('SELECT id, name, priority, status FROM personal_schedule_rules WHERE user_id = ?')
