@@ -20,13 +20,15 @@ interface Props {
   onDeleteFolder: (id: string) => void;
 }
 
-const SMART_ITEMS: { key: SmartKey; label: string; icon: string }[] = [
+type SidebarSmartKey = Exclude<SmartKey, 'active'>;
+
+const SMART_ITEMS: { key: SidebarSmartKey; label: string; icon: string }[] = [
   { key: 'today', label: '今天', icon: '📅' },
   { key: 'next7days', label: '最近7天', icon: '🗓️' },
   { key: 'inbox', label: '收集箱', icon: '📥' },
 ];
 
-function isActiveSmart(sel: Selection, key: SmartKey) {
+function isActiveSmart(sel: Selection, key: SidebarSmartKey) {
   return sel.kind === 'smart' && sel.key === key;
 }
 

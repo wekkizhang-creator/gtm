@@ -14,18 +14,21 @@ import FocusModule from './modules/FocusModule';
 import HabitsModule from './modules/HabitsModule';
 import CountdownModule from './modules/CountdownModule';
 import NotesModule from './modules/NotesModule';
-import type { DesktopStatus } from './types';
+import { createSearchNavigationTarget, moduleForSearchResult, type SearchNavigationTarget } from './searchNavigation';
+import type { DesktopStatus, SearchResult } from './types';
 
 function AppInner() {
   const { settings, loaded } = useSettings();
   const [module, setModule] = useState<ModuleKey>('tasks');
   const [initialized, setInitialized] = useState(false);
   const [settingsOpen, setSettingsOpen] = useState(false);
+  const [searchTarget, setSearchTarget] = useState<SearchNavigationTarget | null>(null);
   const [desktopLocked, setDesktopLocked] = useState(false);
   const [desktopPasswordRequired, setDesktopPasswordRequired] = useState(false);
   const [unlockPassword, setUnlockPassword] = useState('');
   const [unlockError, setUnlockError] = useState<string | null>(null);
   const lastActivitySync = useRef(0);
+  const searchTargetModule = searchTarget ? moduleForSearchResult(searchTarget.type) : null;
 
   function applyDesktopStatus(status: DesktopStatus) {
     const locked = status.state.appLock && status.state.locked;
@@ -47,8 +50,8 @@ function AppInner() {
 
   // if the active module gets hidden, fall back to tasks
   useEffect(() => {
-    if (module !== 'tasks' && settings.modules.hidden.includes(module)) setModule('tasks');
-  }, [settings.modules.hidden, module]);
+    if (module !== 'tasks' && module !== searchTargetModule && settings.modules.hidden.includes(module)) setModule('tasks');
+  }, [settings.modules.hidden, module, searchTargetModule]);
 
   useEffect(() => {
     if (!loaded) return;
@@ -93,6 +96,12 @@ function AppInner() {
     }
   }
 
+  function openSearchResult(item: SearchResult) {
+    const target = createSearchNavigationTarget(item, Date.now());
+    setSearchTarget(target);
+    setModule(moduleForSearchResult(item.type));
+  }
+
   return (
     <div className="app">
       <ModuleRail
@@ -102,15 +111,15 @@ function AppInner() {
         order={settings.modules.order}
         onOpenSettings={() => setSettingsOpen(true)}
       />
-      {module === 'tasks' && <TaskModule />}
-      {module === 'goals' && <GoalModule />}
+      {module === 'tasks' && <TaskModule searchTarget={searchTarget} />}
+      {module === 'goals' && <GoalModule searchTarget={searchTarget} />}
       {module === 'calendar' && <CalendarModule />}
       {module === 'matrix' && <MatrixModule />}
       {module === 'focus' && <FocusModule />}
-      {module === 'habits' && <HabitsModule />}
-      {module === 'countdown' && <CountdownModule />}
+      {module === 'habits' && <HabitsModule searchTarget={searchTarget} />}
+      {module === 'countdown' && <CountdownModule searchTarget={searchTarget} />}
       {module === 'notes' && <NotesModule />}
-      <GlobalSearch />
+      <GlobalSearch onOpenResult={openSearchResult} />
       <NotificationCenter locked={desktopLocked} />
       <SettingsModal open={settingsOpen} onClose={() => setSettingsOpen(false)} />
       {desktopLocked && (

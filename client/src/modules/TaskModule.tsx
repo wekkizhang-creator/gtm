@@ -9,6 +9,7 @@ import { useAuth } from '../auth';
 import type { QuickAddSubmitOptions } from '../quickAddPreview';
 import { enqueueTaskCreate, flushSyncQueue, pendingSyncCount } from '../syncQueue';
 import { playTaskCompletionSound } from '../taskCompletionSound';
+import type { SearchNavigationTarget } from '../searchNavigation';
 import {
   controlsFromSavedFilterQuery,
   emptyTaskFilterState,
@@ -21,6 +22,7 @@ import type { TaskGroupMode, TaskSortMode } from '../taskListView';
 import type { AccountOnboarding, List, ListFolder, Task, SmartCounts, Selection, SmartKey, Priority, Tag, SavedFilter } from '../types';
 
 const SMART_LABELS: Record<SmartKey, string> = {
+  active: '全部任务',
   today: '今天',
   next7days: '最近7天',
   inbox: '收集箱',
@@ -36,7 +38,11 @@ interface CompletionUndoState {
   count: number;
 }
 
-export default function TaskModule() {
+interface Props {
+  searchTarget?: SearchNavigationTarget | null;
+}
+
+export default function TaskModule({ searchTarget }: Props) {
   const { settings } = useSettings();
   const { user } = useAuth();
   const [detailTask, setDetailTask] = useState<Task | null>(null);
@@ -127,6 +133,30 @@ export default function TaskModule() {
   useEffect(() => {
     void loadTasks(selection);
   }, [selection, loadTasks]);
+
+  useEffect(() => {
+    if (!searchTarget) return;
+    if (searchTarget.type === 'tasks') {
+      void api
+        .getTask(searchTarget.id)
+        .then((task) => {
+          if (task.listId) setSelection({ kind: 'list', id: task.listId });
+          setDetailTask(task);
+          setError(null);
+        })
+        .catch((err) => setError((err as Error).message));
+    } else if (searchTarget.type === 'lists') {
+      setSelection({ kind: 'list', id: searchTarget.id });
+      setTagFilter('');
+      setSavedFilterId('');
+      setTaskFilters(emptyTaskFilterState());
+    } else if (searchTarget.type === 'tags') {
+      setSelection({ kind: 'smart', key: 'active' });
+      setTagFilter(searchTarget.id);
+      setSavedFilterId('');
+      setTaskFilters(emptyTaskFilterState());
+    }
+  }, [searchTarget?.nonce]);
 
   const reload = useCallback(async () => {
     await Promise.all([loadTasks(selection), refreshSidebar(), refreshOnboarding()]);

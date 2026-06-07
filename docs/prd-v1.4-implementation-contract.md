@@ -3135,3 +3135,24 @@ The table is exported through `/api/settings/export`, counted in the account del
 ### Verification
 
 `npm run test:search` now creates real rows for every searchable type, searches all types, searches only goals, rejects an unsupported type, verifies account-scoped search history through HTTP, deletes one history row, and checks SQLite `search_history` contains only the remaining account-scoped rows. `npm run test:search-client` verifies type-toggle serialization and search-history labels.
+
+## Slice 120: Global Search Result Navigation
+
+SR-01 search results now act as entry points into the real application modules instead of being a read-only list. Clicking a result closes the search panel and sends a navigation target carrying the real result id to the owning module.
+
+### Client Contract
+
+Search result type routing:
+
+- `tasks` opens the Tasks module, fetches `/api/tasks/:id`, and opens the real task detail modal.
+- `lists` opens the Tasks module and selects the matching list scope.
+- `tags` opens the Tasks module and applies the matching tag filter.
+- `goals` opens the Goals module and selects the matching goal id.
+- `habits` opens the Habits module and highlights the matching habit row.
+- `countdowns` opens the Countdown module and highlights the matching countdown card.
+
+The global search panel does not fabricate detail content. Every clicked result uses the id returned by the real `/api/search` response, and task detail still comes from the existing `/api/tasks/:id` route.
+
+### Verification
+
+`npm run test:search-navigation-client` verifies result-type to module mapping and repeated-click navigation target creation. `npm run test:search-client`, `npm run test:search`, client/server typecheck, and the production client build cover the existing search API, typed search controls, and compiled navigation surface.

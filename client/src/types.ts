@@ -920,7 +920,7 @@ export interface SmartCounts {
   trash: number;
 }
 
-export type SmartKey = 'today' | 'next7days' | 'inbox' | 'completed' | 'trash';
+export type SmartKey = 'active' | 'today' | 'next7days' | 'inbox' | 'completed' | 'trash';
 
 export type Selection = { kind: 'smart'; key: SmartKey } | { kind: 'list'; id: string };
 

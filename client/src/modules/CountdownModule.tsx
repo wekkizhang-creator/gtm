@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useState } from 'react';
 import { api } from '../api/client';
+import type { SearchNavigationTarget } from '../searchNavigation';
 import type { Countdown } from '../types';
 
 const EMOJIS = ['🎯', '🎂', '🚀', '💍', '🎓', '✈️', '🎉', '📅', '❤️', '🏆'];
@@ -10,7 +11,11 @@ function todayInput(): string {
   return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
 }
 
-export default function CountdownModule() {
+interface Props {
+  searchTarget?: SearchNavigationTarget | null;
+}
+
+export default function CountdownModule({ searchTarget }: Props) {
   const [items, setItems] = useState<Countdown[]>([]);
   const [error, setError] = useState<string | null>(null);
   const [showForm, setShowForm] = useState(false);
@@ -161,7 +166,11 @@ export default function CountdownModule() {
           const canMoveUp = index > 0 && items[index - 1].pinned === c.pinned;
           const canMoveDown = index < items.length - 1 && items[index + 1].pinned === c.pinned;
           return (
-            <div key={c.id} className={`cd-card${c.pinned ? ' pinned' : ''}`} onClick={() => openEdit(c)}>
+            <div
+              key={c.id}
+              className={`cd-card${c.pinned ? ' pinned' : ''}${searchTarget?.type === 'countdowns' && searchTarget.id === c.id ? ' search-hit' : ''}`}
+              onClick={() => openEdit(c)}
+            >
               {c.color && <span className="cd-color-strip" style={{ background: c.color }} />}
               <div className="cd-card-top">
                 <span className="cd-icon">{c.icon ?? '📅'}</span>

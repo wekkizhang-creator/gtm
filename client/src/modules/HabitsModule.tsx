@@ -2,12 +2,17 @@ import { useCallback, useEffect, useMemo, useState } from 'react';
 import { api } from '../api/client';
 import { ensureNotificationPermission } from '../notificationPermission';
 import { useSettings } from '../settings';
+import type { SearchNavigationTarget } from '../searchNavigation';
 import { startOfDay, addDays, ymd, WEEKDAYS } from '../calendarUtil';
 import type { Habit } from '../types';
 
 const EMOJIS = ['🌙', '📖', '🏃', '💧', '🧘', '🍎', '💪', '✍️', '🛌', '🥗'];
 
-export default function HabitsModule() {
+interface Props {
+  searchTarget?: SearchNavigationTarget | null;
+}
+
+export default function HabitsModule({ searchTarget }: Props) {
   const [anchor, setAnchor] = useState<Date>(() => new Date());
   const [habits, setHabits] = useState<Habit[]>([]);
   const [error, setError] = useState<string | null>(null);
@@ -153,7 +158,7 @@ export default function HabitsModule() {
       <div className="habit-list">
         {habits.length === 0 && <div className="empty">还没有习惯，点「＋ 新建习惯」开始</div>}
         {habits.map((h) => (
-          <div key={h.id} className="habit-row">
+          <div key={h.id} className={`habit-row${searchTarget?.type === 'habits' && searchTarget.id === h.id ? ' search-hit' : ''}`}>
             <div className="habit-info">
               <span className="habit-icon">{h.icon ?? '🔁'}</span>
               <div className="habit-meta">

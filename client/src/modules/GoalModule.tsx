@@ -22,6 +22,7 @@ import {
 } from '../scheduleProposalRegenerate';
 import { buildScheduleRuleConflictActions, type ScheduleRuleConflictAction } from '../scheduleRuleConflictActions';
 import { buildScheduleRuleEditProposalInput, type ScheduleRuleEditApplyMode } from '../scheduleRuleEditEffect';
+import type { SearchNavigationTarget } from '../searchNavigation';
 import { useSettings } from '../settings';
 import { PRIORITY_LABELS, dateInputToISO, isoToDateInput } from '../util';
 import type {
@@ -130,7 +131,11 @@ function blockingDependencyText(task: { blockingDependencies: Array<{ title: str
   return task.blockingDependencies.map((dependency) => dependency.title).join('、');
 }
 
-export default function GoalModule() {
+interface Props {
+  searchTarget?: SearchNavigationTarget | null;
+}
+
+export default function GoalModule({ searchTarget }: Props) {
   const { settings } = useSettings();
   const [goals, setGoals] = useState<Goal[]>([]);
   const [selectedId, setSelectedId] = useState('');
@@ -295,6 +300,10 @@ export default function GoalModule() {
   useEffect(() => {
     void reload();
   }, [reload]);
+
+  useEffect(() => {
+    if (searchTarget?.type === 'goals') setSelectedId(searchTarget.id);
+  }, [searchTarget?.nonce]);
 
   useEffect(() => {
     setAiSchedule(null);

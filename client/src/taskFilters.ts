@@ -13,7 +13,7 @@ export interface TaskFilterState {
 
 export type TaskFilterPatch = Partial<TaskFilterState>;
 
-const SMART_KEYS: SmartKey[] = ['today', 'next7days', 'inbox', 'completed', 'trash'];
+const SMART_KEYS: SmartKey[] = ['active', 'today', 'next7days', 'inbox', 'completed', 'trash'];
 const DATE_FILTERS: TaskDateFilter[] = ['', 'today', 'next7days', 'undated'];
 const PRIORITY_FILTERS: TaskPriorityFilter[] = ['', '0', '1', '2', '3'];
 const STATUS_FILTERS: TaskStatusFilter[] = ['', 'todo', 'doing', 'waiting', 'done'];

@@ -12,7 +12,11 @@ const TYPE_LABELS: Record<SearchResult['type'], string> = {
   goals: '目标',
 };
 
-export default function GlobalSearch() {
+interface Props {
+  onOpenResult: (item: SearchResult) => void;
+}
+
+export default function GlobalSearch({ onOpenResult }: Props) {
   const [open, setOpen] = useState(false);
   const [q, setQ] = useState('');
   const [selectedTypes, setSelectedTypes] = useState<SearchResult['type'][]>([]);
@@ -66,6 +70,11 @@ export default function GlobalSearch() {
     }
   }
 
+  function openResult(item: SearchResult) {
+    onOpenResult(item);
+    setOpen(false);
+  }
+
   return (
     <div className="global-search">
       <button className="global-search-toggle" onClick={() => setOpen((v) => !v)} title="搜索">
@@ -110,9 +119,11 @@ export default function GlobalSearch() {
           <ul>
             {results.map((item) => (
               <li key={`${item.type}:${item.id}`}>
-                <span>{TYPE_LABELS[item.type]}</span>
-                <strong>{item.title}</strong>
-                {item.subtitle && <small>{item.subtitle}</small>}
+                <button type="button" className="global-search-result" onClick={() => openResult(item)}>
+                  <span>{TYPE_LABELS[item.type]}</span>
+                  <strong>{item.title}</strong>
+                  {item.subtitle && <small>{item.subtitle}</small>}
+                </button>
               </li>
             ))}
             {q && results.length === 0 && !error && <li className="notif-empty">没有结果</li>}

@@ -39,6 +39,7 @@
     "test:notification-permission-client": "npm exec -w server -- tsx ../tests/notification-permission-client.test.ts",
     "test:search": "npm exec -w server -- tsx ../tests/search.integration.ts",
     "test:search-client": "npm exec -w server -- tsx ../tests/search-client.test.ts",
+    "test:search-navigation-client": "npm exec -w server -- tsx ../tests/search-navigation-client.test.ts",
     "test:focus": "npm exec -w server -- tsx ../tests/focus.integration.ts",
     "test:focus-rest-cycle-client": "npm exec -w server -- tsx ../tests/focus-rest-cycle-client.test.ts",
     "test:focus-background-audio-client": "npm exec -w server -- tsx ../tests/focus-background-audio-client.test.ts",
