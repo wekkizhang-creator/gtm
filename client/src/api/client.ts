@@ -780,6 +780,8 @@ export const api = {
     id: string,
     patch: Partial<{ title: string; targetDate: string; icon: string | null; repeatYearly: boolean; pinned: boolean; note: string | null; sortOrder: number }>,
   ) => req<{ countdown: Countdown }>(`/countdowns/${id}`, { method: 'PATCH', body: JSON.stringify(patch) }).then((r) => r.countdown),
+  reorderCountdowns: (orderedIds: string[]) =>
+    req<{ countdowns: Countdown[] }>('/countdowns/reorder', { method: 'POST', body: JSON.stringify({ orderedIds }) }).then((r) => r.countdowns),
   deleteCountdown: (id: string) => req<void>(`/countdowns/${id}`, { method: 'DELETE' }),
 
   // settings

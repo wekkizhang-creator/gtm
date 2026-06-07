@@ -32,6 +32,15 @@ router.post('/', (req, res) => {
   res.status(201).json({ countdown });
 });
 
+// POST /api/countdowns/reorder
+router.post('/reorder', (req, res) => {
+  const orderedIds = req.body?.orderedIds;
+  if (!Array.isArray(orderedIds) || orderedIds.some((id) => typeof id !== 'string')) {
+    throw new AppError(400, 'invalid_countdown_order', 'orderedIds must be a string array');
+  }
+  res.json({ countdowns: cd.reorderCountdowns(requireUserId(req), orderedIds) });
+});
+
 // PATCH /api/countdowns/:id
 router.patch('/:id', (req, res) => {
   if (typeof req.body?.targetDate === 'string' && !DATE_RE.test(req.body.targetDate)) {

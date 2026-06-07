@@ -1,7 +1,7 @@
 // Countdown / anniversary days. Computes next occurrence + signed days remaining.
 import { randomUUID } from 'node:crypto';
 import { db, nowISO } from './db';
-import { type CountdownDTO } from './types';
+import { AppError, type CountdownDTO } from './types';
 
 function pad(n: number): string {
   return String(n).padStart(2, '0');
@@ -58,6 +58,7 @@ export function listCountdowns(userId: string): CountdownDTO[] {
   const list = rows.map(mapCountdown);
   list.sort((a, b) => {
     if (a.pinned !== b.pinned) return a.pinned ? -1 : 1; // pinned first
+    if (a.sortOrder !== b.sortOrder) return a.sortOrder - b.sortOrder;
     const au = a.daysRemaining >= 0;
     const bu = b.daysRemaining >= 0;
     if (au !== bu) return au ? -1 : 1; // upcoming before past
@@ -97,6 +98,34 @@ export function createCountdown(userId: string, input: {
     ts,
   );
   return mapCountdown(db.prepare('SELECT * FROM countdowns WHERE user_id = ? AND id = ?').get(userId, id));
+}
+
+export function reorderCountdowns(userId: string, orderedIds: string[]): CountdownDTO[] {
+  const ids = orderedIds.map((id) => id.trim());
+  const uniqueIds = Array.from(new Set(ids));
+  if (!uniqueIds.length || ids.some((id) => !id) || uniqueIds.length !== ids.length) {
+    throw new AppError(400, 'invalid_countdown_order', 'orderedIds must contain unique countdown ids');
+  }
+  const current = db.prepare('SELECT id, sort_order FROM countdowns WHERE user_id = ? ORDER BY sort_order ASC, created_at ASC').all(userId) as {
+    id: string;
+    sort_order: number;
+  }[];
+  const currentIds = new Set(current.map((row) => row.id));
+  if (uniqueIds.some((id) => !currentIds.has(id))) {
+    throw new AppError(404, 'countdown_not_found', 'countdown not found');
+  }
+  const ordered = [...uniqueIds, ...current.map((row) => row.id).filter((id) => !uniqueIds.includes(id))];
+  const ts = nowISO();
+  const update = db.prepare('UPDATE countdowns SET sort_order = ?, updated_at = ? WHERE user_id = ? AND id = ?');
+  db.exec('BEGIN');
+  try {
+    ordered.forEach((id, index) => update.run(index + 1, ts, userId, id));
+    db.exec('COMMIT');
+  } catch (err) {
+    db.exec('ROLLBACK');
+    throw err;
+  }
+  return listCountdowns(userId);
 }
 
 export function updateCountdown(userId: string, id: string, patch: Record<string, unknown>): CountdownDTO | null {

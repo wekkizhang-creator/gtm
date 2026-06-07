@@ -43,6 +43,7 @@
     "test:focus-background-audio-client": "npm exec -w server -- tsx ../tests/focus-background-audio-client.test.ts",
     "test:focus-immersive-client": "npm exec -w server -- tsx ../tests/focus-immersive-client.test.ts",
     "test:habits": "npm exec -w server -- tsx ../tests/habits.integration.ts",
+    "test:countdowns": "npm exec -w server -- tsx ../tests/countdowns.integration.ts",
     "test:calendar": "npm exec -w server -- tsx ../tests/calendar.integration.ts",
     "test:calendar-replan-candidates-client": "npm exec -w server -- tsx ../tests/calendar-replan-candidates-client.test.ts",
     "test:calendar-ui": "npm exec -w server -- tsx ../tests/calendar-ui.integration.ts",

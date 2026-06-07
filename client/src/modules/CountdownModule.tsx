@@ -73,6 +73,19 @@ export default function CountdownModule() {
     setShowForm(false);
   }
 
+  function moveCountdown(id: string, direction: -1 | 1) {
+    const index = items.findIndex((item) => item.id === id);
+    const target = index + direction;
+    if (index < 0 || target < 0 || target >= items.length) return;
+    if (items[index].pinned !== items[target].pinned) return;
+    const next = [...items];
+    [next[index], next[target]] = [next[target], next[index]];
+    void mutate(async () => {
+      const reordered = await api.reorderCountdowns(next.map((item) => item.id));
+      setItems(reordered);
+    });
+  }
+
   return (
     <main className="cd-main">
       <div className="cd-toolbar">
@@ -117,11 +130,13 @@ export default function CountdownModule() {
 
       <div className="cd-grid">
         {items.length === 0 && !showForm && <div className="empty">还没有倒数日，点「＋ 新建倒数日」开始</div>}
-        {items.map((c) => {
+        {items.map((c, index) => {
           const d = c.daysRemaining;
           const past = d < 0;
           const label = d > 0 ? '还有' : d < 0 ? '已过' : '';
           const big = d === 0 ? '今天' : String(Math.abs(d));
+          const canMoveUp = index > 0 && items[index - 1].pinned === c.pinned;
+          const canMoveDown = index < items.length - 1 && items[index + 1].pinned === c.pinned;
           return (
             <div key={c.id} className={`cd-card${c.pinned ? ' pinned' : ''}`} onClick={() => openEdit(c)}>
               <div className="cd-card-top">
@@ -144,6 +159,12 @@ export default function CountdownModule() {
                   onClick={() => void mutate(() => api.updateCountdown(c.id, { pinned: !c.pinned }))}
                 >
                   {c.pinned ? '★' : '☆'}
+                </button>
+                <button className="cd-move" title="上移" disabled={!canMoveUp} onClick={() => moveCountdown(c.id, -1)}>
+                  ▲
+                </button>
+                <button className="cd-move" title="下移" disabled={!canMoveDown} onClick={() => moveCountdown(c.id, 1)}>
+                  ▼
                 </button>
                 <button className="cd-del" title="删除" onClick={() => void mutate(() => api.deleteCountdown(c.id))}>
                   ✕

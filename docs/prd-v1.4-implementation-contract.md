@@ -2897,3 +2897,43 @@ Split-task proposals now distinguish system-created split segments from user-edi
 ### Verification
 
 `npm run test:schedule-rules` already verifies an unedited split proposal can be undone and soft-deletes the three generated `schedule_split` children. It now also confirms another split proposal, edits one generated child through `PATCH /api/tasks/:id`, calls undo, verifies `409 proposal_undo_stale`, and checks SQLite keeps the edited child active with its manually edited dates while the proposal remains `confirmed`.
+
+## Slice 114: Countdown Manual Ordering
+
+CD-04 now has a real persisted ordering path for countdowns. The existing `sortOrder` field is no longer write-only metadata; countdown lists use it after pinned priority, and the countdown page exposes up/down controls that call the backend instead of only reordering local state.
+
+### API Contract
+
+`POST /api/countdowns/reorder`
+
+Request:
+
+```json
+{
+  "orderedIds": ["countdown-id-3", "countdown-id-1", "countdown-id-2"]
+}
+```
+
+Response:
+
+```json
+{
+  "countdowns": []
+}
+```
+
+- The route requires authentication and only accepts countdown ids owned by the current user.
+- `orderedIds` must be a non-empty string array with unique ids.
+- The server rewrites `countdowns.sort_order` contiguously from `1`.
+- IDs omitted from `orderedIds` keep their relative order after the explicitly ordered ids.
+- Unknown or other-account ids return `404 countdown_not_found`.
+- Empty, duplicate, or non-string values return `400 invalid_countdown_order`.
+- `GET /api/countdowns` still returns pinned countdowns first; within the pinned and unpinned groups it now returns manual `sortOrder`.
+
+### Client Contract
+
+`CountdownModule` shows compact up/down controls on each countdown card. Movement is limited within the current pinned or unpinned group so pinned priority remains predictable. Each move calls `POST /api/countdowns/reorder`, reloads from the API, and surfaces the real API error if persistence fails.
+
+### Verification
+
+`npm run test:countdowns` registers two real email/password users through the SMTP test server, creates three countdowns through HTTP, calls `POST /api/countdowns/reorder`, verifies `GET /api/countdowns` preserves the new order, verifies another account cannot reorder Alice's countdown, rejects duplicate ids with `400 invalid_countdown_order`, and checks SQLite `countdowns.sort_order` rows are rewritten as `1/2/3`.
