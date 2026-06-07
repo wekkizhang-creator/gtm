@@ -3255,6 +3255,68 @@ html[data-animations='off'] * {
   width: min(100%, 520px);
 }
 
+.account-profile-editor {
+  gap: 10px;
+}
+
+.account-profile-preview {
+  display: grid;
+  grid-template-columns: 48px minmax(0, 1fr);
+  align-items: center;
+  gap: 12px;
+}
+
+.account-profile-preview img,
+.account-profile-preview > span {
+  width: 48px;
+  height: 48px;
+  border-radius: 50%;
+  border: 1px solid var(--border);
+  background: #f4f2ee;
+}
+
+.account-profile-preview img {
+  object-fit: cover;
+}
+
+.account-profile-preview > span {
+  display: grid;
+  place-items: center;
+  color: var(--muted);
+  font-weight: 700;
+}
+
+.account-profile-preview strong,
+.account-profile-preview small {
+  display: block;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.set-file-button {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 34px;
+  padding: 0 12px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: #fff;
+  color: var(--text);
+  cursor: pointer;
+  font-size: 13px;
+}
+
+.set-file-button input {
+  position: absolute;
+  inset: 0;
+  opacity: 0;
+  cursor: pointer;
+}
+
 .set-check-list {
   display: flex;
   flex-wrap: wrap;

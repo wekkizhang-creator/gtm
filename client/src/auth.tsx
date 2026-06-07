@@ -3,11 +3,13 @@ import { api } from './api/client';
 import { getDeviceId, trackEvent } from './analytics';
 import { resolveLogoutFlow } from './logoutFlow';
 import { describeAuthError, passwordScore } from './authMessages';
+import { LEGAL_DOC_LINKS } from './legalDocs';
 import type { AuthSession, User } from './types';
 
 interface AuthCtx {
   user: User;
   session: AuthSession;
+  updateUser: (user: User) => void;
   logout: (opts?: { confirm?: boolean }) => Promise<void>;
 }
 
@@ -390,7 +392,16 @@ function PasswordAuthScreen({ onAuthed }: { onAuthed: (s: { user: User; session:
                     trackEvent('auth_agreement_check', { checked: e.target.checked, entry: 'email_password_register' });
                   }}
                 />
-                我已阅读并同意用户协议与隐私政策
+                <span>
+                  我已阅读并同意
+                  <a href={LEGAL_DOC_LINKS.terms.href} target="_blank" rel="noreferrer" onClick={(e) => e.stopPropagation()}>
+                    {LEGAL_DOC_LINKS.terms.label}
+                  </a>
+                  与
+                  <a href={LEGAL_DOC_LINKS.privacy.href} target="_blank" rel="noreferrer" onClick={(e) => e.stopPropagation()}>
+                    {LEGAL_DOC_LINKS.privacy.label}
+                  </a>
+                </span>
               </label>
             )}
             <button className="btn-primary" disabled={busy || code.trim().length < 6 || password.length < 8 || (mode === 'register' && !agreed)}>
@@ -502,6 +513,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     return {
       user: state.user,
       session: state.session,
+      updateUser: (user: User) => setState({ user, session: state.session }),
       logout: async (opts?: { confirm?: boolean }) => {
         const logoutFlow = await resolveLogoutFlow(state.user.id, { confirmRequired: opts?.confirm !== false });
         trackEvent('auth_logout_click', {

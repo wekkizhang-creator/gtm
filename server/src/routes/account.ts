@@ -43,6 +43,19 @@ router.patch('/', (req, res) => {
   res.json({ user });
 });
 
+router.get('/avatar', (req, res) => {
+  const file = auth.getAccountAvatarFile(req.auth!.userId);
+  if (!file) throw new AppError(404, 'not_found', 'avatar not found');
+  res.setHeader('Content-Type', file.mimeType);
+  res.download(file.storagePath, file.fileName);
+});
+
+router.post('/avatar', (req, res) => {
+  const user = auth.uploadAccountAvatar(req.auth!.userId, req.body ?? {});
+  auth.audit(user.id, 'account_avatar_updated', 'user', user.id, req.ip, req.headers['user-agent']);
+  res.status(201).json({ user });
+});
+
 router.put('/password', (req, res, next) => {
   try {
     const user = auth.changeAccountPassword(req.auth!.userId, req.body ?? {});

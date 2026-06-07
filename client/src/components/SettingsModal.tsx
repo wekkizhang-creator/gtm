@@ -3,6 +3,7 @@ import { useSettings } from '../settings';
 import { useAuth } from '../auth';
 import { api } from '../api/client';
 import { trackEvent } from '../analytics';
+import { LEGAL_DOC_LINKS, legalDocEntries } from '../legalDocs';
 import { normalizeModuleOrder, reorderModuleOrder, type ModuleKey } from '../moduleOrder';
 import { clearSyncQueue, pendingSyncCount } from '../syncQueue';
 import { dateInputToISO, isoToDateInput } from '../util';
@@ -155,7 +156,7 @@ function Row({ label, hint, children }: { label: string; hint?: string; children
 
 export default function SettingsModal({ open, onClose }: { open: boolean; onClose: () => void }) {
   const { settings, update, reset } = useSettings();
-  const { user, session, logout } = useAuth();
+  const { user, session, logout, updateUser } = useAuth();
   const [cat, setCat] = useState<string>('appearance');
   const [lists, setLists] = useState<List[]>([]);
   const [tags, setTags] = useState<Tag[]>([]);
@@ -247,6 +248,10 @@ export default function SettingsModal({ open, onClose }: { open: boolean; onClos
   const [diagnosticError, setDiagnosticError] = useState<string | null>(null);
   const [tagManagerMessage, setTagManagerMessage] = useState<string | null>(null);
   const [tagManagerError, setTagManagerError] = useState<string | null>(null);
+  const [profileNickname, setProfileNickname] = useState(user.nickname ?? '');
+  const [profileBusy, setProfileBusy] = useState(false);
+  const [profileMessage, setProfileMessage] = useState<string | null>(null);
+  const [profileError, setProfileError] = useState<string | null>(null);
 
   useEffect(() => {
     if (!open) return;
@@ -273,6 +278,9 @@ export default function SettingsModal({ open, onClose }: { open: boolean; onClos
     setDiagnosticError(null);
     setTagManagerMessage(null);
     setTagManagerError(null);
+    setProfileNickname(user.nickname ?? '');
+    setProfileMessage(null);
+    setProfileError(null);
     setDeleteChallengeId('');
     setDeleteCode('');
     setDeleteConfirm('');
@@ -314,6 +322,55 @@ export default function SettingsModal({ open, onClose }: { open: boolean; onClos
       setTags(await api.listTags());
     } catch {
       setTags([]);
+    }
+  }
+
+  async function saveProfile() {
+    const nickname = profileNickname.trim();
+    setProfileBusy(true);
+    setProfileMessage(null);
+    setProfileError(null);
+    try {
+      const updated = await api.updateAccount({ nickname: nickname || null });
+      updateUser(updated);
+      setProfileNickname(updated.nickname ?? '');
+      setProfileMessage('账号资料已保存');
+    } catch (err) {
+      setProfileError((err as Error).message);
+    } finally {
+      setProfileBusy(false);
+    }
+  }
+
+  async function uploadProfileAvatar(file: File | null) {
+    if (!file) return;
+    setProfileBusy(true);
+    setProfileMessage(null);
+    setProfileError(null);
+    try {
+      const contentBase64 = await readFileAsBase64(file);
+      const updated = await api.uploadAccountAvatar({ fileName: file.name, mimeType: file.type || null, contentBase64 });
+      updateUser(updated);
+      setProfileMessage('头像已上传');
+    } catch (err) {
+      setProfileError((err as Error).message);
+    } finally {
+      setProfileBusy(false);
+    }
+  }
+
+  async function removeProfileAvatar() {
+    setProfileBusy(true);
+    setProfileMessage(null);
+    setProfileError(null);
+    try {
+      const updated = await api.updateAccount({ avatarUrl: null });
+      updateUser(updated);
+      setProfileMessage('头像已移除');
+    } catch (err) {
+      setProfileError((err as Error).message);
+    } finally {
+      setProfileBusy(false);
     }
   }
 
@@ -1930,8 +1987,8 @@ export default function SettingsModal({ open, onClose }: { open: boolean; onClos
               <Row label="检查更新">
                 <button className="btn-primary" onClick={() => void checkForUpdates()}>检查</button>
               </Row>
-              <Row label="用户协议"><a className="set-link" href="/api/about/legal/terms" target="_blank" rel="noreferrer">查看</a></Row>
-              <Row label="隐私政策"><a className="set-link" href="/api/about/legal/privacy" target="_blank" rel="noreferrer">查看</a></Row>
+              <Row label="用户协议"><a className="set-link" href={LEGAL_DOC_LINKS.terms.href} target="_blank" rel="noreferrer">查看</a></Row>
+              <Row label="隐私政策"><a className="set-link" href={LEGAL_DOC_LINKS.privacy.href} target="_blank" rel="noreferrer">查看</a></Row>
               <Row label="问题反馈">
                 <div className="set-stack about-contact">
                   {aboutContact?.feedbackUrl ? (
@@ -2012,9 +2069,64 @@ export default function SettingsModal({ open, onClose }: { open: boolean; onClos
             <div className="settings-section">
               <h2>账号</h2>
               <Row label="账号 ID"><span className="set-static">{user.id}</span></Row>
+              <Row label="账号资料" hint="昵称和头像写入当前登录账号，切换账号后不会复用上一账号资料。">
+                <div className="set-stack account-profile-editor">
+                  <div className="account-profile-preview">
+                    {user.avatarUrl ? (
+                      <img src={user.avatarUrl} alt="账号头像" />
+                    ) : (
+                      <span>{(user.nickname || accountEmailMasked || user.id).slice(0, 1).toUpperCase()}</span>
+                    )}
+                    <div>
+                      <strong>{user.nickname || accountEmailMasked || '未设置昵称'}</strong>
+                      <small>注册时间 {new Date(user.registeredAt).toLocaleString()}</small>
+                    </div>
+                  </div>
+                  <div className="set-actions compact">
+                    <input
+                      value={profileNickname}
+                      maxLength={40}
+                      placeholder="昵称（最多 40 个字符）"
+                      onChange={(e) => setProfileNickname(e.target.value)}
+                      disabled={profileBusy}
+                    />
+                    <button className="btn-primary" onClick={() => void saveProfile()} disabled={profileBusy}>
+                      {profileBusy ? '保存中...' : '保存昵称'}
+                    </button>
+                  </div>
+                  <div className="set-actions compact">
+                    <label className="set-file-button">
+                      <input
+                        type="file"
+                        accept="image/png,image/jpeg,image/webp,image/gif"
+                        disabled={profileBusy}
+                        onChange={(e) => {
+                          void uploadProfileAvatar(e.currentTarget.files?.[0] ?? null);
+                          e.currentTarget.value = '';
+                        }}
+                      />
+                      上传头像
+                    </label>
+                    <button onClick={() => void removeProfileAvatar()} disabled={profileBusy || !user.avatarUrl}>
+                      移除头像
+                    </button>
+                  </div>
+                  {profileMessage && <div className="set-feedback success">{profileMessage}</div>}
+                  {profileError && <div className="set-feedback error">{profileError}</div>}
+                </div>
+              </Row>
               <Row label="邮箱"><span className="set-static">{accountEmailMasked ?? '未绑定'}</span></Row>
               <Row label="手机号"><span className="set-static">{identities.find((identity) => identity.type === 'phone')?.displayIdentifier ?? '未绑定'}</span></Row>
               <Row label="账号状态"><span className="set-static">{user.status}</span></Row>
+              <Row label="用户协议 / 隐私政策" hint="与登录注册页一致，打开本产品当前版本的法律文档。">
+                <div className="set-actions compact">
+                  {legalDocEntries().map((item) => (
+                    <a key={item.href} className="set-link" href={item.href} target="_blank" rel="noreferrer">
+                      {item.label}
+                    </a>
+                  ))}
+                </div>
+              </Row>
               <Row label="当前设备"><span className="set-static">{session.deviceName ?? session.deviceId}</span></Row>
               <Row label="最近活跃"><span className="set-static">{new Date(session.lastActiveAt).toLocaleString()}</span></Row>
               <Row label="修改登录密码" hint="需要输入当前密码；保存后会使用新的邮箱密码登录。">

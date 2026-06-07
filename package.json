@@ -14,6 +14,7 @@
     "test:auth": "npm exec -w server -- tsx ../tests/auth.integration.ts",
     "test:auth-rate-limit": "npm exec -w server -- tsx ../tests/auth-rate-limit.integration.ts",
     "test:auth-messages": "npm exec -w server -- tsx ../tests/auth-messages-client.test.ts",
+    "test:legal-doc-links-client": "npm exec -w server -- tsx ../tests/legal-doc-links-client.test.ts",
     "test:goal-detail-summary-client": "npm exec -w server -- tsx ../tests/goal-detail-summary-client.test.ts",
     "test:goal-task-structure-summary-client": "npm exec -w server -- tsx ../tests/goal-task-structure-summary-client.test.ts",
     "test:schedule-proposal-impact-client": "npm exec -w server -- tsx ../tests/schedule-proposal-impact-client.test.ts",

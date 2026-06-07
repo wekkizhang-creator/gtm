@@ -2,7 +2,7 @@ import { TEST_PASSWORD, loginCookie, waitForEmailCode } from './auth-test-helper
 import { DatabaseSync } from 'node:sqlite';
 import net from 'node:net';
 import { createHmac, randomUUID } from 'node:crypto';
-import { existsSync, unlinkSync } from 'node:fs';
+import { existsSync, rmSync, unlinkSync } from 'node:fs';
 import { dirname, resolve } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { fileURLToPath } from 'node:url';
@@ -183,6 +183,7 @@ async function main() {
   const smtp = await startSmtp();
   const port = await freePort();
   const dbPath = resolve(root, 'server', 'data', `auth-test-${Date.now()}.db`);
+  const avatarsDir = resolve(root, 'server', 'data', `avatars-test-${Date.now()}`);
   const base = `http://127.0.0.1:${port}`;
   Object.assign(process.env, {
     PORT: String(port),
@@ -199,6 +200,8 @@ async function main() {
     AUTH_CODE_LOCK_SEC: '3600',
     AUTH_PASSWORD_MAX_FAILED_ATTEMPTS: '2',
     AUTH_PASSWORD_LOCK_SEC: '3600',
+    AVATARS_DIR: avatarsDir,
+    ACCOUNT_AVATAR_MAX_BYTES: '4096',
     EFFICIENCY_LIST_NO_LISTEN: '1',
   });
   const mod = await import(pathToFileURL(resolve(root, 'server', 'src', 'index.ts')).href);
@@ -378,6 +381,44 @@ async function main() {
     const userATasks = await req(base, '/api/tasks?view=active', { cookie: userACookie });
     assert(userATasks.body.tasks.length === 1, `expected Alice to see one task, got ${userATasks.body.tasks.length}`);
 
+    const profileUpdate = await req(base, '/api/account', {
+      method: 'PATCH',
+      cookie: userACookie,
+      body: JSON.stringify({ nickname: ' Alice Pilot ' }),
+    });
+    assert(profileUpdate.res.status === 200, `profile update failed: ${profileUpdate.res.status} ${JSON.stringify(profileUpdate.body)}`);
+    assert(profileUpdate.body.user.nickname === 'Alice Pilot', 'profile nickname should be trimmed and persisted');
+    const longNickname = await req(base, '/api/account', {
+      method: 'PATCH',
+      cookie: userACookie,
+      body: JSON.stringify({ nickname: 'A'.repeat(41) }),
+    });
+    assert(longNickname.res.status === 400, `long nickname should be 400, got ${longNickname.res.status}`);
+    assert(longNickname.body.error.code === 'invalid_nickname', 'long nickname should return invalid_nickname');
+    const invalidAvatarUrl = await req(base, '/api/account', {
+      method: 'PATCH',
+      cookie: userACookie,
+      body: JSON.stringify({ avatarUrl: 'javascript:alert(1)' }),
+    });
+    assert(invalidAvatarUrl.res.status === 400, `invalid avatar URL should be 400, got ${invalidAvatarUrl.res.status}`);
+    assert(invalidAvatarUrl.body.error.code === 'invalid_avatar_url', 'invalid avatar URL should return invalid_avatar_url');
+    const avatarBytes = Buffer.from([
+      0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 0x00, 0x00, 0x00, 0x0d, 0x49, 0x48, 0x44, 0x52, 0x00,
+      0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x01, 0x08, 0x06, 0x00, 0x00, 0x00, 0x1f, 0x15, 0xc4, 0x89, 0x00,
+      0x00, 0x00, 0x0a, 0x49, 0x44, 0x41, 0x54, 0x78, 0x9c, 0x63, 0x60, 0x00, 0x00, 0x00, 0x02, 0x00, 0x01,
+      0xe2, 0x21, 0xbc, 0x33, 0x00, 0x00, 0x00, 0x00, 0x49, 0x45, 0x4e, 0x44, 0xae, 0x42, 0x60, 0x82,
+    ]);
+    const avatarUpload = await req(base, '/api/account/avatar', {
+      method: 'POST',
+      cookie: userACookie,
+      body: JSON.stringify({ fileName: 'avatar.png', mimeType: 'image/png', contentBase64: avatarBytes.toString('base64') }),
+    });
+    assert(avatarUpload.res.status === 201, `avatar upload failed: ${avatarUpload.res.status} ${JSON.stringify(avatarUpload.body)}`);
+    assert(avatarUpload.body.user.avatarUrl?.startsWith('/api/account/avatar'), 'avatar upload should return account avatar URL');
+    const avatarDownload = await fetch(`${base}${avatarUpload.body.user.avatarUrl}`, { headers: { Cookie: userACookie } });
+    assert(avatarDownload.status === 200, `avatar download should be 200, got ${avatarDownload.status}`);
+    assert(Buffer.compare(Buffer.from(await avatarDownload.arrayBuffer()), avatarBytes) === 0, 'downloaded avatar bytes should match uploaded PNG');
+
     const userASecondCookie = await login(base, 'alice@example.com', smtp.messages, {
       deviceId: 'alice-phone',
       deviceName: 'Alice Phone',
@@ -406,6 +447,8 @@ async function main() {
     assert(onboardingB.body.onboarding.totalTaskCount === 0, 'Bob should have zero total tasks');
     const userBTasks = await req(base, '/api/tasks?view=active', { cookie: userBCookie });
     assert(userBTasks.body.tasks.length === 0, `expected Bob to see zero Alice tasks, got ${userBTasks.body.tasks.length}`);
+    const bobAvatarDownload = await fetch(`${base}/api/account/avatar`, { headers: { Cookie: userBCookie } });
+    assert(bobAvatarDownload.status === 404, `Bob avatar download should be 404, got ${bobAvatarDownload.status}`);
     const bobRevokeAlice = await req(base, `/api/account/sessions/${currentAliceSession.id}`, { method: 'DELETE', cookie: userBCookie });
     assert(bobRevokeAlice.res.status === 404, `Bob should not revoke Alice session, got ${bobRevokeAlice.res.status}`);
     const aliceStillActive = await req(base, '/api/auth/session', { cookie: userACookie });
@@ -612,6 +655,19 @@ async function main() {
            WHERE ai.type = 'email' AND ai.identifier_hash = ?`,
         )
         .get(identifierHash('email', 'alice@example.com')) as { failed_attempt_count: number; locked_until: string | null; last_failed_at: string | null };
+      const aliceProfile = db
+        .prepare(
+          `SELECT u.nickname, u.avatar_url, u.avatar_mime_type, u.avatar_storage_path
+           FROM users u
+           JOIN auth_identities ai ON ai.user_id = u.id
+           WHERE ai.type = 'email' AND ai.identifier_hash = ?`,
+        )
+        .get(identifierHash('email', 'alice@example.com')) as {
+        nickname: string | null;
+        avatar_url: string | null;
+        avatar_mime_type: string | null;
+        avatar_storage_path: string | null;
+      };
       const codeLockRow = db.prepare('SELECT attempts, locked_until, consumed_at FROM verification_codes WHERE id = ?').get(codeLockChallenge.challengeId) as {
         attempts: number;
         locked_until: string | null;
@@ -624,6 +680,8 @@ async function main() {
       const codeLockAuditRows = db.prepare("SELECT COUNT(*) c FROM security_audit_logs WHERE action = 'verification_code_locked'").get() as { c: number };
       const passwordLockAuditRows = db.prepare("SELECT COUNT(*) c FROM security_audit_logs WHERE action = 'password_login_locked'").get() as { c: number };
       const passwordChangeAuditRows = db.prepare("SELECT COUNT(*) c FROM security_audit_logs WHERE action = 'account_password_changed'").get() as { c: number };
+      const accountUpdatedAuditRows = db.prepare("SELECT COUNT(*) c FROM security_audit_logs WHERE action = 'account_updated'").get() as { c: number };
+      const avatarAuditRows = db.prepare("SELECT COUNT(*) c FROM security_audit_logs WHERE action = 'account_avatar_updated'").get() as { c: number };
       assert(users.c === 4, `expected 4 users in DB, got ${users.c}`);
       assert(tasks.c === 1, `expected 1 task in DB, got ${tasks.c}`);
       assert(consumedCodes.c === 6, `expected 6 consumed codes, got ${consumedCodes.c}`);
@@ -636,6 +694,10 @@ async function main() {
       assert(aliceCredential.failed_attempt_count === 0, 'successful account password change and login should clear Alice failed attempts');
       assert(aliceCredential.locked_until === null, 'account password change should leave Alice password unlocked');
       assert(aliceCredential.last_failed_at === null, 'successful changed-password login should clear Alice last failed timestamp');
+      assert(aliceProfile.nickname === 'Alice Pilot', `Alice nickname should persist in DB, got ${aliceProfile.nickname}`);
+      assert(aliceProfile.avatar_url?.startsWith('/api/account/avatar'), 'Alice avatar_url should persist in DB');
+      assert(aliceProfile.avatar_mime_type === 'image/png', `Alice avatar MIME should persist, got ${aliceProfile.avatar_mime_type}`);
+      assert(!!aliceProfile.avatar_storage_path && existsSync(aliceProfile.avatar_storage_path), 'Alice avatar file should exist on disk');
       assert(codeLockRow.attempts === 2, `locked verification code should keep two failed attempts, got ${codeLockRow.attempts}`);
       assert(!!codeLockRow.locked_until, 'locked verification code should persist locked_until');
       assert(codeLockRow.consumed_at === null, 'locked verification code must not be consumed');
@@ -644,6 +706,8 @@ async function main() {
       assert(codeLockAuditRows.c === 1, `expected one verification code lock audit row, got ${codeLockAuditRows.c}`);
       assert(passwordLockAuditRows.c === 1, `expected one password lock audit row, got ${passwordLockAuditRows.c}`);
       assert(passwordChangeAuditRows.c === 1, `expected one password change audit row, got ${passwordChangeAuditRows.c}`);
+      assert(accountUpdatedAuditRows.c >= 1, 'account profile update should write an account_updated audit row');
+      assert(avatarAuditRows.c === 1, `expected one avatar update audit row, got ${avatarAuditRows.c}`);
     } finally {
       db.close();
     }
@@ -656,6 +720,7 @@ async function main() {
       const p = dbPath + suffix;
       if (existsSync(p)) unlinkSync(p);
     }
+    if (existsSync(avatarsDir)) rmSync(avatarsDir, { recursive: true, force: true });
   }
 }
 

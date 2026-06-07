@@ -19,6 +19,8 @@ db.exec(`
     id                  TEXT PRIMARY KEY,
     nickname            TEXT,
     avatar_url          TEXT,
+    avatar_mime_type    TEXT,
+    avatar_storage_path TEXT,
     phone_masked        TEXT,
     email_masked        TEXT,
     status              TEXT NOT NULL DEFAULT 'normal',
@@ -736,6 +738,8 @@ db.exec(`
   addCol('auth_password_credentials', 'failed_attempt_count', 'failed_attempt_count INTEGER NOT NULL DEFAULT 0');
   addCol('auth_password_credentials', 'locked_until', 'locked_until TEXT');
   addCol('auth_password_credentials', 'last_failed_at', 'last_failed_at TEXT');
+  addCol('users', 'avatar_mime_type', 'avatar_mime_type TEXT');
+  addCol('users', 'avatar_storage_path', 'avatar_storage_path TEXT');
   addCol('verification_codes', 'display_identifier', 'display_identifier TEXT');
   addCol('verification_codes', 'requester_ip_hash', 'requester_ip_hash TEXT');
   addCol('verification_codes', 'requester_device_hash', 'requester_device_hash TEXT');

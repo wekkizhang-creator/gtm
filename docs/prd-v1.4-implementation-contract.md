@@ -3344,3 +3344,57 @@ Optional environment knobs:
 ### Verification
 
 `npm run test:auth` now creates a real SMTP registration challenge, submits two wrong verification codes with the test threshold set to `2`, verifies the first wrong code returns `400 invalid_code`, verifies the second wrong code and the correct code during lock both return `423 verification_code_locked`, and checks SQLite `verification_codes.attempts`, `locked_until`, `consumed_at`, plus a `verification_code_locked` audit row.
+
+## Slice 126: Account Profile Nickname And Avatar Upload
+
+ACC-01 and ACC-02 now have a real editable account-profile surface. Account settings still reads the authenticated user from the server session, and profile changes write to SQLite instead of being kept as client-only display state.
+
+### Data Contract
+
+`users` adds:
+
+- `avatar_mime_type TEXT`
+- `avatar_storage_path TEXT`
+
+`avatar_url` remains the public account DTO field. Uploaded avatar bytes are stored on disk under `AVATARS_DIR` (default `server/data/avatars`), while SQLite stores only the download URL, MIME type, and storage path.
+
+### API Contract
+
+- `PATCH /api/account`: accepts `{ "nickname": string | null, "avatarUrl": string | null }`.
+  - `nickname` is trimmed; empty values clear the nickname.
+  - Nicknames longer than 40 characters return `400 invalid_nickname`.
+  - External avatar URLs must be `http` or `https`; invalid values return `400 invalid_avatar_url`.
+- `POST /api/account/avatar`: accepts `{ "fileName": string, "mimeType": "image/png|image/jpeg|image/webp|image/gif", "contentBase64": string }`.
+  - Unsupported MIME types or empty payloads return `400 invalid_avatar`.
+  - Files over `ACCOUNT_AVATAR_MAX_BYTES` return `413 avatar_too_large`.
+  - Success writes the image to disk, updates `users.avatar_url`, and returns `{ user }`.
+- `GET /api/account/avatar`: returns the current account's uploaded avatar file; accounts without an uploaded avatar return `404 not_found`.
+
+### Client Contract
+
+The account settings page renders an account profile row with avatar preview, nickname input, upload-avatar control, remove-avatar action, and persisted feedback. On success, it updates the authenticated user context with the server-returned user so the visible account state is not stale.
+
+### Verification
+
+`npm run test:auth` updates an authenticated account nickname through `PATCH /api/account`, uploads a real PNG avatar through `POST /api/account/avatar`, downloads it through `GET /api/account/avatar`, verifies another account cannot download the avatar, and checks SQLite `users.nickname`, `avatar_url`, `avatar_mime_type`, and `avatar_storage_path` plus the avatar file on disk.
+
+## Slice 127: Account Legal Document Entry Points
+
+ACC-12 now has legal-document entry points in the account settings page, and the registration agreement copy uses the same real document URLs instead of plain, non-clickable text.
+
+### API Contract
+
+This slice reuses the already-implemented legal document routes:
+
+- `GET /api/about/legal/terms`
+- `GET /api/about/legal/privacy`
+
+Both routes serve the local Markdown artifacts from `docs/legal`. No placeholder external links are introduced.
+
+### Client Contract
+
+`client/src/legalDocs.ts` is the single source of truth for the terms and privacy links. The registration agreement checkbox and account settings page both read from that source, so the login/register page and account page stay consistent.
+
+### Verification
+
+`npm run test:legal-doc-links-client` verifies the terms and privacy link labels and that both links point to the real `/api/about/legal/*` routes. `npm run test:about` verifies those routes return the real Markdown documents. Client typecheck and production build verify the account settings and auth page compile with the shared link source.

@@ -1,4 +1,7 @@
 import { createHmac, createHash, randomBytes, randomInt, randomUUID, scryptSync, timingSafeEqual } from 'node:crypto';
+import { existsSync, mkdirSync, writeFileSync } from 'node:fs';
+import { dirname, resolve } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import type { Response } from 'express';
 import { db, getInboxId, nowISO } from './db';
 import { sendVerificationEmail } from './smtp';
@@ -25,6 +28,8 @@ const CODE_TTL_SEC = 10 * 60;
 const RESEND_AFTER_SEC = 60;
 const MAX_ATTEMPTS = 5;
 const DELETE_COOLING_DAYS = 7;
+const here = dirname(fileURLToPath(import.meta.url));
+const AVATARS_DIR = process.env.AVATARS_DIR ?? resolve(here, '../data/avatars');
 type ReRegistrationPolicy = 'allow' | 'block';
 
 export interface AuthRiskContext {
@@ -91,6 +96,10 @@ function passwordMaxFailedAttempts(): number {
 
 function passwordLockSec(): number {
   return positiveIntEnv('AUTH_PASSWORD_LOCK_SEC', 15 * 60);
+}
+
+function avatarMaxBytes(): number {
+  return positiveIntEnv('ACCOUNT_AVATAR_MAX_BYTES', 2 * 1024 * 1024);
 }
 
 function reRegistrationPolicy(): ReRegistrationPolicy {
@@ -331,6 +340,17 @@ function sessionById(id: string): SessionDTO | null {
 
 function assertActiveUser(user: UserDTO): void {
   if (user.status !== 'normal') throw new AppError(423, 'account_restricted', `account status is ${user.status}`);
+}
+
+function assertAvatarUrl(value: string): void {
+  if (value.startsWith('/api/account/avatar')) return;
+  try {
+    const url = new URL(value);
+    if (url.protocol === 'http:' || url.protocol === 'https:') return;
+  } catch {
+    /* invalid URL falls through */
+  }
+  throw new AppError(400, 'invalid_avatar_url', 'avatarUrl must be an http(s) URL or account avatar URL');
 }
 
 function assertSessionAllowedUser(user: UserDTO): void {
@@ -848,20 +868,72 @@ export function accountOnboardingStatus(userId: string): AccountOnboardingDTO {
 }
 
 export function updateAccount(userId: string, patch: { nickname?: unknown; avatarUrl?: unknown }): UserDTO {
+  const user = getAccount(userId);
+  assertActiveUser(user);
   const cols: string[] = [];
   const vals: unknown[] = [];
   if ('nickname' in patch) {
     if (patch.nickname != null && typeof patch.nickname !== 'string') throw new AppError(400, 'invalid', 'nickname must be a string');
+    const nickname = patch.nickname ? String(patch.nickname).trim() : '';
+    if (nickname.length > 40) throw new AppError(400, 'invalid_nickname', 'nickname must be 40 characters or fewer');
     cols.push('nickname = ?');
-    vals.push(patch.nickname ? String(patch.nickname).trim() : null);
+    vals.push(nickname || null);
   }
   if ('avatarUrl' in patch) {
     if (patch.avatarUrl != null && typeof patch.avatarUrl !== 'string') throw new AppError(400, 'invalid', 'avatarUrl must be a string');
+    const avatarUrl = patch.avatarUrl ? String(patch.avatarUrl).trim() : '';
+    if (avatarUrl.length > 500) throw new AppError(400, 'invalid_avatar_url', 'avatarUrl is too long');
+    if (avatarUrl) assertAvatarUrl(avatarUrl);
     cols.push('avatar_url = ?');
-    vals.push(patch.avatarUrl || null);
+    vals.push(avatarUrl || null);
+    cols.push('avatar_mime_type = ?');
+    vals.push(null);
+    cols.push('avatar_storage_path = ?');
+    vals.push(null);
   }
   if (cols.length) db.prepare(`UPDATE users SET ${cols.join(', ')} WHERE id = ?`).run(...(vals as any[]), userId);
   return getAccount(userId);
+}
+
+const AVATAR_MIME_EXT: Record<string, string> = {
+  'image/png': '.png',
+  'image/jpeg': '.jpg',
+  'image/webp': '.webp',
+  'image/gif': '.gif',
+};
+
+export function uploadAccountAvatar(
+  userId: string,
+  input: { fileName?: unknown; mimeType?: unknown; contentBase64?: unknown },
+): UserDTO {
+  const user = getAccount(userId);
+  assertActiveUser(user);
+  const mimeType = typeof input.mimeType === 'string' ? input.mimeType.trim().toLowerCase() : '';
+  const ext = AVATAR_MIME_EXT[mimeType];
+  if (!ext) throw new AppError(400, 'invalid_avatar', 'avatar must be a png, jpeg, webp, or gif image');
+  if (typeof input.contentBase64 !== 'string' || !input.contentBase64.trim()) {
+    throw new AppError(400, 'invalid_avatar', 'contentBase64 is required');
+  }
+  const bytes = Buffer.from(input.contentBase64, 'base64');
+  if (!bytes.length) throw new AppError(400, 'invalid_avatar', 'avatar image is empty');
+  if (bytes.length > avatarMaxBytes()) throw new AppError(413, 'avatar_too_large', 'avatar image is too large');
+  mkdirSync(AVATARS_DIR, { recursive: true });
+  const ts = nowISO();
+  const storagePath = resolve(AVATARS_DIR, `${userId}-${randomUUID()}${ext}`);
+  writeFileSync(storagePath, bytes);
+  const avatarUrl = `/api/account/avatar?v=${encodeURIComponent(ts)}`;
+  db.prepare('UPDATE users SET avatar_url = ?, avatar_mime_type = ?, avatar_storage_path = ? WHERE id = ?').run(avatarUrl, mimeType, storagePath, userId);
+  return getAccount(userId);
+}
+
+export function getAccountAvatarFile(userId: string): { storagePath: string; mimeType: string; fileName: string } | null {
+  const row = db
+    .prepare('SELECT avatar_storage_path, avatar_mime_type FROM users WHERE id = ? AND avatar_storage_path IS NOT NULL')
+    .get(userId) as { avatar_storage_path: string | null; avatar_mime_type: string | null } | undefined;
+  if (!row?.avatar_storage_path || !existsSync(row.avatar_storage_path)) return null;
+  const mimeType = row.avatar_mime_type ?? 'application/octet-stream';
+  const ext = AVATAR_MIME_EXT[mimeType] ?? '';
+  return { storagePath: row.avatar_storage_path, mimeType, fileName: `avatar${ext}` };
 }
 
 export function changeAccountPassword(userId: string, input: { currentPassword?: unknown; newPassword?: unknown }): UserDTO {
