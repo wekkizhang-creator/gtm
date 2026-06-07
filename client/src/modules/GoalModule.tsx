@@ -665,7 +665,7 @@ export default function GoalModule() {
     const busyKey = `${conflictId}:${action.type}:${action.type === 'reschedule' ? action.goalId : action.ruleId}`;
     setRuleConflictActionBusy(busyKey);
     try {
-      if (action.type === 'reschedule') {
+      if (action.type === 'reschedule' || action.type === 'temporary_override') {
         const next = await api.createScheduleProposal(action.goalId, action.proposalInput);
         setSelectedId(action.goalId);
         setProposalWithSelection(next);

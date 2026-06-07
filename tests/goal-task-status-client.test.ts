@@ -81,6 +81,7 @@ assert(goalTaskDisplayStatus(task({ id: 'doing', title: 'Doing', status: 'doing'
 assert(goalTaskDisplayStatus(task({ id: 'done', title: 'Done', completed: true, status: 'done' }), now) === 'completed', 'done task should be completed');
 assert(goalTaskDisplayStatus(task({ id: 'skipped', title: 'Skipped', status: 'skipped' }), now) === 'skipped', 'skipped task should be skipped');
 assert(goalTaskDisplayStatus(task({ id: 'overdue', title: 'Overdue', dueDate: '2030-01-09T09:00:00.000Z' }), now) === 'overdue', 'past due open task should be overdue');
+assert(goalTaskDisplayStatus(task({ id: 'api-scheduled', title: 'API scheduled', scheduleStatus: 'scheduled' }), now) === 'scheduled', 'API scheduleStatus should drive the display status');
 
 const startAction = goalTaskStatusActions(task({ id: 'start', title: 'Start' }), now).find((action) => action.key === 'start');
 assert(startAction?.patch.status === 'doing' && startAction.patch.actualStartAt === now.toISOString(), 'start action should set doing and actualStartAt');
@@ -92,4 +93,3 @@ const reopenAction = goalTaskStatusActions(task({ id: 'reopen', title: 'Reopen',
 assert(reopenAction.key === 'reopen' && reopenAction.patch.completed === false && reopenAction.patch.status === 'todo', 'completed task should reopen to todo');
 
 console.log('goal-task-status-client: all assertions passed');
-

@@ -24,6 +24,7 @@ export interface ListFolderDTO {
 }
 
 export type TaskStatus = 'todo' | 'doing' | 'waiting' | 'done' | 'skipped';
+export type TaskScheduleStatus = 'unscheduled' | 'scheduled' | 'doing' | 'completed' | 'overdue' | 'skipped';
 
 export interface TagDTO {
   id: string;
@@ -298,6 +299,7 @@ export interface ScheduleProposalConflictDTO {
     | 'invalid_rule'
     | 'task_blocked'
     | 'reschedule_impact'
+    | 'rule_override'
     | 'manual_adjustment_conflict';
   severity: 'info' | 'warning' | 'blocking';
   taskId?: string | null;
@@ -835,6 +837,7 @@ export interface TaskDTO {
   manualProgress: number | null;
   pinned: boolean;
   status: TaskStatus;
+  scheduleStatus: TaskScheduleStatus;
   tags: TagDTO[];
   reminders: TaskReminderDTO[];
   attachments: AttachmentDTO[];

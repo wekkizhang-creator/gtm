@@ -31,6 +31,20 @@ assert(reschedule?.proposalInput.taskIds?.[0] === 'task-1', 'reschedule action s
 assert(reschedule?.proposalInput.trigger === 'rule_conflict:proposal-1:0', 'reschedule trigger should retain the conflict id');
 assert(actions.some((action) => action.type === 'disable_rule' && action.ruleId === 'rule-1'), 'enabled rule should expose a disable action');
 assert(actions.some((action) => action.type === 'view_rule' && action.ruleId === 'rule-1'), 'conflict should expose a rule detail action');
+assert(!actions.some((action) => action.type === 'temporary_override'), 'hard rules should not expose a temporary override action');
+
+const normalConflict = {
+  ...conflict,
+  ruleIds: ['rule-2'],
+  rules: [{ id: 'rule-2', name: 'Prefer mornings', priority: 'normal' as const, status: 'enabled' as const }],
+};
+const normalActions = buildScheduleRuleConflictActions(normalConflict);
+const override = normalActions.find((action) => action.type === 'temporary_override');
+assert(override?.label === '临时突破「Prefer mornings」一次', 'normal rules should expose one-time override action');
+assert(override.goalId === 'goal-1' && override.ruleId === 'rule-2', 'override action should target the conflict goal and rule');
+assert(override.proposalInput.ignoredRuleIds?.join('|') === 'rule-2', 'override proposal should ignore the selected rule once');
+assert(override.proposalInput.taskIds?.[0] === 'task-1', 'override proposal should stay scoped to the affected task');
+assert(override.proposalInput.trigger === 'rule_override:proposal-1:0:rule-2', 'override trigger should retain conflict and rule ids');
 
 const disabledConflict = { ...conflict, taskId: null, rules: [{ ...conflict.rules[0], status: 'disabled' as const }] };
 const disabledActions = buildScheduleRuleConflictActions(disabledConflict);

@@ -329,6 +329,7 @@ function parseConfig(s: any): TaskDTO['subtaskConfig'] {
 }
 
 function mapTask(r: any): TaskDTO {
+  const status = (r.status ?? (r.completed ? 'done' : 'todo')) as TaskDTO['status'];
   return {
     id: r.id,
     title: r.title,
@@ -363,7 +364,8 @@ function mapTask(r: any): TaskDTO {
     source: r.source ?? 'manual',
     manualProgress: r.manual_progress ?? null,
     pinned: !!r.pinned,
-    status: r.status ?? (r.completed ? 'done' : 'todo'),
+    status,
+    scheduleStatus: taskScheduleStatus(r, status),
     tags: [],
     reminders: [],
     attachments: [],
@@ -379,6 +381,23 @@ function mapTask(r: any): TaskDTO {
     createdAt: r.created_at,
     updatedAt: r.updated_at,
   };
+}
+
+function validDate(value: unknown): Date | null {
+  if (typeof value !== 'string' || !value) return null;
+  const date = new Date(value);
+  return Number.isNaN(date.getTime()) ? null : date;
+}
+
+function taskScheduleStatus(r: any, status: TaskDTO['status']): TaskDTO['scheduleStatus'] {
+  if (status === 'skipped') return 'skipped';
+  if (r.completed || status === 'done') return 'completed';
+  if (status === 'doing' || (r.actual_start_at && !r.actual_end_at)) return 'doing';
+  const due = validDate(r.due_date ?? r.planned_end_at);
+  if (due && due < new Date()) return 'overdue';
+  const hasTimedBlock = !!(r.start_date && r.due_date && !r.is_all_day);
+  const hasPlannedBlock = !!(r.planned_start_at && r.planned_end_at);
+  return hasTimedBlock || hasPlannedBlock ? 'scheduled' : 'unscheduled';
 }
 
 function startOfTodayISO(): string {

@@ -2534,3 +2534,64 @@ WID-05 now has a real read-only widget data contract. `GET /api/desktop/widgets/
 The widget uses existing `repo.listGoals` and `repo.getGoalTree` data. For each shown non-archived goal, progress includes total/completed task counts, total/completed estimated minutes, and a percent derived from estimated minutes when available, otherwise task counts; completed goals report 100%. When `config.showTodaySuggestion` is true, the widget suggests a real open goal task scheduled or due today, falling back to the highest-priority open goal task. WID-05 has no widget action requirement, so `POST /api/desktop/widgets/:id/actions` still returns `501 desktop_widget_action_not_implemented` for `goal-progress`.
 
 `npm run test:desktop` now creates active and completed goals through HTTP, creates real goal tasks, completes one task, schedules another for today, creates a `goal-progress` widget, verifies progress and today suggestion from widget data, exports the widget row, and checks SQLite for the widget config plus the goal/task fixture rows.
+
+## Slice 98: One-Time Normal Rule Override
+
+RULE-05 and the PRD conflict policy now have a real "temporary breakthrough" path for non-hard personal rules. Hard rules remain non-overridable unless the user edits or disables the rule itself; normal and preference rules can be ignored for one generated proposal without mutating the rule row.
+
+### API Contract
+
+`POST /api/goals/:id/schedule-proposals` accepts:
+
+```json
+{
+  "ignoredRuleIds": ["normal-or-preference-rule-id"],
+  "mode": "initial_schedule | reschedule",
+  "trigger": "rule_override:<conflict-id>:<rule-id>"
+}
+```
+
+- `ignoredRuleIds` must be an array of enabled rules that belong to the current account and are scoped to the target goal.
+- Referencing a hard rule returns `400 hard_rule_cannot_be_ignored`.
+- Referencing a disabled, deleted, cross-account, or out-of-scope rule returns `400 invalid_ignored_rule`.
+- Ignored rules are removed only from that proposal's rule evaluation. The persisted `personal_schedule_rules` row remains enabled.
+- The draft proposal persists an informational conflict with `type:"rule_override"`, `severity:"info"`, and the ignored `ruleIds` so the confirmation page and audit trail show that a one-time override was used.
+
+### Client Contract
+
+The rule conflict action builder exposes `临时突破「规则名」一次` only for enabled `normal` or `preference` rules. Clicking it calls the existing schedule-proposal route with `ignoredRuleIds`; it does not call the rule PATCH route and does not disable the rule. The generated proposal is still a draft that requires normal confirmation before task times are written.
+
+### Verification
+
+`npm run test:schedule-rules` verifies hard rules return `hard_rule_cannot_be_ignored`, a normal blocking rule first causes a real `schedule_overflow`, then `ignoredRuleIds` generates a schedulable draft with a persisted `rule_override` conflict, and confirmation writes the task's SQLite `start_date` / `due_date`. `npm run test:schedule-rule-conflict-actions-client` verifies hard rules do not expose override actions while normal rules do, including the correct `ignoredRuleIds` proposal input.
+
+## Slice 99: Goal Task Schedule Status
+
+TASK-04 now has a PRD-facing schedule status instead of requiring the client to infer every task state from unrelated fields. The source of truth remains the existing `tasks` row; no separate status table is introduced.
+
+### API Contract
+
+Every `TaskDTO` now includes:
+
+```json
+{
+  "scheduleStatus": "unscheduled | scheduled | doing | completed | overdue | skipped"
+}
+```
+
+The backend derives it from real persisted fields:
+
+- `skipped` when `tasks.status = 'skipped'`.
+- `completed` when `tasks.completed = 1` or `tasks.status = 'done'`.
+- `doing` when `tasks.status = 'doing'` or `actual_start_at` exists without `actual_end_at`.
+- `overdue` when an open task's `due_date` or `planned_end_at` is before the server's current time.
+- `scheduled` when the open task has a timed calendar block (`start_date` + `due_date` + `is_all_day=0`) or a planned proposal block.
+- `unscheduled` otherwise.
+
+### Client Contract
+
+The goal task list uses `scheduleStatus` to show the PRD labels `未排期 / 已排期 / 进行中 / 已完成 / 延期 / 跳过`. The existing client helper still falls back to deriving the state from task fields when older cached data lacks the new field.
+
+### Verification
+
+`npm run test:goals` creates tasks through the real goal API, updates them through `PATCH /api/tasks/:id`, reloads `/api/goals/:id/tree`, and verifies `unscheduled`, `scheduled`, `completed`, and `overdue` schedule statuses from the HTTP DTO while checking the underlying SQLite rows used by the same scenario. `npm run test:goal-task-status-client` verifies the UI helper honors the API-provided status and retains fallback behavior.

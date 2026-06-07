@@ -257,6 +257,7 @@ export interface CreateScheduleProposalInput {
   taskIds?: string[];
   mode?: 'initial_schedule' | 'reschedule';
   trigger?: string | null;
+  ignoredRuleIds?: string[];
 }
 
 export interface AnalyticsEventInput {

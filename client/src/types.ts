@@ -23,6 +23,7 @@ export interface ListFolder {
 }
 
 export type TaskStatus = 'todo' | 'doing' | 'waiting' | 'done' | 'skipped';
+export type TaskScheduleStatus = 'unscheduled' | 'scheduled' | 'doing' | 'completed' | 'overdue' | 'skipped';
 
 export interface Tag {
   id: string;
@@ -348,6 +349,7 @@ export interface ScheduleProposalConflict {
     | 'invalid_rule'
     | 'task_blocked'
     | 'reschedule_impact'
+    | 'rule_override'
     | 'manual_adjustment_conflict';
   severity: 'info' | 'warning' | 'blocking';
   taskId?: string | null;
@@ -885,6 +887,7 @@ export interface Task {
   manualProgress: number | null;
   pinned: boolean;
   status: TaskStatus;
+  scheduleStatus: TaskScheduleStatus;
   tags: Tag[];
   reminders: TaskReminder[];
   attachments: Attachment[];

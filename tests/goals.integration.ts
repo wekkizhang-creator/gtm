@@ -161,6 +161,7 @@ async function main() {
       bulkGoal.body.tasks.map((task: any) => task.title).join('|') === 'Research audience|Draft outline|Publish recap',
       'bulk goal should trim empty lines and common task bullets',
     );
+    assert(bulkGoal.body.tasks.every((task: any) => task.scheduleStatus === 'unscheduled'), 'new bulk goal tasks should start as unscheduled');
     const bulkTree = await req(base, `/api/goals/${bulkGoal.body.goal.id}/tree`, { cookie });
     assert(bulkTree.body.tasks.length === 3, `bulk goal tree should expose three created tasks, got ${bulkTree.body.tasks.length}`);
     assert(bulkTree.body.goal.description === 'Coordinate launch content and handoff.', 'goal create should persist the goal description');
@@ -227,6 +228,9 @@ async function main() {
     assert((summaryTasks.get(bulkCompletedTask.id) as any).completed === true, 'goal tree should expose completed task state for progress summary');
     assert((summaryTasks.get(bulkScheduledTask.id) as any).plannedStartAt === bulkScheduleStart, 'goal tree should expose scheduled task time blocks');
     assert((summaryTasks.get(bulkOverdueTask.id) as any).dueDate === bulkPastDue, 'goal tree should expose overdue task deadline data');
+    assert((summaryTasks.get(bulkCompletedTask.id) as any).scheduleStatus === 'completed', 'goal tree should expose completed schedule status');
+    assert((summaryTasks.get(bulkScheduledTask.id) as any).scheduleStatus === 'scheduled', 'goal tree should expose scheduled schedule status');
+    assert((summaryTasks.get(bulkOverdueTask.id) as any).scheduleStatus === 'overdue', 'goal tree should expose overdue schedule status');
     const dbAfterBulkGoal = new DatabaseSync(dbPath);
     try {
       const linkedTasks = dbAfterBulkGoal

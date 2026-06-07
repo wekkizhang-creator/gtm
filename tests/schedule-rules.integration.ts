@@ -912,6 +912,88 @@ async function main() {
     });
     assert(conflictReplan.res.status === 201, `conflict action replan failed: ${conflictReplan.res.status} ${JSON.stringify(conflictReplan.body)}`);
     assert(conflictReplan.body.proposal.goalId === overflowGoal.body.goal.id, 'conflict action should create a proposal for the conflict goal');
+    const hardOverride = await req(base, `/api/goals/${overflowGoal.body.goal.id}/schedule-proposals`, {
+      method: 'POST',
+      cookie,
+      body: JSON.stringify({ ignoredRuleIds: [ruleId] }),
+    });
+    assert(hardOverride.res.status === 400, `hard rule override should fail: ${hardOverride.res.status} ${JSON.stringify(hardOverride.body)}`);
+    assert(hardOverride.body.error.code === 'hard_rule_cannot_be_ignored', `hard override should return hard_rule_cannot_be_ignored, got ${hardOverride.body.error.code}`);
+
+    const overrideGoal = await req(base, '/api/goals', {
+      method: 'POST',
+      cookie,
+      body: JSON.stringify({
+        title: 'One time override plan',
+        startAt: new Date('2030-01-13T20:00:00+08:00').toISOString(),
+        deadlineAt: new Date('2030-01-13T21:00:00+08:00').toISOString(),
+        availableTimeRule: JSON.stringify({ startHour: 20, endHour: 21 }),
+      }),
+    });
+    assert(overrideGoal.res.status === 201, `override goal create failed: ${overrideGoal.res.status} ${JSON.stringify(overrideGoal.body)}`);
+    const overrideTask = await req(base, `/api/goals/${overrideGoal.body.goal.id}/tasks`, {
+      method: 'POST',
+      cookie,
+      body: JSON.stringify({ title: 'Ship with a one-time exception', estimatedMinutes: 30 }),
+    });
+    assert(overrideTask.res.status === 201, `override task create failed: ${overrideTask.res.status} ${JSON.stringify(overrideTask.body)}`);
+    const normalBlockRule = await req(base, '/api/schedule-rules', {
+      method: 'POST',
+      cookie,
+      body: JSON.stringify({
+        name: 'Protect this hour normally',
+        type: 'time_boundary',
+        status: 'enabled',
+        priority: 'normal',
+        condition: { startTime: '20:00', endTime: '21:00' },
+        action: { effect: 'block' },
+        scope: { goalIds: [overrideGoal.body.goal.id] },
+      }),
+    });
+    assert(normalBlockRule.res.status === 201, `normal block rule create failed: ${normalBlockRule.res.status} ${JSON.stringify(normalBlockRule.body)}`);
+    const blockedByNormalRule = await req(base, `/api/goals/${overrideGoal.body.goal.id}/schedule-proposals`, { method: 'POST', cookie });
+    assert(blockedByNormalRule.res.status === 201, `normal block proposal failed: ${blockedByNormalRule.res.status} ${JSON.stringify(blockedByNormalRule.body)}`);
+    assert(
+      blockedByNormalRule.body.proposal.conflicts.some(
+        (conflict: any) => conflict.type === 'schedule_overflow' && conflict.ruleIds.includes(normalBlockRule.body.rule.id),
+      ),
+      'normal rule should block the task before one-time override',
+    );
+    const normalOverrideProposal = await req(base, `/api/goals/${overrideGoal.body.goal.id}/schedule-proposals`, {
+      method: 'POST',
+      cookie,
+      body: JSON.stringify({ ignoredRuleIds: [normalBlockRule.body.rule.id], trigger: 'rule_override:test' }),
+    });
+    assert(normalOverrideProposal.res.status === 201, `normal rule override proposal failed: ${normalOverrideProposal.res.status} ${JSON.stringify(normalOverrideProposal.body)}`);
+    assert(normalOverrideProposal.body.proposal.changes.length === 1, 'normal rule override should allow the task to be scheduled');
+    assert(
+      normalOverrideProposal.body.proposal.conflicts.some(
+        (conflict: any) => conflict.type === 'rule_override' && conflict.ruleIds.includes(normalBlockRule.body.rule.id) && conflict.severity === 'info',
+      ),
+      'normal rule override should persist an informational override record',
+    );
+    assert(
+      !normalOverrideProposal.body.proposal.changes[0].ruleIds.includes(normalBlockRule.body.rule.id),
+      'ignored normal rule should not be treated as a matched scheduling rule',
+    );
+    const normalOverrideConfirm = await req(base, `/api/schedule-proposals/${normalOverrideProposal.body.proposal.id}/confirm`, { method: 'POST', cookie });
+    assert(normalOverrideConfirm.res.status === 200, `normal rule override confirm failed: ${normalOverrideConfirm.res.status} ${JSON.stringify(normalOverrideConfirm.body)}`);
+    const dbAfterOverride = new DatabaseSync(dbPath);
+    try {
+      const row = dbAfterOverride.prepare('SELECT start_date, due_date FROM tasks WHERE id = ?').get(overrideTask.body.task.id) as {
+        start_date: string | null;
+        due_date: string | null;
+      };
+      const storedProposal = dbAfterOverride.prepare('SELECT conflicts_json FROM schedule_proposals WHERE id = ?').get(normalOverrideProposal.body.proposal.id) as {
+        conflicts_json: string;
+      };
+      assert(row.start_date === normalOverrideProposal.body.proposal.changes[0].plannedStartAt, 'override confirm should write the proposed start time');
+      assert(row.due_date === normalOverrideProposal.body.proposal.changes[0].plannedEndAt, 'override confirm should write the proposed end time');
+      assert(JSON.parse(storedProposal.conflicts_json).some((conflict: any) => conflict.type === 'rule_override'), 'override conflict should be stored in SQLite');
+    } finally {
+      dbAfterOverride.close();
+    }
+
     const conflictDisableRule = await req(base, `/api/schedule-rules/${ruleId}`, {
       method: 'PATCH',
       cookie,

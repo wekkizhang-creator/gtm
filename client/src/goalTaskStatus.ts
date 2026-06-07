@@ -29,6 +29,7 @@ export function goalTaskHasSchedule(task: Task): boolean {
 }
 
 export function goalTaskDisplayStatus(task: Task, now: Date = new Date()): GoalTaskDisplayStatus {
+  if (task.scheduleStatus) return task.scheduleStatus;
   if (task.status === 'skipped') return 'skipped';
   if (task.completed || task.status === 'done') return 'completed';
   if (task.status === 'doing' || (task.actualStartAt && !task.actualEndAt)) return 'doing';

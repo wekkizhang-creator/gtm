@@ -1194,6 +1194,12 @@ export function previewScheduleRule(userId: string, input: Record<string, unknow
   };
 }
 
+function parseIgnoredRuleIds(input: Record<string, unknown>): string[] {
+  if (!('ignoredRuleIds' in input)) return [];
+  if (!Array.isArray(input.ignoredRuleIds)) throw new AppError(400, 'invalid_ignored_rules', 'ignoredRuleIds must be an array');
+  return Array.from(new Set(input.ignoredRuleIds.filter((id): id is string => typeof id === 'string' && !!id)));
+}
+
 export function createScheduleProposal(userId: string, goalId: string, input: Record<string, unknown> = {}): ScheduleProposalDTO {
   const goal = getGoal(userId, goalId);
   if (!goal) throw new AppError(404, 'not_found', 'goal not found');
@@ -1202,8 +1208,25 @@ export function createScheduleProposal(userId: string, goalId: string, input: Re
   }
   const mode: ProposalMode = input.mode === 'reschedule' ? 'reschedule' : 'initial_schedule';
   const range = parseRange(goal, input);
-  const ruleList = listScheduleRules(userId).filter((rule) => rule.status === 'enabled' && scopedToGoal(rule, goalId));
-  const conflicts: ScheduleProposalConflictDTO[] = [];
+  const scopedRules = listScheduleRules(userId).filter((rule) => rule.status === 'enabled' && scopedToGoal(rule, goalId));
+  const ignoredRuleIds = parseIgnoredRuleIds(input);
+  const ignoredRules: PersonalScheduleRuleDTO[] = [];
+  for (const ruleId of ignoredRuleIds) {
+    const rule = scopedRules.find((item) => item.id === ruleId);
+    if (!rule) throw new AppError(400, 'invalid_ignored_rule', 'ignoredRuleIds must reference enabled rules scoped to this goal');
+    if (rule.priority === 'hard') throw new AppError(400, 'hard_rule_cannot_be_ignored', 'hard rules cannot be temporarily ignored');
+    ignoredRules.push(rule);
+  }
+  const ignoredRuleIdSet = new Set(ignoredRules.map((rule) => rule.id));
+  const ruleList = scopedRules.filter((rule) => !ignoredRuleIdSet.has(rule.id));
+  const conflicts: ScheduleProposalConflictDTO[] = ignoredRules.map((rule) => ({
+    type: 'rule_override',
+    severity: 'info',
+    taskId: null,
+    ruleIds: [rule.id],
+    message: `This proposal temporarily ignores rule "${rule.name}" for this generation only.`,
+    suggestions: ['Confirm this proposal to apply the one-time override, or regenerate without the override to follow the rule again.'],
+  }));
   const ruleSlots = expandRuleBlocks(ruleList, range, conflicts);
   const bufferMinutes = totalBufferMinutes(ruleList);
   const window = parseGoalWindow(goal.availableTimeRule);
