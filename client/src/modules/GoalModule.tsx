@@ -3,10 +3,19 @@ import { api } from '../api/client';
 import { aiConfigurationIssue } from '../aiGuide';
 import { buildGoalDetailSummary } from '../goalDetailSummary';
 import { GOAL_STATUS_LABELS, goalCanAutoSchedule, goalStatusActions } from '../goalStatus';
+import { buildGoalTaskDependencyState } from '../goalTaskDependencies';
 import { buildGoalTaskCreateInput, buildGoalTaskEditPatch } from '../goalTaskForm';
+import { GOAL_TASK_STATUS_LABELS, goalTaskDisplayStatus, goalTaskStatusActions } from '../goalTaskStatus';
+import {
+  buildScheduleProposalManualDragPatch,
+  buildScheduleProposalManualShift,
+  getScheduleProposalDragMaxOffsetMinutes,
+  getScheduleProposalStartOffsetMinutes,
+  listManualAdjustmentConflicts,
+} from '../scheduleProposalManualAdjust';
 import { buildScheduleProposalImpact } from '../scheduleProposalImpact';
 import { useSettings } from '../settings';
-import { dateInputToISO, isoToDateInput } from '../util';
+import { PRIORITY_LABELS, dateInputToISO, isoToDateInput } from '../util';
 import type {
   AIScheduleResult,
   AIScheduleSuggestion,
@@ -65,6 +74,8 @@ const ENERGY_LABELS: Record<ScheduleEnergyType, string> = {
   medium: '中等',
   low: '低精力',
 };
+
+const GOAL_PRIORITY_VALUES: Priority[] = [0, 1, 2, 3];
 
 const AVOIDED_SOURCE_LABELS: Record<'task' | 'external' | 'rule' | 'scheduled', string> = {
   task: '已有任务',
@@ -129,11 +140,13 @@ export default function GoalModule() {
   const [title, setTitle] = useState('');
   const [goalDescription, setGoalDescription] = useState('');
   const [deadline, setDeadline] = useState('');
+  const [goalPriority, setGoalPriority] = useState<Priority>(0);
   const [initialTasksText, setInitialTasksText] = useState('');
   const [editingGoal, setEditingGoal] = useState(false);
   const [goalEditTitle, setGoalEditTitle] = useState('');
   const [goalEditDescription, setGoalEditDescription] = useState('');
   const [goalEditDeadline, setGoalEditDeadline] = useState('');
+  const [goalEditPriority, setGoalEditPriority] = useState<Priority>(0);
   const [taskTitle, setTaskTitle] = useState('');
   const [taskEstimate, setTaskEstimate] = useState('60');
   const [taskEnergy, setTaskEnergy] = useState<'' | ScheduleEnergyType>('');
@@ -172,7 +185,6 @@ export default function GoalModule() {
 
   const selected = goals.find((g) => g.id === selectedId) ?? null;
   const ruleNames = useMemo(() => new Map(scheduleRules.map((rule) => [rule.id, rule.name])), [scheduleRules]);
-  const taskById = useMemo(() => new Map(tasks.map((task) => [task.id, task])), [tasks]);
   const scheduleInsightByTaskId = useMemo(() => new Map(scheduleInsights.map((insight) => [insight.taskId, insight])), [scheduleInsights]);
   const goalDetailSummary = useMemo(() => (selected ? buildGoalDetailSummary(selected, tasks) : null), [selected, tasks]);
   const proposalImpact = useMemo(() => (proposal ? buildScheduleProposalImpact(proposal) : null), [proposal]);
@@ -182,7 +194,8 @@ export default function GoalModule() {
     setGoalEditTitle(selected?.title ?? '');
     setGoalEditDescription(selected?.description ?? '');
     setGoalEditDeadline(selected?.deadlineAt ? isoToDateInput(selected.deadlineAt) : '');
-  }, [selected?.id, selected?.title, selected?.description, selected?.deadlineAt]);
+    setGoalEditPriority(selected?.priority ?? 0);
+  }, [selected?.id, selected?.title, selected?.description, selected?.deadlineAt, selected?.priority]);
 
   function setProposalWithSelection(next: ScheduleProposal | null) {
     setProposal(next);
@@ -279,6 +292,7 @@ export default function GoalModule() {
         title: name,
         description: goalDescription.trim() || null,
         deadlineAt: dateInputToISO(deadline),
+        priority: goalPriority,
         availableTimeRule: JSON.stringify({ startHour: 9, endHour: 18 }),
         tasksText: initialTasksText,
       });
@@ -286,6 +300,7 @@ export default function GoalModule() {
       setTitle('');
       setGoalDescription('');
       setDeadline('');
+      setGoalPriority(0);
       setInitialTasksText('');
     });
   }
@@ -300,6 +315,7 @@ export default function GoalModule() {
         title: nextTitle,
         description: goalEditDescription.trim() || null,
         deadlineAt: dateInputToISO(goalEditDeadline),
+        priority: goalEditPriority,
       });
       setEditingGoal(false);
     });
@@ -363,6 +379,12 @@ export default function GoalModule() {
     });
   }
 
+  async function applyTaskStatusAction(task: Task, action: ReturnType<typeof goalTaskStatusActions>[number]) {
+    await mutate(async () => {
+      await api.updateTask(task.id, action.patch);
+    });
+  }
+
   async function setGoalStatus(status: Goal['status']) {
     if (!selected) return;
     await mutate(async () => {
@@ -394,6 +416,12 @@ export default function GoalModule() {
   async function removeDependency(task: Task, dependencyId: string) {
     await mutate(async () => {
       await api.removeTaskDependency(task.id, dependencyId);
+    });
+  }
+
+  async function completeDependency(dependencyId: string) {
+    await mutate(async () => {
+      await api.updateTask(dependencyId, { completed: true, status: 'done', actualEndAt: new Date().toISOString() });
     });
   }
 
@@ -731,6 +759,33 @@ export default function GoalModule() {
     setProposalEditDrafts((cur) => ({ ...cur, [changeKey]: { start: cur[changeKey]?.start ?? '', end: cur[changeKey]?.end ?? '', ...patch } }));
   }
 
+  function updateProposalDragDraft(item: ScheduleProposal['changes'][number], offsetMinutes: number) {
+    if (!proposal) return;
+    try {
+      const patch = buildScheduleProposalManualDragPatch(proposal.range, item, offsetMinutes);
+      updateProposalEditDraft(item.changeKey, {
+        start: isoToDateTimeLocalValue(patch.plannedStartAt),
+        end: isoToDateTimeLocalValue(patch.plannedEndAt),
+      });
+    } catch (e) {
+      setError((e as Error).message);
+    }
+  }
+
+  async function shiftProposalChange(item: ScheduleProposal['changes'][number], deltaMinutes: number) {
+    if (!proposal) return;
+    setProposalBusy(true);
+    try {
+      const patch = buildScheduleProposalManualShift(item, deltaMinutes);
+      setProposalWithSelection(await api.updateScheduleProposalChange(proposal.id, item.changeKey, patch));
+      setError(null);
+    } catch (e) {
+      setError((e as Error).message);
+    } finally {
+      setProposalBusy(false);
+    }
+  }
+
   async function saveProposalChange(item: ScheduleProposal['changes'][number]) {
     if (!proposal) return;
     const draft = proposalEditDrafts[item.changeKey];
@@ -829,6 +884,13 @@ export default function GoalModule() {
         <form className="goal-create" onSubmit={(e) => void createGoal(e)}>
           <input placeholder="新目标" value={title} onChange={(e) => setTitle(e.target.value)} />
           <input type="date" value={deadline} onChange={(e) => setDeadline(e.target.value)} />
+          <select value={goalPriority} onChange={(e) => setGoalPriority(Number(e.target.value) as Priority)} aria-label="计划重要程度">
+            {GOAL_PRIORITY_VALUES.map((priority) => (
+              <option key={priority} value={priority}>
+                {PRIORITY_LABELS[priority]}
+              </option>
+            ))}
+          </select>
           <textarea
             rows={3}
             placeholder="目标描述"
@@ -850,7 +912,7 @@ export default function GoalModule() {
             <button key={goal.id} className={`goal-item${goal.id === selectedId ? ' active' : ''}`} onClick={() => setSelectedId(goal.id)}>
               <span>{goal.title}</span>
               <small>
-                {GOAL_STATUS_LABELS[goal.status]} · {goal.deadlineAt ? isoToDateInput(goal.deadlineAt) : '无截止'}
+                {GOAL_STATUS_LABELS[goal.status]} · {PRIORITY_LABELS[goal.priority]} · {goal.deadlineAt ? isoToDateInput(goal.deadlineAt) : '无截止'}
               </small>
             </button>
           ))}
@@ -865,6 +927,7 @@ export default function GoalModule() {
             {selected && (
               <p>
                 {GOAL_STATUS_LABELS[selected.status]}
+                {` · ${PRIORITY_LABELS[selected.priority]}`}
                 {selected.deadlineAt ? ` · 截止 ${isoToDateInput(selected.deadlineAt)}` : ' · 无截止'}
               </p>
             )}
@@ -921,6 +984,13 @@ export default function GoalModule() {
                   placeholder="目标描述"
                 />
                 <input type="date" value={goalEditDeadline} onChange={(e) => setGoalEditDeadline(e.target.value)} />
+                <select value={goalEditPriority} onChange={(e) => setGoalEditPriority(Number(e.target.value) as Priority)} aria-label="编辑计划重要程度">
+                  {GOAL_PRIORITY_VALUES.map((priority) => (
+                    <option key={priority} value={priority}>
+                      {PRIORITY_LABELS[priority]}
+                    </option>
+                  ))}
+                </select>
                 <div>
                   <button type="submit" disabled={!goalEditTitle.trim()}>
                     保存计划
@@ -1005,7 +1075,7 @@ export default function GoalModule() {
                     <li key={goal.id}>
                       <span>{goal.title}</span>
                       <em>
-                        已排 {goal.scheduledTodayCount} · 待排 {goal.unscheduledTaskCount} · 未完成 {goal.openTaskCount}
+                        {PRIORITY_LABELS[goal.priority]} · 已排 {goal.scheduledTodayCount} · 待排 {goal.unscheduledTaskCount} · 未完成 {goal.openTaskCount}
                       </em>
                     </li>
                   ))}
@@ -1464,6 +1534,10 @@ export default function GoalModule() {
                       start: isoToDateTimeLocalValue(item.plannedStartAt),
                       end: isoToDateTimeLocalValue(item.plannedEndAt),
                     };
+                    const draftStartIso = dateTimeLocalValueToISO(draft.start) ?? item.plannedStartAt;
+                    const dragValue = getScheduleProposalStartOffsetMinutes(proposal.range, draftStartIso);
+                    const dragMax = getScheduleProposalDragMaxOffsetMinutes(proposal.range, item);
+                    const manualConflicts = listManualAdjustmentConflicts(proposal, item.taskId);
                     return (
                       <li key={item.changeKey} className={item.conflict ? 'has-conflict' : undefined}>
                         {proposal.status === 'draft' && (
@@ -1482,6 +1556,18 @@ export default function GoalModule() {
                           </small>
                           {proposal.status === 'draft' && (
                             <div className="goal-proposal-edit">
+                              <label className="goal-proposal-drag">
+                                拖动调整
+                                <input
+                                  type="range"
+                                  min={0}
+                                  max={dragMax}
+                                  step={15}
+                                  value={Math.min(dragValue, dragMax)}
+                                  onChange={(e) => updateProposalDragDraft(item, Number(e.target.value))}
+                                  aria-label={`拖动调整 ${item.title} 开始时间`}
+                                />
+                              </label>
                               <label>
                                 开始
                                 <input
@@ -1501,6 +1587,24 @@ export default function GoalModule() {
                               <button type="button" onClick={() => void saveProposalChange(item)} disabled={proposalBusy}>
                                 更新时间
                               </button>
+                              <div className="goal-proposal-nudge">
+                                <button type="button" onClick={() => void shiftProposalChange(item, -15)} disabled={proposalBusy}>
+                                  提前 15 分钟
+                                </button>
+                                <button type="button" onClick={() => void shiftProposalChange(item, 15)} disabled={proposalBusy}>
+                                  后移 15 分钟
+                                </button>
+                              </div>
+                            </div>
+                          )}
+                          {manualConflicts.length > 0 && (
+                            <div className="goal-proposal-manual-impact">
+                              {manualConflicts.map((conflict, index) => (
+                                <p key={`${item.changeKey}-manual-${index}`}>
+                                  手动调整影响：{conflict.message}
+                                  {conflict.suggestions.length > 0 && ` · 建议：${conflict.suggestions.join('、')}`}
+                                </p>
+                              ))}
                             </div>
                           )}
                           <p>
@@ -1565,13 +1669,24 @@ export default function GoalModule() {
               {tasks.map((task) => {
                 const dependencyOptions = tasks.filter((candidate) => candidate.id !== task.id && !task.dependencyTaskIds.includes(candidate.id));
                 const scheduleInsight = scheduleInsightByTaskId.get(task.id);
+                const displayStatus = goalTaskDisplayStatus(task);
+                const statusActions = goalTaskStatusActions(task);
+                const dependencyState = buildGoalTaskDependencyState(task, tasks);
                 return (
-                  <li key={task.id} className="goal-task" style={{ paddingLeft: 12 + (task.level - 1) * 20 }}>
+                  <li key={task.id} className={`goal-task is-${displayStatus}`} style={{ paddingLeft: 12 + (task.level - 1) * 20 }}>
                     <span className="goal-task-title-row">
                       {task.title}
-                      <button type="button" onClick={() => beginTaskEdit(task)}>
-                        编辑
-                      </button>
+                      <span className={`goal-task-status is-${displayStatus}`}>{GOAL_TASK_STATUS_LABELS[displayStatus]}</span>
+                      <span className="goal-task-row-actions">
+                        {statusActions.map((action) => (
+                          <button key={action.key} type="button" onClick={() => void applyTaskStatusAction(task, action)}>
+                            {action.label}
+                          </button>
+                        ))}
+                        <button type="button" onClick={() => beginTaskEdit(task)}>
+                          编辑
+                        </button>
+                      </span>
                     </span>
                     <small>
                       {task.plannedStartAt && task.plannedEndAt
@@ -1638,12 +1753,21 @@ export default function GoalModule() {
                     )}
                     <div className="goal-task-dependencies">
                       <div>
-                        {task.dependencyTaskIds.map((dependencyId) => {
-                          const dependency = taskById.get(dependencyId);
+                        {dependencyState.dependencies.map((dependency) => {
                           return (
-                            <button key={dependencyId} type="button" onClick={() => void removeDependency(task, dependencyId)}>
-                              {dependency?.title ?? dependencyId} ×
-                            </button>
+                            <span key={dependency.id} className={`goal-task-dependency-chip${dependency.satisfied ? ' is-satisfied' : ' is-blocking'}`}>
+                              <span>
+                                {dependency.title} · {dependency.satisfied ? '已完成' : '未完成'}
+                              </span>
+                              {!dependency.satisfied && dependency.task && (
+                                <button type="button" onClick={() => void completeDependency(dependency.id)}>
+                                  完成前置
+                                </button>
+                              )}
+                              <button type="button" onClick={() => void removeDependency(task, dependency.id)} aria-label={`移除 ${dependency.title} 前置任务`}>
+                                ×
+                              </button>
+                            </span>
                           );
                         })}
                         {task.dependencyTaskIds.length === 0 && <em>无前置任务</em>}
@@ -1657,6 +1781,11 @@ export default function GoalModule() {
                         ))}
                       </select>
                     </div>
+                    {dependencyState.isBlocked && (
+                      <div className="goal-task-dependency-warning">
+                        自动排期会等待前置任务：{dependencyState.blockers.map((dependency) => dependency.title).join('、')}。
+                      </div>
+                    )}
                   </li>
                 );
               })}

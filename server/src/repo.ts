@@ -21,6 +21,7 @@ import {
   type NotificationPermissionPromptReason,
   type NotificationPermissionStatus,
   type NotificationSoundDTO,
+  type Priority,
   type SavedFilterDTO,
   type SearchResultDTO,
   type SmartCounts,
@@ -145,6 +146,7 @@ function mapGoal(r: any): GoalDTO {
     description: r.description ?? null,
     startAt: r.start_at ?? null,
     deadlineAt: r.deadline_at ?? null,
+    priority: (r.priority ?? 0) as Priority,
     totalEstimatedMinutes: r.total_estimated_minutes ?? null,
     availableTimeRule: r.available_time_rule ?? null,
     progressMode: r.progress_mode ?? 'auto',
@@ -218,6 +220,13 @@ function assertTaskStatus(status: unknown): asserts status is TaskStatus {
 function assertGoalStatus(status: unknown): void {
   if (status != null && !['not_started', 'active', 'paused', 'completed', 'archived'].includes(String(status))) {
     throw new AppError(400, 'invalid', 'goal status must be not_started, active, paused, completed or archived');
+  }
+}
+
+function assertGoalPriority(priority: unknown): asserts priority is Priority | null | undefined {
+  if (priority == null) return;
+  if (![0, 1, 2, 3].includes(Number(priority))) {
+    throw new AppError(400, 'invalid', 'goal priority must be 0, 1, 2 or 3');
   }
 }
 
@@ -2123,7 +2132,7 @@ export function getNotificationSoundFile(userId: string, id: string): (Notificat
 export function listGoals(userId: string): GoalDTO[] {
   return (
     db
-      .prepare('SELECT * FROM goals WHERE user_id = ? ORDER BY status ASC, deadline_at IS NULL ASC, deadline_at ASC, created_at DESC')
+      .prepare('SELECT * FROM goals WHERE user_id = ? ORDER BY status ASC, priority DESC, deadline_at IS NULL ASC, deadline_at ASC, created_at DESC')
       .all(userId) as any[]
   ).map(mapGoal);
 }
@@ -2150,8 +2159,9 @@ export function getDayPilotDashboard(userId: string, input: { date?: string | nu
             AND (t.start_date IS NULL OR t.is_all_day = 1) AND t.planned_start_at IS NULL) unscheduled_task_count
        FROM goals g
        WHERE g.user_id = ? AND g.status IN ('active','not_started')
-       ORDER BY
-         CASE WHEN g.deadline_at IS NULL THEN 1 ELSE 0 END ASC,
+        ORDER BY
+          g.priority DESC,
+          CASE WHEN g.deadline_at IS NULL THEN 1 ELSE 0 END ASC,
          g.deadline_at ASC,
          g.created_at DESC
        LIMIT 8`,
@@ -2161,6 +2171,7 @@ export function getDayPilotDashboard(userId: string, input: { date?: string | nu
     id: row.id,
     title: row.title,
     deadlineAt: row.deadline_at ?? null,
+    priority: (row.priority ?? 0) as Priority,
     status: row.status ?? 'not_started',
     scheduledTodayCount: row.scheduled_today_count ?? 0,
     unscheduledTaskCount: row.unscheduled_task_count ?? 0,
@@ -2460,6 +2471,7 @@ export function createGoal(
     description?: string | null;
     startAt?: string | null;
     deadlineAt?: string | null;
+    priority?: Priority | null;
     totalEstimatedMinutes?: number | null;
     availableTimeRule?: string | null;
     progressMode?: 'auto' | 'manual';
@@ -2470,12 +2482,13 @@ export function createGoal(
   if (!title) throw new AppError(400, 'invalid', 'title is required');
   assertProgressMode(input.progressMode);
   assertGoalStatus(input.status);
+  assertGoalPriority(input.priority);
   const id = randomUUID();
   const ts = nowISO();
   db.prepare(
     `INSERT INTO goals
-       (id, user_id, title, description, start_at, deadline_at, total_estimated_minutes, available_time_rule, progress_mode, status, created_at, updated_at)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+       (id, user_id, title, description, start_at, deadline_at, priority, total_estimated_minutes, available_time_rule, progress_mode, status, created_at, updated_at)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
   ).run(
     id,
     userId,
@@ -2483,6 +2496,7 @@ export function createGoal(
     input.description ?? null,
     input.startAt ?? null,
     input.deadlineAt ?? null,
+    Number(input.priority ?? 0),
     input.totalEstimatedMinutes ?? null,
     input.availableTimeRule ?? null,
     input.progressMode ?? 'auto',
@@ -2588,11 +2602,13 @@ export function createGoalWithInitialTasks(
 export function updateGoal(userId: string, id: string, patch: Record<string, unknown>): GoalDTO | null {
   assertProgressMode(patch.progressMode);
   assertGoalStatus(patch.status);
+  assertGoalPriority(patch.priority);
   const map: Record<string, string> = {
     title: 'title',
     description: 'description',
     startAt: 'start_at',
     deadlineAt: 'deadline_at',
+    priority: 'priority',
     totalEstimatedMinutes: 'total_estimated_minutes',
     availableTimeRule: 'available_time_rule',
     progressMode: 'progress_mode',
@@ -2602,7 +2618,7 @@ export function updateGoal(userId: string, id: string, patch: Record<string, unk
   const vals: unknown[] = [];
   for (const [k, col] of Object.entries(map)) {
     if (k in patch) {
-      const value = k === 'title' ? String(patch[k] ?? '').trim() : patch[k];
+      const value = k === 'title' ? String(patch[k] ?? '').trim() : k === 'priority' ? Number(patch[k] ?? 0) : patch[k];
       if (k === 'title' && !value) throw new AppError(400, 'invalid', 'title is required');
       cols.push(`${col} = ?`);
       vals.push(value ?? null);

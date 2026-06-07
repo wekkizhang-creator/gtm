@@ -220,6 +220,7 @@ export interface CreateGoalInput {
   description?: string | null;
   startAt?: string | null;
   deadlineAt?: string | null;
+  priority?: Priority;
   totalEstimatedMinutes?: number | null;
   availableTimeRule?: string | null;
   progressMode?: Goal['progressMode'];

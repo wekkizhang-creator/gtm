@@ -148,12 +148,14 @@ async function main() {
         title: 'Content launch checklist',
         description: 'Coordinate launch content and handoff.',
         deadlineAt: deadline.toISOString(),
+        priority: 2,
         availableTimeRule: JSON.stringify({ startHour: 9, endHour: 18 }),
         tasksText: 'Research audience\n\n- Draft outline\n[ ] Publish recap',
       }),
     });
     assert(bulkGoal.res.status === 201, `bulk goal create failed: ${bulkGoal.res.status} ${JSON.stringify(bulkGoal.body)}`);
     assert(bulkGoal.body.goal.title === 'Content launch checklist', 'bulk goal should return the created goal');
+    assert(bulkGoal.body.goal.priority === 2, 'bulk goal should persist created priority');
     assert(bulkGoal.body.tasks.length === 3, `expected three initial tasks, got ${bulkGoal.body.tasks.length}`);
     assert(
       bulkGoal.body.tasks.map((task: any) => task.title).join('|') === 'Research audience|Draft outline|Publish recap',
@@ -162,6 +164,7 @@ async function main() {
     const bulkTree = await req(base, `/api/goals/${bulkGoal.body.goal.id}/tree`, { cookie });
     assert(bulkTree.body.tasks.length === 3, `bulk goal tree should expose three created tasks, got ${bulkTree.body.tasks.length}`);
     assert(bulkTree.body.goal.description === 'Coordinate launch content and handoff.', 'goal create should persist the goal description');
+    assert(bulkTree.body.goal.priority === 2, 'goal tree should expose created priority');
     const updatedDeadline = new Date(deadline.getTime() + 24 * 3600_000);
     const editedGoal = await req(base, `/api/goals/${bulkGoal.body.goal.id}`, {
       method: 'PATCH',
@@ -170,12 +173,14 @@ async function main() {
         title: 'Content launch operating plan',
         description: 'Updated positioning and launch operating notes.',
         deadlineAt: updatedDeadline.toISOString(),
+        priority: 3,
       }),
     });
     assert(editedGoal.res.status === 200, `goal edit failed: ${editedGoal.res.status} ${JSON.stringify(editedGoal.body)}`);
     assert(editedGoal.body.goal.title === 'Content launch operating plan', 'goal edit should update the title');
     assert(editedGoal.body.goal.description === 'Updated positioning and launch operating notes.', 'goal edit should update the description');
     assert(editedGoal.body.goal.deadlineAt === updatedDeadline.toISOString(), 'goal edit should update the deadline');
+    assert(editedGoal.body.goal.priority === 3, 'goal edit should update the priority');
     const goalsAfterEdit = await req(base, '/api/goals', { cookie });
     assert(
       goalsAfterEdit.body.goals.some(
@@ -183,13 +188,15 @@ async function main() {
           goal.id === bulkGoal.body.goal.id &&
           goal.title === 'Content launch operating plan' &&
           goal.description === 'Updated positioning and launch operating notes.' &&
-          goal.deadlineAt === updatedDeadline.toISOString(),
+          goal.deadlineAt === updatedDeadline.toISOString() &&
+          goal.priority === 3,
       ),
-      'goal list should expose edited title, description and deadline',
+      'goal list should expose edited title, description, deadline and priority',
     );
     const bulkTreeAfterEdit = await req(base, `/api/goals/${bulkGoal.body.goal.id}/tree`, { cookie });
     assert(bulkTreeAfterEdit.body.goal.title === 'Content launch operating plan', 'goal tree should expose edited title');
     assert(bulkTreeAfterEdit.body.goal.description === 'Updated positioning and launch operating notes.', 'goal tree should expose edited description');
+    assert(bulkTreeAfterEdit.body.goal.priority === 3, 'goal tree should expose edited priority');
     const [bulkCompletedTask, bulkScheduledTask, bulkOverdueTask] = bulkTreeAfterEdit.body.tasks;
     const bulkScheduleStart = new Date(start.getTime() + 2 * 3600_000).toISOString();
     const bulkScheduleEnd = new Date(start.getTime() + 3 * 3600_000).toISOString();
@@ -227,11 +234,12 @@ async function main() {
         .get(bulkGoal.body.goal.id) as { c: number };
       assert(linkedTasks.c === 3, `expected three DB tasks linked to bulk goal, got ${linkedTasks.c}`);
       const goalRow = dbAfterBulkGoal
-        .prepare('SELECT title, description, deadline_at FROM goals WHERE id = ?')
-        .get(bulkGoal.body.goal.id) as { title: string; description: string | null; deadline_at: string | null };
+        .prepare('SELECT title, description, deadline_at, priority FROM goals WHERE id = ?')
+        .get(bulkGoal.body.goal.id) as { title: string; description: string | null; deadline_at: string | null; priority: number };
       assert(goalRow.title === 'Content launch operating plan', 'DB should persist edited goal title');
       assert(goalRow.description === 'Updated positioning and launch operating notes.', 'DB should persist edited goal description');
       assert(goalRow.deadline_at === updatedDeadline.toISOString(), 'DB should persist edited goal deadline');
+      assert(goalRow.priority === 3, 'DB should persist edited goal priority');
     } finally {
       dbAfterBulkGoal.close();
     }
@@ -255,6 +263,121 @@ async function main() {
       body: JSON.stringify({ title: 'Schedulable while active', estimatedMinutes: 30 }),
     });
     assert(statusTask.res.status === 201, `status goal task create failed: ${statusTask.res.status} ${JSON.stringify(statusTask.body)}`);
+    const taskStartedAt = new Date(start.getTime() + 30 * 60_000).toISOString();
+    const startedTask = await req(base, `/api/tasks/${statusTask.body.task.id}`, {
+      method: 'PATCH',
+      cookie,
+      body: JSON.stringify({ status: 'doing', actualStartAt: taskStartedAt, actualEndAt: null }),
+    });
+    assert(startedTask.res.status === 200, `start goal task failed: ${startedTask.res.status} ${JSON.stringify(startedTask.body)}`);
+    assert(startedTask.body.task.status === 'doing' && startedTask.body.task.actualStartAt === taskStartedAt, 'goal task should move to doing with actualStartAt');
+    const taskCompletedAt = new Date(start.getTime() + 60 * 60_000).toISOString();
+    const completedTask = await req(base, `/api/tasks/${statusTask.body.task.id}`, {
+      method: 'PATCH',
+      cookie,
+      body: JSON.stringify({ completed: true, status: 'done', actualEndAt: taskCompletedAt }),
+    });
+    assert(completedTask.res.status === 200, `complete goal task failed: ${completedTask.res.status} ${JSON.stringify(completedTask.body)}`);
+    assert(completedTask.body.task.completed === true && completedTask.body.task.status === 'done', 'goal task should move to completed');
+    assert(completedTask.body.task.completedAt, 'completed goal task should expose completedAt');
+    const taskSkippedAt = new Date(start.getTime() + 75 * 60_000).toISOString();
+    const skippedTask = await req(base, `/api/tasks/${statusTask.body.task.id}`, {
+      method: 'PATCH',
+      cookie,
+      body: JSON.stringify({ status: 'skipped', completed: false, actualEndAt: taskSkippedAt }),
+    });
+    assert(skippedTask.res.status === 200, `skip goal task failed: ${skippedTask.res.status} ${JSON.stringify(skippedTask.body)}`);
+    assert(skippedTask.body.task.status === 'skipped' && skippedTask.body.task.completed === false, 'goal task should move to skipped without counting completed');
+    const reopenedTask = await req(base, `/api/tasks/${statusTask.body.task.id}`, {
+      method: 'PATCH',
+      cookie,
+      body: JSON.stringify({ status: 'todo', completed: false, actualStartAt: null, actualEndAt: null }),
+    });
+    assert(reopenedTask.res.status === 200, `reopen goal task failed: ${reopenedTask.res.status} ${JSON.stringify(reopenedTask.body)}`);
+    assert(
+      reopenedTask.body.task.status === 'todo' &&
+        reopenedTask.body.task.completed === false &&
+        reopenedTask.body.task.actualStartAt === null &&
+        reopenedTask.body.task.actualEndAt === null,
+      'goal task should reopen to todo with cleared actual times',
+    );
+    const dbAfterTaskStatus = new DatabaseSync(dbPath);
+    try {
+      const statusRow = dbAfterTaskStatus
+        .prepare('SELECT status, completed, actual_start_at, actual_end_at, completed_at FROM tasks WHERE id = ?')
+        .get(statusTask.body.task.id) as {
+        status: string;
+        completed: number;
+        actual_start_at: string | null;
+        actual_end_at: string | null;
+        completed_at: string | null;
+      };
+      assert(
+        statusRow.status === 'todo' &&
+          statusRow.completed === 0 &&
+          statusRow.actual_start_at === null &&
+          statusRow.actual_end_at === null &&
+          statusRow.completed_at === null,
+        'DB should persist reopened goal task status and cleared timestamps',
+      );
+    } finally {
+      dbAfterTaskStatus.close();
+    }
+    const dependencyPrerequisite = await req(base, `/api/goals/${statusGoal.body.goal.id}/tasks`, {
+      method: 'POST',
+      cookie,
+      body: JSON.stringify({ title: 'Write dependency copy', estimatedMinutes: 30 }),
+    });
+    const dependencyDependent = await req(base, `/api/goals/${statusGoal.body.goal.id}/tasks`, {
+      method: 'POST',
+      cookie,
+      body: JSON.stringify({ title: 'Design after copy', estimatedMinutes: 30 }),
+    });
+    assert(
+      dependencyPrerequisite.res.status === 201 && dependencyDependent.res.status === 201,
+      'dependency UX test tasks should be created',
+    );
+    const dependencyStatusLink = await req(base, `/api/tasks/${dependencyDependent.body.task.id}/dependencies`, {
+      method: 'POST',
+      cookie,
+      body: JSON.stringify({ dependencyId: dependencyPrerequisite.body.task.id }),
+    });
+    assert(dependencyStatusLink.res.status === 200, `dependency status link failed: ${dependencyStatusLink.res.status} ${JSON.stringify(dependencyStatusLink.body)}`);
+    assert(
+      dependencyStatusLink.body.task.dependencyTaskIds.includes(dependencyPrerequisite.body.task.id),
+      'dependent task should store prerequisite id',
+    );
+    const dependencyPrerequisiteDone = await req(base, `/api/tasks/${dependencyPrerequisite.body.task.id}`, {
+      method: 'PATCH',
+      cookie,
+      body: JSON.stringify({ completed: true, status: 'done' }),
+    });
+    assert(
+      dependencyPrerequisiteDone.res.status === 200 &&
+        dependencyPrerequisiteDone.body.task.completed === true &&
+        dependencyPrerequisiteDone.body.task.status === 'done',
+      'completing prerequisite should persist through the task API',
+    );
+    const dependencyUnblockedProposal = await req(base, `/api/goals/${statusGoal.body.goal.id}/schedule-proposals`, {
+      method: 'POST',
+      cookie,
+      body: JSON.stringify({
+        from: start.toISOString(),
+        to: deadline.toISOString(),
+        selectedTaskIds: [dependencyDependent.body.task.id],
+      }),
+    });
+    assert(
+      dependencyUnblockedProposal.res.status === 201,
+      `completed prerequisite should allow dependent proposal: ${dependencyUnblockedProposal.res.status} ${JSON.stringify(dependencyUnblockedProposal.body)}`,
+    );
+    assert(
+      dependencyUnblockedProposal.body.proposal.changes.some((change: any) => change.taskId === dependencyDependent.body.task.id) &&
+        !dependencyUnblockedProposal.body.proposal.conflicts.some(
+          (conflict: any) => conflict.type === 'dependency_blocked' && conflict.taskId === dependencyDependent.body.task.id,
+        ),
+      'completed prerequisite should unblock selected dependent task scheduling',
+    );
     const pauseGoal = await req(base, `/api/goals/${statusGoal.body.goal.id}`, {
       method: 'PATCH',
       cookie,

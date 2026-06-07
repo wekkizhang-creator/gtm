@@ -230,6 +230,7 @@ db.exec(`
     description             TEXT,
     start_at                TEXT,
     deadline_at             TEXT,
+    priority                INTEGER NOT NULL DEFAULT 0,
     total_estimated_minutes INTEGER,
     available_time_rule     TEXT,
     progress_mode           TEXT NOT NULL DEFAULT 'auto',
@@ -708,6 +709,7 @@ db.exec(`
   addCol('tasks', 'min_schedule_minutes', 'min_schedule_minutes INTEGER');
   addCol('tasks', 'subtask_config', 'subtask_config TEXT');
   addCol('tasks', 'recurrence_rule', 'recurrence_rule TEXT');
+  addCol('goals', 'priority', 'priority INTEGER NOT NULL DEFAULT 0');
   addCol('tasks', 'source', "source TEXT NOT NULL DEFAULT 'manual'");
   addCol('tasks', 'manual_progress', 'manual_progress INTEGER');
   addCol('tasks', 'pinned', 'pinned INTEGER NOT NULL DEFAULT 0');

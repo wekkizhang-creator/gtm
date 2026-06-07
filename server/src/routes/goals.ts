@@ -25,6 +25,7 @@ router.post('/', (req, res) => {
     description: b.description ?? null,
     startAt: b.startAt ?? null,
     deadlineAt: b.deadlineAt ?? null,
+    priority: b.priority ?? 0,
     totalEstimatedMinutes: b.totalEstimatedMinutes ?? null,
     availableTimeRule: b.availableTimeRule ?? null,
     progressMode: b.progressMode ?? 'auto',

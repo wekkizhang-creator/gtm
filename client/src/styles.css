@@ -4268,8 +4268,10 @@ html[data-animations='off'] * {
 }
 
 .goal-create input,
+.goal-create select,
 .goal-create textarea,
 .goal-edit-form input,
+.goal-edit-form select,
 .goal-edit-form textarea,
 .goal-task-form input,
 .goal-task-edit-form input,
@@ -4528,8 +4530,7 @@ html[data-animations='off'] * {
 
 .goal-task {
   display: grid;
-  grid-template-columns: minmax(180px, 1fr) minmax(180px, auto);
-  gap: 12px;
+  gap: 8px;
   border-bottom: 1px solid var(--border);
   padding-top: 11px;
   padding-bottom: 11px;
@@ -4543,10 +4544,51 @@ html[data-animations='off'] * {
   align-items: center;
   display: flex;
   gap: 8px;
+  flex-wrap: wrap;
   min-width: 0;
 }
 
-.goal-task-title-row button {
+.goal-task-status {
+  border-radius: 999px;
+  color: #fff;
+  font-size: 11px;
+  font-weight: 700;
+  line-height: 1;
+  padding: 4px 8px;
+}
+
+.goal-task-status.is-unscheduled {
+  background: #6b7280;
+}
+
+.goal-task-status.is-scheduled {
+  background: #2f6fbd;
+}
+
+.goal-task-status.is-doing {
+  background: #7c3aed;
+}
+
+.goal-task-status.is-completed {
+  background: #11845b;
+}
+
+.goal-task-status.is-overdue {
+  background: #b42318;
+}
+
+.goal-task-status.is-skipped {
+  background: #7a5c20;
+}
+
+.goal-task-row-actions {
+  display: flex;
+  gap: 6px;
+  flex-wrap: wrap;
+  margin-left: auto;
+}
+
+.goal-task-row-actions button {
   border: 1px solid var(--border);
   border-radius: 999px;
   background: var(--surface);
@@ -4557,8 +4599,8 @@ html[data-animations='off'] * {
 }
 
 .goal-task > small {
-  justify-self: end;
-  text-align: right;
+  justify-self: start;
+  text-align: left;
 }
 
 .goal-task-edit-form {
@@ -4619,6 +4661,47 @@ html[data-animations='off'] * {
   cursor: pointer;
   font-size: 12px;
   padding: 4px 8px;
+}
+
+.goal-task-dependency-chip {
+  align-items: center;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  display: inline-flex;
+  gap: 5px;
+  min-width: 0;
+  padding: 3px 5px 3px 9px;
+}
+
+.goal-task-dependency-chip.is-satisfied {
+  background: color-mix(in srgb, #11845b 8%, var(--surface));
+}
+
+.goal-task-dependency-chip.is-blocking {
+  background: color-mix(in srgb, #d3922c 10%, var(--surface));
+  border-color: #d3922c;
+}
+
+.goal-task-dependency-chip > span {
+  font-size: 12px;
+  overflow-wrap: anywhere;
+}
+
+.goal-task-dependency-chip button {
+  background: transparent;
+  min-height: 24px;
+  padding: 2px 6px;
+}
+
+.goal-task-dependency-warning {
+  border: 1px solid #d3922c;
+  border-radius: 8px;
+  background: color-mix(in srgb, #d3922c 9%, transparent);
+  color: var(--text);
+  font-size: 12px;
+  grid-column: 1 / -1;
+  line-height: 1.45;
+  padding: 7px 9px;
 }
 
 .goal-task-dependencies em {
@@ -5046,12 +5129,100 @@ html[data-animations='off'] * {
   line-height: 1.45;
 }
 
+.goal-proposal-impact {
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: color-mix(in srgb, var(--accent) 6%, var(--surface));
+  display: grid;
+  gap: 10px;
+  margin: 8px 0 12px;
+  padding: 10px 12px;
+}
+
+.goal-proposal-impact-grid {
+  display: grid;
+  gap: 8px;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+}
+
+.goal-proposal-impact-grid > div {
+  display: grid;
+  gap: 3px;
+  min-width: 0;
+}
+
+.goal-proposal-impact-grid strong {
+  font-size: 18px;
+  line-height: 1;
+}
+
+.goal-proposal-impact-grid span,
+.goal-proposal-impact-detail small,
+.goal-proposal-impact-detail p {
+  overflow-wrap: anywhere;
+}
+
+.goal-proposal-impact-grid span,
+.goal-proposal-impact-detail small {
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.goal-proposal-impact-detail {
+  border-top: 1px solid var(--border);
+  display: grid;
+  gap: 8px;
+  padding-top: 9px;
+}
+
+.goal-proposal-impact-detail > div {
+  display: grid;
+  gap: 4px;
+  min-width: 0;
+}
+
 .goal-proposal-edit {
   display: flex;
   align-items: end;
   gap: 8px;
   flex-wrap: wrap;
   margin: 4px 0;
+}
+
+.goal-proposal-drag {
+  min-width: min(260px, 100%);
+}
+
+.goal-proposal-drag input[type='range'] {
+  accent-color: var(--accent);
+  width: 100%;
+}
+
+.goal-proposal-nudge {
+  display: flex !important;
+  gap: 6px !important;
+  grid-template-columns: none !important;
+}
+
+.goal-proposal-nudge button {
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--surface);
+  color: var(--text);
+  cursor: pointer;
+  font-size: 12px;
+  min-height: 32px;
+  padding: 5px 8px;
+}
+
+.goal-proposal-manual-impact {
+  border: 1px solid #d3922c;
+  border-radius: 8px;
+  background: color-mix(in srgb, #d3922c 9%, transparent);
+  display: grid;
+  gap: 4px;
+  margin: 4px 0;
+  padding: 7px 9px;
 }
 
 .goal-proposal-edit label {

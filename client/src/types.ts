@@ -155,6 +155,7 @@ export interface Goal {
   description: string | null;
   startAt: string | null;
   deadlineAt: string | null;
+  priority: Priority;
   totalEstimatedMinutes: number | null;
   availableTimeRule: string | null;
   progressMode: 'auto' | 'manual';
@@ -197,6 +198,7 @@ export interface DayPilotDashboardGoal {
   id: string;
   title: string;
   deadlineAt: string | null;
+  priority: Priority;
   status: Goal['status'];
   scheduledTodayCount: number;
   unscheduledTaskCount: number;

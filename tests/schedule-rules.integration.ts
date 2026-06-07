@@ -375,10 +375,18 @@ async function main() {
     const conflictedChange = overlapEdit.body.proposal.changes.find((change: any) => change.taskId === partialFirst.body.task.id);
     assert(conflictedChange.conflict === true, 'manual overlap should mark the proposal change as conflicting');
     assert(
+      conflictedChange.avoidedBlocks.some((block: any) => block.source === 'scheduled' && block.title === secondChange.title),
+      'manual overlap should expose the affected proposal time block',
+    );
+    assert(
       overlapEdit.body.proposal.conflicts.some(
-        (conflict: any) => conflict.type === 'manual_adjustment_conflict' && conflict.taskId === partialFirst.body.task.id,
+        (conflict: any) =>
+          conflict.type === 'manual_adjustment_conflict' &&
+          conflict.taskId === partialFirst.body.task.id &&
+          conflict.message.includes(secondChange.title) &&
+          conflict.suggestions.length > 0,
       ),
-      'manual overlap should add a manual_adjustment_conflict',
+      'manual overlap should add a manual_adjustment_conflict with affected task detail and suggestions',
     );
     const dbAfterManualDraft = new DatabaseSync(dbPath);
     try {
@@ -630,6 +638,14 @@ async function main() {
     assert(
       replanProposal.changes[0].plannedStartAt === new Date('2030-01-11T22:00:00+08:00').toISOString(),
       `impacted task should move after the external event and preserved second task, got ${replanProposal.changes[0].plannedStartAt}`,
+    );
+    assert(
+      replanProposal.changes[0].oldPlannedStartAt === new Date('2030-01-11T20:00:00+08:00').toISOString(),
+      `reschedule proposal should expose the original start time, got ${replanProposal.changes[0].oldPlannedStartAt}`,
+    );
+    assert(
+      replanProposal.changes[0].oldPlannedEndAt === new Date('2030-01-11T21:00:00+08:00').toISOString(),
+      `reschedule proposal should expose the original end time, got ${replanProposal.changes[0].oldPlannedEndAt}`,
     );
 
     const replanConfirm = await req(base, `/api/schedule-proposals/${replanProposal.id}/confirm`, { method: 'POST', cookie });
