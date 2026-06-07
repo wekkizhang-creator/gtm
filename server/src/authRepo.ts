@@ -77,6 +77,14 @@ function codeDeviceMaxPerWindow(): number {
   return positiveIntEnv('AUTH_CODE_DEVICE_MAX_PER_WINDOW', 10);
 }
 
+function codeMaxFailedAttempts(): number {
+  return positiveIntEnv('AUTH_CODE_MAX_FAILED_ATTEMPTS', MAX_ATTEMPTS);
+}
+
+function codeLockSec(): number {
+  return positiveIntEnv('AUTH_CODE_LOCK_SEC', 5 * 60);
+}
+
 function passwordMaxFailedAttempts(): number {
   return positiveIntEnv('AUTH_PASSWORD_MAX_FAILED_ATTEMPTS', 5);
 }
@@ -496,6 +504,28 @@ function resetPasswordFailures(userId: string, ts = nowISO()): void {
   ).run(ts, userId);
 }
 
+function assertVerificationCodeNotLocked(row: any, now: string): void {
+  if (row.locked_until && row.locked_until > now) {
+    throw new AppError(423, 'verification_code_locked', 'verification code is temporarily locked');
+  }
+  if (row.locked_until && row.locked_until <= now) {
+    db.prepare('UPDATE verification_codes SET attempts = 0, locked_until = NULL WHERE id = ?').run(row.id);
+    row.attempts = 0;
+    row.locked_until = null;
+  }
+}
+
+function recordVerificationCodeFailure(row: any, now: string): void {
+  const previousAttempts = row.locked_until && row.locked_until <= now ? 0 : Math.max(0, Number(row.attempts) || 0);
+  const attempts = previousAttempts + 1;
+  const lockedUntil = attempts >= codeMaxFailedAttempts() ? addSeconds(now, codeLockSec()) : null;
+  db.prepare('UPDATE verification_codes SET attempts = ?, locked_until = ? WHERE id = ?').run(attempts, lockedUntil, row.id);
+  if (lockedUntil) {
+    audit(null, 'verification_code_locked', 'verification_code', row.id);
+    throw new AppError(423, 'verification_code_locked', 'verification code is temporarily locked');
+  }
+}
+
 function normalizeDeviceInput(device: { deviceId: string; deviceName?: string | null; platform?: string | null; appVersion?: string | null }) {
   if (typeof device.deviceId !== 'string' || !device.deviceId.trim()) {
     throw new AppError(400, 'invalid', 'device.deviceId is required');
@@ -882,9 +912,9 @@ function verifyPendingCode(challengeId: string, code: string, purpose: string): 
   if (!row || row.consumed_at) throw new AppError(400, 'invalid_code', 'verification code is invalid');
   const now = nowISO();
   if (row.expires_at < now) throw new AppError(400, 'code_expired', 'verification code has expired');
-  if (row.attempts >= MAX_ATTEMPTS) throw new AppError(429, 'rate_limited', 'too many verification attempts');
+  assertVerificationCodeNotLocked(row, now);
   if (row.code_hash !== codeHash(challengeId, code)) {
-    db.prepare('UPDATE verification_codes SET attempts = attempts + 1 WHERE id = ?').run(challengeId);
+    recordVerificationCodeFailure(row, now);
     throw new AppError(400, 'invalid_code', 'verification code is invalid');
   }
   return row;
@@ -1196,9 +1226,9 @@ function consumeIdentityVerification(userId: string, challengeId: string, code: 
   if (!row || row.consumed_at) throw new AppError(400, 'invalid_code', 'verification code is invalid');
   const now = nowISO();
   if (row.expires_at < now) throw new AppError(400, 'code_expired', 'verification code has expired');
-  if (row.attempts >= MAX_ATTEMPTS) throw new AppError(429, 'rate_limited', 'too many verification attempts');
+  assertVerificationCodeNotLocked(row, now);
   if (row.code_hash !== codeHash(challengeId, code)) {
-    db.prepare('UPDATE verification_codes SET attempts = attempts + 1 WHERE id = ?').run(challengeId);
+    recordVerificationCodeFailure(row, now);
     throw new AppError(400, 'invalid_code', 'verification code is invalid');
   }
   const identity = db
@@ -1208,7 +1238,7 @@ function consumeIdentityVerification(userId: string, challengeId: string, code: 
     )
     .get(userId, row.type, row.identifier_hash);
   if (!identity) throw new AppError(403, 'identity_mismatch', 'verification code does not match current account');
-  db.prepare('UPDATE verification_codes SET consumed_at = ? WHERE id = ?').run(now, challengeId);
+  db.prepare('UPDATE verification_codes SET consumed_at = ?, locked_until = NULL WHERE id = ?').run(now, challengeId);
 }
 
 export function requestAccountDeletion(

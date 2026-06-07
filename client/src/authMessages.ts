@@ -17,6 +17,7 @@ export const AUTH_ERROR_MESSAGES: Record<string, string> = {
   password_login_locked: '密码错误次数过多，账号已临时锁定，请稍后再试或重置密码',
   invalid_password: '密码需为 8 到 128 个字符',
   invalid_code: '验证码不正确，请重新输入',
+  verification_code_locked: '验证码错误次数过多，请稍后重新获取或重试',
   code_expired: '验证码已过期，请重新获取',
   rate_limited: '操作过于频繁，请稍后再试',
   invalid_identifier: '邮箱格式不正确',

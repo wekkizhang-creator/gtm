@@ -3302,3 +3302,45 @@ The account settings page now shows a "修改登录密码" row with current pass
 ### Verification
 
 `npm run test:auth` verifies wrong-current-password change fails, weak new password fails, a valid logged-in password change succeeds, the old password can no longer log in, the new password can log in, SQLite failed-password state is cleared, and one `account_password_changed` audit row is persisted.
+
+## Slice 125: Verification Code Attempt Lockout
+
+AUTH-23 now has an explicit temporary lockout for repeated wrong verification-code attempts. The previous `attempts` counter is kept, and a new `locked_until` value records when a challenge is locked after too many wrong submissions.
+
+### Data Contract
+
+`verification_codes` adds:
+
+- `locked_until TEXT`
+
+The lock is challenge-scoped. No raw verification code is stored; the existing code hash remains the only code value in SQLite.
+
+### API Contract
+
+All verification-code completion paths use the same lockout logic:
+
+- `POST /api/auth/register/complete`
+- `POST /api/auth/password-reset/complete`
+- `POST /api/account/email/bind`
+- `POST /api/account/phone/bind`
+- `POST /api/account/deletion/request`
+
+Behavior:
+
+- Before the threshold, wrong codes return `400 invalid_code` and increment `attempts`.
+- Once the threshold is reached, the request returns `423 verification_code_locked`, persists `locked_until`, and writes a `verification_code_locked` audit row.
+- While locked, even the correct code returns `423 verification_code_locked`.
+- Expired codes still return `400 code_expired`.
+
+Optional environment knobs:
+
+- `AUTH_CODE_MAX_FAILED_ATTEMPTS`, default `5`
+- `AUTH_CODE_LOCK_SEC`, default `300`
+
+### Client Contract
+
+`verification_code_locked` is mapped to localized auth copy so login/registration/reset views show a clear "too many wrong codes" message instead of a raw server error.
+
+### Verification
+
+`npm run test:auth` now creates a real SMTP registration challenge, submits two wrong verification codes with the test threshold set to `2`, verifies the first wrong code returns `400 invalid_code`, verifies the second wrong code and the correct code during lock both return `423 verification_code_locked`, and checks SQLite `verification_codes.attempts`, `locked_until`, `consumed_at`, plus a `verification_code_locked` audit row.

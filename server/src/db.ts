@@ -103,6 +103,7 @@ db.exec(`
     expires_at      TEXT NOT NULL,
     resend_after_at TEXT NOT NULL,
     attempts        INTEGER NOT NULL DEFAULT 0,
+    locked_until    TEXT,
     consumed_at     TEXT,
     created_at      TEXT NOT NULL
   );
@@ -738,6 +739,7 @@ db.exec(`
   addCol('verification_codes', 'display_identifier', 'display_identifier TEXT');
   addCol('verification_codes', 'requester_ip_hash', 'requester_ip_hash TEXT');
   addCol('verification_codes', 'requester_device_hash', 'requester_device_hash TEXT');
+  addCol('verification_codes', 'locked_until', 'locked_until TEXT');
   addCol('focus_sessions', 'background_sound_id', 'background_sound_id TEXT');
   addCol('focus_sessions', 'background_sound_name', 'background_sound_name TEXT');
   addCol('focus_sessions', 'background_volume', 'background_volume INTEGER');

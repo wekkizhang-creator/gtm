@@ -195,6 +195,8 @@ async function main() {
     AUTH_RISK_BLOCKED_IDENTIFIERS: 'risk-blocked@example.com',
     AUTH_RISK_BLOCKED_DEVICE_IDS: 'blocked-device',
     AUTH_RISK_SUPPORT_CONTACT: 'security@example.com',
+    AUTH_CODE_MAX_FAILED_ATTEMPTS: '2',
+    AUTH_CODE_LOCK_SEC: '3600',
     AUTH_PASSWORD_MAX_FAILED_ATTEMPTS: '2',
     AUTH_PASSWORD_LOCK_SEC: '3600',
     EFFICIENCY_LIST_NO_LISTEN: '1',
@@ -301,6 +303,44 @@ async function main() {
     });
     assert(weakPasswordComplete.res.status === 400, `weak password should fail, got ${weakPasswordComplete.res.status}`);
     assert(weakPasswordComplete.body.error.code === 'invalid_password', 'weak password should return invalid_password');
+
+    const codeLockChallenge = await requestRegistrationCode(base, 'code-lock@example.com', smtp.messages);
+    const codeWrong1 = await req(base, '/api/auth/register/complete', {
+      method: 'POST',
+      body: JSON.stringify({
+        challengeId: codeLockChallenge.challengeId,
+        code: '000000' === codeLockChallenge.code ? '000001' : '000000',
+        password: TEST_PASSWORD,
+        agreedToTerms: true,
+        device: { deviceId: 'code-lock-wrong-1', platform: 'Web' },
+      }),
+    });
+    assert(codeWrong1.res.status === 400, `first wrong verification code should be 400, got ${codeWrong1.res.status}`);
+    assert(codeWrong1.body.error.code === 'invalid_code', 'first wrong verification code should return invalid_code');
+    const codeWrong2 = await req(base, '/api/auth/register/complete', {
+      method: 'POST',
+      body: JSON.stringify({
+        challengeId: codeLockChallenge.challengeId,
+        code: '111111' === codeLockChallenge.code ? '111112' : '111111',
+        password: TEST_PASSWORD,
+        agreedToTerms: true,
+        device: { deviceId: 'code-lock-wrong-2', platform: 'Web' },
+      }),
+    });
+    assert(codeWrong2.res.status === 423, `second wrong verification code should lock with 423, got ${codeWrong2.res.status}`);
+    assert(codeWrong2.body.error.code === 'verification_code_locked', 'second wrong verification code should return verification_code_locked');
+    const codeCorrectWhileLocked = await req(base, '/api/auth/register/complete', {
+      method: 'POST',
+      body: JSON.stringify({
+        challengeId: codeLockChallenge.challengeId,
+        code: codeLockChallenge.code,
+        password: TEST_PASSWORD,
+        agreedToTerms: true,
+        device: { deviceId: 'code-lock-correct-while-locked', platform: 'Web' },
+      }),
+    });
+    assert(codeCorrectWhileLocked.res.status === 423, `correct verification code during lock should be 423, got ${codeCorrectWhileLocked.res.status}`);
+    assert(codeCorrectWhileLocked.body.error.code === 'verification_code_locked', 'correct verification code during lock should stay verification_code_locked');
 
     const wrongPassword = await req(base, '/api/auth/login/password', {
       method: 'POST',
@@ -572,10 +612,16 @@ async function main() {
            WHERE ai.type = 'email' AND ai.identifier_hash = ?`,
         )
         .get(identifierHash('email', 'alice@example.com')) as { failed_attempt_count: number; locked_until: string | null; last_failed_at: string | null };
+      const codeLockRow = db.prepare('SELECT attempts, locked_until, consumed_at FROM verification_codes WHERE id = ?').get(codeLockChallenge.challengeId) as {
+        attempts: number;
+        locked_until: string | null;
+        consumed_at: string | null;
+      };
       const blockedIdentifierRows = db
         .prepare("SELECT COUNT(*) c FROM verification_codes WHERE display_identifier = 'ri**********@example.com'")
         .get() as { c: number };
       const auditRiskRows = db.prepare("SELECT COUNT(*) c FROM security_audit_logs WHERE action LIKE 'auth_risk_%'").get() as { c: number };
+      const codeLockAuditRows = db.prepare("SELECT COUNT(*) c FROM security_audit_logs WHERE action = 'verification_code_locked'").get() as { c: number };
       const passwordLockAuditRows = db.prepare("SELECT COUNT(*) c FROM security_audit_logs WHERE action = 'password_login_locked'").get() as { c: number };
       const passwordChangeAuditRows = db.prepare("SELECT COUNT(*) c FROM security_audit_logs WHERE action = 'account_password_changed'").get() as { c: number };
       assert(users.c === 4, `expected 4 users in DB, got ${users.c}`);
@@ -590,8 +636,12 @@ async function main() {
       assert(aliceCredential.failed_attempt_count === 0, 'successful account password change and login should clear Alice failed attempts');
       assert(aliceCredential.locked_until === null, 'account password change should leave Alice password unlocked');
       assert(aliceCredential.last_failed_at === null, 'successful changed-password login should clear Alice last failed timestamp');
+      assert(codeLockRow.attempts === 2, `locked verification code should keep two failed attempts, got ${codeLockRow.attempts}`);
+      assert(!!codeLockRow.locked_until, 'locked verification code should persist locked_until');
+      assert(codeLockRow.consumed_at === null, 'locked verification code must not be consumed');
       assert(blockedIdentifierRows.c === 0, 'blocked identifier should not create verification code rows');
       assert(auditRiskRows.c === 2, `expected 2 risk audit rows, got ${auditRiskRows.c}`);
+      assert(codeLockAuditRows.c === 1, `expected one verification code lock audit row, got ${codeLockAuditRows.c}`);
       assert(passwordLockAuditRows.c === 1, `expected one password lock audit row, got ${passwordLockAuditRows.c}`);
       assert(passwordChangeAuditRows.c === 1, `expected one password change audit row, got ${passwordChangeAuditRows.c}`);
     } finally {
