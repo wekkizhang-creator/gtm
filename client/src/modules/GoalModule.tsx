@@ -476,7 +476,7 @@ export default function GoalModule() {
     if (ruleType === 'task_category') {
       return {
         condition: { taskType: ruleTaskType.trim() || null },
-        action: { effect: 'prefer_category' },
+        action: { effect: 'min_block', minScheduleMinutes: Math.max(15, Number(ruleBufferMinutes) || 90) },
       };
     }
     if (ruleType === 'reminder') {
@@ -706,6 +706,7 @@ export default function GoalModule() {
     }
     if (rule.type === 'task_category') {
       setRuleTaskType(typeof rule.condition.taskType === 'string' ? rule.condition.taskType : '');
+      setRuleBufferMinutes(String(rule.action.minScheduleMinutes ?? rule.action.minMinutes ?? rule.condition.minScheduleMinutes ?? 90));
     }
   }
 
@@ -1471,7 +1472,17 @@ export default function GoalModule() {
                   </select>
                 )}
                 {ruleType === 'task_category' && (
-                  <input placeholder="任务类型" value={ruleTaskType} onChange={(e) => setRuleTaskType(e.target.value)} />
+                  <div className="goal-rule-inline-fields">
+                    <input placeholder="任务类型" value={ruleTaskType} onChange={(e) => setRuleTaskType(e.target.value)} />
+                    <input
+                      type="number"
+                      min="15"
+                      max="1440"
+                      placeholder="每块最少分钟"
+                      value={ruleBufferMinutes}
+                      onChange={(e) => setRuleBufferMinutes(e.target.value)}
+                    />
+                  </div>
                 )}
                 {ruleType === 'plan_priority' && selected && <small className="goal-rule-scope-note">优先推进：{selected.title}</small>}
                 <button type="submit" disabled={!ruleName.trim()}>

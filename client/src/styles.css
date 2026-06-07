@@ -4267,6 +4267,12 @@ html[data-animations='off'] * {
   gap: 8px;
 }
 
+.goal-rule-inline-fields {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 140px;
+  gap: 8px;
+}
+
 .goal-create input,
 .goal-create select,
 .goal-create textarea,

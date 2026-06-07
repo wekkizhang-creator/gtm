@@ -666,6 +666,216 @@ async function main() {
       dbAfterSplitUndo.close();
     }
 
+    const invalidCategoryRule = await req(base, '/api/schedule-rules', {
+      method: 'POST',
+      cookie,
+      body: JSON.stringify({
+        name: 'Invalid tiny writing block',
+        type: 'task_category',
+        priority: 'normal',
+        condition: { taskType: 'writing' },
+        action: { effect: 'min_block', minScheduleMinutes: 10 },
+        scope: {},
+      }),
+    });
+    assert(invalidCategoryRule.res.status === 400, `invalid category rule should be 400, got ${invalidCategoryRule.res.status}`);
+    assert(
+      invalidCategoryRule.body.error.code === 'invalid_schedule_rule',
+      `invalid category rule should return invalid_schedule_rule, got ${invalidCategoryRule.body.error.code}`,
+    );
+
+    const categoryGoal = await req(base, '/api/goals', {
+      method: 'POST',
+      cookie,
+      body: JSON.stringify({
+        title: 'Writing category plan',
+        startAt: new Date('2030-01-10T09:00:00+08:00').toISOString(),
+        deadlineAt: new Date('2030-01-10T12:00:00+08:00').toISOString(),
+        availableTimeRule: JSON.stringify({ startHour: 9, endHour: 12 }),
+      }),
+    });
+    assert(categoryGoal.res.status === 201, `category goal create failed: ${categoryGoal.res.status} ${JSON.stringify(categoryGoal.body)}`);
+    const categoryRule = await req(base, '/api/schedule-rules', {
+      method: 'POST',
+      cookie,
+      body: JSON.stringify({
+        name: 'Writing blocks at least 90 minutes',
+        type: 'task_category',
+        priority: 'normal',
+        condition: { taskType: 'writing' },
+        action: { effect: 'min_block', minScheduleMinutes: 90 },
+        scope: { goalIds: [categoryGoal.body.goal.id] },
+      }),
+    });
+    assert(categoryRule.res.status === 201, `category rule create failed: ${categoryRule.res.status} ${JSON.stringify(categoryRule.body)}`);
+    const categoryTask = await req(base, `/api/goals/${categoryGoal.body.goal.id}/tasks`, {
+      method: 'POST',
+      cookie,
+      body: JSON.stringify({
+        title: 'Draft long essay',
+        estimatedMinutes: 180,
+        isSplittable: true,
+        minScheduleMinutes: 30,
+        scheduleTaskType: 'writing',
+      }),
+    });
+    assert(categoryTask.res.status === 201, `category task create failed: ${categoryTask.res.status} ${JSON.stringify(categoryTask.body)}`);
+    const categoryProposalRes = await req(base, `/api/goals/${categoryGoal.body.goal.id}/schedule-proposals`, { method: 'POST', cookie });
+    assert(
+      categoryProposalRes.res.status === 201,
+      `category proposal failed: ${categoryProposalRes.res.status} ${JSON.stringify(categoryProposalRes.body)}`,
+    );
+    const categoryProposal = categoryProposalRes.body.proposal;
+    assert(categoryProposal.changes.length === 2, `expected two category-enforced segments, got ${categoryProposal.changes.length}`);
+    assert(
+      categoryProposal.changes.every(
+        (change: any, index: number) =>
+          change.operation === 'create_split_segment' &&
+          change.segmentIndex === index + 1 &&
+          change.segmentTotal === 2 &&
+          change.durationMinutes === 90 &&
+          change.ruleIds.includes(categoryRule.body.rule.id),
+      ),
+      'task category rule should force two 90-minute segment changes and mark the matched rule',
+    );
+    assert(
+      categoryProposal.explanations.every(
+        (explanation: any) =>
+          explanation.matchedRules.some((rule: any) => rule.id === categoryRule.body.rule.id) && explanation.message.includes('90 minutes'),
+      ),
+      'category proposal explanations should expose the matched rule and the 90-minute block requirement',
+    );
+    const categoryConfirm = await req(base, `/api/schedule-proposals/${categoryProposal.id}/confirm`, { method: 'POST', cookie });
+    assert(categoryConfirm.res.status === 200, `category confirm failed: ${categoryConfirm.res.status} ${JSON.stringify(categoryConfirm.body)}`);
+    const dbAfterCategoryConfirm = new DatabaseSync(dbPath);
+    try {
+      const categoryRuleRow = dbAfterCategoryConfirm.prepare('SELECT action_json FROM personal_schedule_rules WHERE id = ?').get(categoryRule.body.rule.id) as {
+        action_json: string;
+      };
+      const categoryProposalRow = dbAfterCategoryConfirm.prepare('SELECT changes_json, explanations_json FROM schedule_proposals WHERE id = ?').get(categoryProposal.id) as {
+        changes_json: string;
+        explanations_json: string;
+      };
+      const categoryChildren = dbAfterCategoryConfirm
+        .prepare(
+          `SELECT estimated_minutes, source, start_date, due_date
+           FROM tasks
+           WHERE parent_id = ? AND deleted_at IS NULL
+           ORDER BY start_date ASC`,
+        )
+        .all(categoryTask.body.task.id) as Array<{ estimated_minutes: number | null; source: string; start_date: string | null; due_date: string | null }>;
+      const storedCategoryChanges = JSON.parse(categoryProposalRow.changes_json);
+      const storedCategoryExplanations = JSON.parse(categoryProposalRow.explanations_json);
+      assert(JSON.parse(categoryRuleRow.action_json).minScheduleMinutes === 90, 'category rule min block action should persist in SQLite');
+      assert(storedCategoryChanges.every((change: any) => change.durationMinutes === 90), 'stored category proposal changes should keep 90-minute durations');
+      assert(
+        storedCategoryExplanations.every((explanation: any) => explanation.ruleIds.includes(categoryRule.body.rule.id)),
+        'stored category proposal explanations should reference the category rule',
+      );
+      assert(categoryChildren.length === 2, `expected two category split children, got ${categoryChildren.length}`);
+      assert(
+        categoryChildren.every((child) => child.source === 'schedule_split' && child.estimated_minutes === 90 && child.start_date && child.due_date),
+        'confirmed category split children should be real 90-minute scheduled rows',
+      );
+    } finally {
+      dbAfterCategoryConfirm.close();
+    }
+
+    const energyGoal = await req(base, '/api/goals', {
+      method: 'POST',
+      cookie,
+      body: JSON.stringify({
+        title: 'Energy preference plan',
+        startAt: new Date('2030-01-14T09:00:00+08:00').toISOString(),
+        deadlineAt: new Date('2030-01-14T18:00:00+08:00').toISOString(),
+        availableTimeRule: JSON.stringify({ startHour: 9, endHour: 18 }),
+      }),
+    });
+    assert(energyGoal.res.status === 201, `energy goal create failed: ${energyGoal.res.status} ${JSON.stringify(energyGoal.body)}`);
+    const mediumEnergyRule = await req(base, '/api/schedule-rules', {
+      method: 'POST',
+      cookie,
+      body: JSON.stringify({
+        name: 'Medium energy starts after planning',
+        type: 'energy_preference',
+        priority: 'preference',
+        condition: { energyType: 'medium', startTime: '10:00', endTime: '12:00' },
+        action: { effect: 'prefer', period: 'morning' },
+        scope: { goalIds: [energyGoal.body.goal.id] },
+      }),
+    });
+    assert(mediumEnergyRule.res.status === 201, `medium energy rule create failed: ${mediumEnergyRule.res.status} ${JSON.stringify(mediumEnergyRule.body)}`);
+    const invalidEnergyRule = await req(base, '/api/schedule-rules', {
+      method: 'POST',
+      cookie,
+      body: JSON.stringify({
+        name: 'Invalid energy window',
+        type: 'energy_preference',
+        priority: 'preference',
+        condition: { energyType: 'medium', startTime: '10:00' },
+        action: { effect: 'prefer' },
+        scope: { goalIds: [energyGoal.body.goal.id] },
+      }),
+    });
+    assert(invalidEnergyRule.res.status === 400, `invalid energy rule should be 400, got ${invalidEnergyRule.res.status}`);
+    assert(
+      invalidEnergyRule.body.error.code === 'invalid_schedule_rule',
+      `invalid energy rule should return invalid_schedule_rule, got ${invalidEnergyRule.body.error.code}`,
+    );
+    const energyTask = await req(base, `/api/goals/${energyGoal.body.goal.id}/tasks`, {
+      method: 'POST',
+      cookie,
+      body: JSON.stringify({
+        title: 'Analyze research notes',
+        estimatedMinutes: 60,
+        scheduleEnergyType: 'medium',
+      }),
+    });
+    assert(energyTask.res.status === 201, `energy task create failed: ${energyTask.res.status} ${JSON.stringify(energyTask.body)}`);
+    const energyProposalRes = await req(base, `/api/goals/${energyGoal.body.goal.id}/schedule-proposals`, { method: 'POST', cookie });
+    assert(energyProposalRes.res.status === 201, `energy proposal failed: ${energyProposalRes.res.status} ${JSON.stringify(energyProposalRes.body)}`);
+    const energyProposal = energyProposalRes.body.proposal;
+    assert(energyProposal.changes.length === 1, `expected one energy proposal change, got ${energyProposal.changes.length}`);
+    assert(
+      energyProposal.changes[0].plannedStartAt === new Date('2030-01-14T10:00:00+08:00').toISOString(),
+      `energy preference should start inside preferred window, got ${energyProposal.changes[0].plannedStartAt}`,
+    );
+    assert(
+      energyProposal.changes[0].ruleIds.includes(mediumEnergyRule.body.rule.id),
+      'energy preference proposal change should reference the matched energy rule',
+    );
+    assert(
+      energyProposal.changes[0].reason.includes('preferred energy window') &&
+        energyProposal.explanations[0].message.includes('preferred time window') &&
+        energyProposal.explanations[0].matchedRules.some((rule: any) => rule.id === mediumEnergyRule.body.rule.id),
+      'energy preference proposal should explain the preferred time-window placement',
+    );
+    const energyConfirm = await req(base, `/api/schedule-proposals/${energyProposal.id}/confirm`, { method: 'POST', cookie });
+    assert(energyConfirm.res.status === 200, `energy confirm failed: ${energyConfirm.res.status} ${JSON.stringify(energyConfirm.body)}`);
+    const dbAfterEnergyConfirm = new DatabaseSync(dbPath);
+    try {
+      const energyRow = dbAfterEnergyConfirm.prepare('SELECT start_date, due_date FROM tasks WHERE id = ?').get(energyTask.body.task.id) as {
+        start_date: string | null;
+        due_date: string | null;
+      };
+      const energyProposalRow = dbAfterEnergyConfirm.prepare('SELECT changes_json, explanations_json FROM schedule_proposals WHERE id = ?').get(energyProposal.id) as {
+        changes_json: string;
+        explanations_json: string;
+      };
+      assert(energyRow.start_date === energyProposal.changes[0].plannedStartAt, 'energy confirm should write the preferred start time');
+      assert(energyRow.due_date === energyProposal.changes[0].plannedEndAt, 'energy confirm should write the preferred end time');
+      assert(
+        JSON.parse(energyProposalRow.changes_json)[0].ruleIds.includes(mediumEnergyRule.body.rule.id),
+        'stored energy proposal change should keep the energy rule id',
+      );
+      assert(
+        JSON.parse(energyProposalRow.explanations_json)[0].message.includes('preferred time window'),
+        'stored energy proposal explanation should keep the preference explanation',
+      );
+    } finally {
+      dbAfterEnergyConfirm.close();
+    }
+
     const replanGoal = await req(base, '/api/goals', {
       method: 'POST',
       cookie,

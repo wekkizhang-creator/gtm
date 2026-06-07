@@ -274,6 +274,38 @@ function validateRuleShape(type: ScheduleRuleType, condition: Record<string, unk
   if (type === 'energy_preference' && condition.energyType != null && !ENERGY_TYPES.includes(condition.energyType as ScheduleEnergyType)) {
     throw new AppError(400, 'invalid_schedule_rule', 'condition.energyType must be high, medium or low');
   }
+  if (type === 'energy_preference') {
+    if (condition.startTime != null || condition.endTime != null) {
+      assertTime(condition.startTime, 'condition.startTime');
+      assertTime(condition.endTime, 'condition.endTime');
+    }
+    if (condition.daysOfWeek != null) {
+      if (
+        !Array.isArray(condition.daysOfWeek) ||
+        condition.daysOfWeek.some((day) => !Number.isInteger(day) || day < 0 || day > 6)
+      ) {
+        throw new AppError(400, 'invalid_schedule_rule', 'condition.daysOfWeek must contain 0-6');
+      }
+    }
+  }
+  if (type === 'task_category') {
+    if (condition.taskType != null && typeof condition.taskType !== 'string') {
+      throw new AppError(400, 'invalid_schedule_rule', 'condition.taskType must be a string');
+    }
+    if (
+      condition.taskTypes != null &&
+      (!Array.isArray(condition.taskTypes) || condition.taskTypes.some((item) => typeof item !== 'string'))
+    ) {
+      throw new AppError(400, 'invalid_schedule_rule', 'condition.taskTypes must contain strings');
+    }
+    const minutes = action.minScheduleMinutes ?? action.minMinutes ?? condition.minScheduleMinutes ?? condition.minMinutes;
+    if (minutes != null) {
+      const n = Number(minutes);
+      if (!Number.isInteger(n) || n < 15 || n > 1440) {
+        throw new AppError(400, 'invalid_schedule_rule', 'task category minScheduleMinutes must be 15-1440');
+      }
+    }
+  }
 }
 
 function scopedToGoal(rule: PersonalScheduleRuleDTO, goalId: string): boolean {
@@ -605,6 +637,30 @@ function findSlot(
   return null;
 }
 
+function findSlotInsideRange(
+  startFrom: Date,
+  durationMinutes: number,
+  rangeEnd: Date,
+  busySlots: BusySlot[],
+): { start: Date; end: Date; avoided: BusySlot[] } | null {
+  let cursor = alignToStep(startFrom);
+  const avoided: BusySlot[] = [];
+  let guard = 0;
+  while (cursor < rangeEnd && guard < 20000) {
+    guard += 1;
+    const end = addMinutes(cursor, durationMinutes);
+    if (end > rangeEnd) return null;
+    const blocking = findBlockingSlot(busySlots, cursor, end);
+    if (blocking) {
+      rememberAvoidedSlot(avoided, blocking);
+      cursor = alignToStep(blocking.end);
+      continue;
+    }
+    return { start: cursor, end, avoided };
+  }
+  return null;
+}
+
 function totalBufferMinutes(rules: PersonalScheduleRuleDTO[]): number {
   return Math.max(
     0,
@@ -659,6 +715,100 @@ function matchingEnergyRuleIds(task: TaskRow, rules: PersonalScheduleRuleDTO[]):
     .filter((rule) => rule.status === 'enabled' && rule.type === 'energy_preference')
     .filter((rule) => !rule.condition.energyType || rule.condition.energyType === energy)
     .map((rule) => rule.id);
+}
+
+function energyPeriodTimes(rule: PersonalScheduleRuleDTO): { start: { hour: number; minute: number }; end: { hour: number; minute: number } } | null {
+  const explicitStart = parseTime(rule.condition.startTime);
+  const explicitEnd = parseTime(rule.condition.endTime);
+  if (explicitStart && explicitEnd) return { start: explicitStart, end: explicitEnd };
+  const period = typeof rule.action.period === 'string' ? rule.action.period : typeof rule.condition.period === 'string' ? rule.condition.period : null;
+  if (period === 'morning') return { start: { hour: 9, minute: 0 }, end: { hour: 12, minute: 0 } };
+  if (period === 'afternoon') return { start: { hour: 13, minute: 0 }, end: { hour: 18, minute: 0 } };
+  if (period === 'evening') return { start: { hour: 18, minute: 0 }, end: { hour: 21, minute: 0 } };
+  return null;
+}
+
+function clipDateRange(
+  start: Date,
+  end: Date,
+  ...bounds: Array<{ start: Date; end: Date }>
+): { start: Date; end: Date } | null {
+  const clippedStart = new Date(Math.max(start.getTime(), ...bounds.map((bound) => bound.start.getTime())));
+  const clippedEnd = new Date(Math.min(end.getTime(), ...bounds.map((bound) => bound.end.getTime())));
+  return clippedStart < clippedEnd ? { start: clippedStart, end: clippedEnd } : null;
+}
+
+function matchingEnergyRules(task: TaskRow, rules: PersonalScheduleRuleDTO[]): PersonalScheduleRuleDTO[] {
+  const energy = task.schedule_energy_type as ScheduleEnergyType | null;
+  if (!energy) return [];
+  return rules
+    .filter((rule) => rule.status === 'enabled' && rule.type === 'energy_preference')
+    .filter((rule) => !rule.condition.energyType || rule.condition.energyType === energy);
+}
+
+function findPreferredEnergySlot(
+  startFrom: Date,
+  durationMinutes: number,
+  range: { fromDate: Date; toDate: Date },
+  window: { startHour: number; endHour: number },
+  task: TaskRow,
+  rules: PersonalScheduleRuleDTO[],
+  busySlots: BusySlot[],
+): ({ start: Date; end: Date; avoided: BusySlot[]; preferredRuleIds: string[] } | null) {
+  const energyRules = matchingEnergyRules(task, rules);
+  if (!energyRules.length) return null;
+  const candidates: Array<{ start: Date; end: Date; ruleId: string }> = [];
+  const cursor = new Date(range.fromDate);
+  cursor.setHours(0, 0, 0, 0);
+  while (cursor < range.toDate) {
+    for (const rule of energyRules) {
+      const days = Array.isArray(rule.condition.daysOfWeek) ? (rule.condition.daysOfWeek as number[]) : [0, 1, 2, 3, 4, 5, 6];
+      if (!days.includes(cursor.getDay())) continue;
+      const times = energyPeriodTimes(rule);
+      if (!times) continue;
+      const preferredStart = new Date(cursor);
+      preferredStart.setHours(times.start.hour, times.start.minute, 0, 0);
+      const preferredEnd = new Date(cursor);
+      preferredEnd.setHours(times.end.hour, times.end.minute, 0, 0);
+      if (preferredEnd <= preferredStart) preferredEnd.setDate(preferredEnd.getDate() + 1);
+      const workStart = new Date(cursor);
+      workStart.setHours(window.startHour, 0, 0, 0);
+      const workEnd = new Date(cursor);
+      workEnd.setHours(window.endHour, 0, 0, 0);
+      const clipped = clipDateRange(preferredStart, preferredEnd, { start: range.fromDate, end: range.toDate }, { start: workStart, end: workEnd });
+      if (clipped) candidates.push({ ...clipped, ruleId: rule.id });
+    }
+    cursor.setDate(cursor.getDate() + 1);
+  }
+  candidates.sort((a, b) => a.start.getTime() - b.start.getTime() || a.end.getTime() - b.end.getTime());
+  for (const candidate of candidates) {
+    const start = new Date(Math.max(startFrom.getTime(), candidate.start.getTime()));
+    const slot = findSlotInsideRange(start, durationMinutes, candidate.end, busySlots);
+    if (slot) return { ...slot, preferredRuleIds: [candidate.ruleId] };
+  }
+  return null;
+}
+
+function taskCategoryMatches(task: TaskRow, rule: PersonalScheduleRuleDTO): boolean {
+  const taskType = typeof task.schedule_task_type === 'string' ? task.schedule_task_type.trim() : '';
+  const single = typeof rule.condition.taskType === 'string' ? rule.condition.taskType.trim() : '';
+  const many = Array.isArray(rule.condition.taskTypes)
+    ? rule.condition.taskTypes.filter((item): item is string => typeof item === 'string').map((item) => item.trim())
+    : [];
+  if (!single && many.length === 0) return true;
+  if (!taskType) return false;
+  return single === taskType || many.includes(taskType);
+}
+
+function taskCategoryMinMinutes(rule: PersonalScheduleRuleDTO): number | null {
+  const raw = rule.action.minScheduleMinutes ?? rule.action.minMinutes ?? rule.condition.minScheduleMinutes ?? rule.condition.minMinutes;
+  if (raw == null) return null;
+  const minutes = Math.round(Number(raw));
+  return Number.isInteger(minutes) && minutes >= 15 && minutes <= 1440 ? minutes : null;
+}
+
+function matchingTaskCategoryRules(task: TaskRow, rules: PersonalScheduleRuleDTO[]): PersonalScheduleRuleDTO[] {
+  return rules.filter((rule) => rule.status === 'enabled' && rule.type === 'task_category' && taskCategoryMatches(task, rule));
 }
 
 function matchedRuleSummaries(
@@ -1329,15 +1479,19 @@ export function createScheduleProposal(userId: string, goalId: string, input: Re
       continue;
     }
     const estimatedMinutes = Math.max(15, Number(row.estimated_minutes) || 60);
-    const minScheduleMinutes = Math.max(15, Number(row.min_schedule_minutes) || 15);
+    const categoryRules = matchingTaskCategoryRules(row, ruleList);
+    const categoryMinScheduleMinutes = Math.max(0, ...categoryRules.map(taskCategoryMinMinutes).filter((minutes): minutes is number => minutes != null));
+    const minScheduleMinutes = Math.max(15, Number(row.min_schedule_minutes) || 15, categoryMinScheduleMinutes);
     const durations = splitDurations(estimatedMinutes, minScheduleMinutes, !!row.is_splittable);
     const isSplit = durations.length > 1;
     const energyRuleIds = matchingEnergyRuleIds(row, ruleList);
-    const ruleIds = Array.from(new Set([...enabledRuleIds, ...energyRuleIds]));
+    const categoryRuleIds = categoryRules.map((rule) => rule.id);
+    const ruleIds = Array.from(new Set([...enabledRuleIds, ...energyRuleIds, ...categoryRuleIds]));
     let scheduledSegments = 0;
     for (let index = 0; index < durations.length; index += 1) {
       const duration = durations[index];
-      const slot = findSlot(cursor, duration, range.toDate, window, busySlots);
+      const preferredSlot = findPreferredEnergySlot(cursor, duration, range, window, row, ruleList, busySlots);
+      const slot = preferredSlot ?? findSlot(cursor, duration, range.toDate, window, busySlots);
       if (!slot) {
         conflicts.push({
           type: 'schedule_overflow',
@@ -1359,9 +1513,13 @@ export function createScheduleProposal(userId: string, goalId: string, input: Re
       const changeKey = scheduleChangeKey({ taskId: row.id, operation, segmentIndex, plannedStartAt });
       const matchedRules = matchedRuleSummaries(ruleIds, ruleList);
       const risks = scheduleRiskMessages(row, plannedEndAt);
-      const reason = avoidedText
-        ? `Scheduled${segmentLabel} for ${duration} minutes inside ${window.startHour}:00-${window.endHour}:00 after avoiding ${avoidedText}.`
-        : `Scheduled${segmentLabel} for ${duration} minutes inside ${window.startHour}:00-${window.endHour}:00 with no calendar conflicts.`;
+      const reason = preferredSlot
+        ? avoidedText
+          ? `Scheduled${segmentLabel} for ${duration} minutes inside the preferred energy window after avoiding ${avoidedText}.`
+          : `Scheduled${segmentLabel} for ${duration} minutes inside the preferred energy window.`
+        : avoidedText
+          ? `Scheduled${segmentLabel} for ${duration} minutes inside ${window.startHour}:00-${window.endHour}:00 after avoiding ${avoidedText}.`
+          : `Scheduled${segmentLabel} for ${duration} minutes inside ${window.startHour}:00-${window.endHour}:00 with no calendar conflicts.`;
       changes.push({
         changeKey,
         taskId: row.id,
@@ -1384,10 +1542,15 @@ export function createScheduleProposal(userId: string, goalId: string, input: Re
         conflict: false,
         confirmed: false,
       });
-      const baseExplanation =
-        energyRuleIds.length > 0
-          ? `${row.title}${segmentLabel} matched its energy preference and was placed in the first conflict-free slot.`
+      const baseExplanation = preferredSlot
+        ? `${row.title}${segmentLabel} matched its energy preference and was placed inside the preferred time window.`
+        : energyRuleIds.length > 0
+          ? `${row.title}${segmentLabel} matched energy preference rules, but no preferred slot was available; it used the first conflict-free fallback slot.`
           : `${row.title}${segmentLabel} was placed in the first conflict-free slot that satisfied the work window and blocking rules.`;
+      const categoryExplanation =
+        categoryRules.length > 0 && categoryMinScheduleMinutes > 0
+          ? `${baseExplanation} Task category rules require each block to be at least ${categoryMinScheduleMinutes} minutes.`
+          : baseExplanation;
       explanations.push({
         changeKey,
         taskId: row.id,
@@ -1395,7 +1558,7 @@ export function createScheduleProposal(userId: string, goalId: string, input: Re
         matchedRules,
         avoidedBlocks,
         risks,
-        message: explanationMessage({ base: baseExplanation, matchedRules, avoidedBlocks, risks }),
+        message: explanationMessage({ base: categoryExplanation, matchedRules, avoidedBlocks, risks }),
       });
       busySlots.push({ start: slot.start, end: addMinutes(slot.end, bufferMinutes), source: 'scheduled', label: isSplit ? `${row.title} (${index + 1}/${durations.length})` : row.title });
       cursor = addMinutes(slot.end, bufferMinutes);

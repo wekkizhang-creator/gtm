@@ -2595,3 +2595,64 @@ The goal task list uses `scheduleStatus` to show the PRD labels `未排期 / 已
 ### Verification
 
 `npm run test:goals` creates tasks through the real goal API, updates them through `PATCH /api/tasks/:id`, reloads `/api/goals/:id/tree`, and verifies `unscheduled`, `scheduled`, `completed`, and `overdue` schedule statuses from the HTTP DTO while checking the underlying SQLite rows used by the same scenario. `npm run test:goal-task-status-client` verifies the UI helper honors the API-provided status and retains fallback behavior.
+
+## Slice 100: Task Category Rule Minimum Block Duration
+
+RULE-01/RULE-05 and the PRD task-category rule example now affect the real scheduling engine. A `task_category` rule can require matching tasks to use a minimum block size, for example writing work must be scheduled in blocks of at least 90 minutes.
+
+### API Contract
+
+`POST /api/schedule-rules` and `PATCH /api/schedule-rules/:id` accept task-category actions:
+
+```json
+{
+  "type": "task_category",
+  "condition": { "taskType": "writing" },
+  "action": { "effect": "min_block", "minScheduleMinutes": 90 }
+}
+```
+
+- `condition.taskType` matches `tasks.schedule_task_type`. Empty `taskType` applies to all task types.
+- `condition.taskTypes` may also be an array of task type strings.
+- `action.minScheduleMinutes`, `action.minMinutes`, `condition.minScheduleMinutes`, or `condition.minMinutes` can define the minimum block size.
+- The minimum must be an integer from 15 to 1440; invalid values return `400 invalid_schedule_rule`.
+- During `POST /api/goals/:id/schedule-proposals`, matching task-category rules raise the task's effective `minScheduleMinutes`. Split proposals use that effective minimum, include the rule ID in each matching change, and include the matched rule plus the minimum-block reason in explanations.
+
+### Client Contract
+
+The personal-rule form's `任务分类` rule type now asks for both task type and minimum block minutes. Saving still calls the real schedule-rule API; no client-side fake rule state is introduced.
+
+### Verification
+
+`npm run test:schedule-rules` now creates an invalid task-category rule and verifies `400 invalid_schedule_rule`, then creates a writing rule with `minScheduleMinutes:90`, a real splittable writing task, generates a schedule proposal, verifies two 90-minute split changes with matched-rule explanations, confirms the proposal, and checks SQLite for the persisted rule action, stored proposal JSON, and two generated `schedule_split` child task rows.
+
+## Slice 101: Energy Preference Scheduling Window
+
+SCHED-03 and the PRD's energy-preference rule now affect actual slot selection instead of only appearing as metadata. Energy preference remains a soft rule: the scheduler tries the preferred time window first, then falls back to the normal work window if no preferred slot can fit.
+
+### API Contract
+
+`energy_preference` schedule rules can define an optional preferred window:
+
+```json
+{
+  "type": "energy_preference",
+  "condition": {
+    "energyType": "medium",
+    "startTime": "10:00",
+    "endTime": "12:00",
+    "daysOfWeek": [1, 2, 3, 4, 5]
+  },
+  "action": { "effect": "prefer", "period": "morning" }
+}
+```
+
+- `condition.energyType` matches `tasks.schedule_energy_type`; omitted energy type matches any task with an energy type.
+- If `startTime` or `endTime` is supplied, both must be valid `HH:mm` values; otherwise the rule can fall back to `action.period` / `condition.period` (`morning`, `afternoon`, `evening`).
+- `daysOfWeek` is optional and must contain integers `0-6`.
+- Preferred windows are clipped to the goal's scheduling range and `availableTimeRule`.
+- If a preferred window is unavailable, the proposal still uses the first conflict-free fallback slot and explains that fallback.
+
+### Verification
+
+`npm run test:schedule-rules` now creates a scoped medium-energy preference rule for 10:00-12:00, rejects an invalid one-sided time window with `400 invalid_schedule_rule`, creates a real medium-energy task, generates a proposal that starts at 10:00 instead of the goal's 09:00 work-window start, confirms it, and checks SQLite for the stored rule id plus preferred-window explanation in `schedule_proposals`.
