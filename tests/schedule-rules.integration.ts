@@ -220,6 +220,22 @@ async function main() {
     assert(rulePatch.res.status === 200, `patch rule failed: ${rulePatch.res.status} ${JSON.stringify(rulePatch.body)}`);
     assert(rulePatch.body.rule.name === 'No work after 21:30', 'patched rule name should be returned');
 
+    const reminderRule = await req(base, '/api/schedule-rules', {
+      method: 'POST',
+      cookie,
+      body: JSON.stringify({
+        name: 'Start reminders 10 minutes before',
+        type: 'reminder',
+        status: 'enabled',
+        priority: 'normal',
+        condition: {},
+        action: { effect: 'remind', minutesBefore: 10 },
+        scope: {},
+      }),
+    });
+    assert(reminderRule.res.status === 201, `create reminder rule failed: ${reminderRule.res.status} ${JSON.stringify(reminderRule.body)}`);
+    const reminderRuleId = reminderRule.body.rule.id;
+
     const subscription = await req(base, '/api/calendar/subscriptions', {
       method: 'POST',
       cookie,
@@ -241,6 +257,7 @@ async function main() {
     assert(proposal.changes.length === 1, `expected one proposal change, got ${proposal.changes.length}`);
     assert(proposal.explanations.length === 1, `expected one explanation, got ${proposal.explanations.length}`);
     assert(proposal.changes[0].ruleIds.includes(ruleId), 'proposal change should reference the blocking rule');
+    assert(proposal.changes[0].ruleIds.includes(reminderRuleId), 'proposal change should reference the reminder rule');
     assert(
       proposal.changes[0].avoidedBlocks.some((block: any) => block.source === 'external' && block.title === 'Client Sync'),
       'proposal should explain the avoided external calendar event',
@@ -268,6 +285,15 @@ async function main() {
     assert(confirm.res.status === 200, `confirm failed: ${confirm.res.status} ${JSON.stringify(confirm.body)}`);
     assert(confirm.body.proposal.status === 'confirmed', 'proposal should be confirmed');
     assert(confirm.body.tasks.length === 1, 'confirm should return the updated task');
+    const expectedReminderAt = new Date(new Date(proposal.changes[0].plannedStartAt).getTime() - 10 * 60_000).toISOString();
+    assert(
+      confirm.body.tasks[0].reminders.some((reminder: any) => reminder.remindAt === expectedReminderAt && reminder.status === 'scheduled'),
+      'confirmed proposal should return the reminder created by the reminder rule',
+    );
+    assert(
+      confirm.body.proposal.changes[0].createdReminderIds.length === 1,
+      'confirmed proposal change should retain the created reminder id for undo',
+    );
 
     const dbAfterConfirm = new DatabaseSync(dbPath);
     try {
@@ -283,10 +309,14 @@ async function main() {
         status: string;
         confirmed_at: string | null;
       };
+      const reminderRow = dbAfterConfirm.prepare('SELECT task_id, remind_at, status FROM task_reminders WHERE task_id = ?').get(deepTask.body.task.id) as
+        | { task_id: string; remind_at: string; status: string }
+        | undefined;
       assert(task.start_date === proposal.changes[0].plannedStartAt, 'confirmed proposal should write task start_date');
       assert(task.due_date === proposal.changes[0].plannedEndAt, 'confirmed proposal should write task due_date');
       assert(task.planned_start_at === task.start_date && task.planned_end_at === task.due_date, 'planned and calendar fields should match');
       assert(proposalRow.status === 'confirmed' && proposalRow.confirmed_at, 'proposal row should be confirmed in DB');
+      assert(reminderRow?.remind_at === expectedReminderAt && reminderRow.status === 'scheduled', 'reminder rule should persist a scheduled task reminder');
     } finally {
       dbAfterConfirm.close();
     }
@@ -316,7 +346,7 @@ async function main() {
       const rules = dbAfterPreview.prepare('SELECT COUNT(*) c FROM personal_schedule_rules WHERE user_id IS NOT NULL').get() as { c: number };
       const templates = dbAfterPreview.prepare('SELECT COUNT(*) c FROM schedule_rule_templates').get() as { c: number };
       assert(templates.c >= 4, `seeded rule templates should be persisted in SQLite, got ${templates.c}`);
-      assert(rules.c === 2, `rule preview should not persist a draft rule, got ${rules.c} rows`);
+      assert(rules.c === 3, `rule preview should not persist a draft rule, got ${rules.c} rows`);
     } finally {
       dbAfterPreview.close();
     }
@@ -328,6 +358,7 @@ async function main() {
     assert(undo.res.status === 200, `undo failed: ${undo.res.status} ${JSON.stringify(undo.body)}`);
     assert(undo.body.proposal.status === 'undone', 'undo should mark the proposal as undone');
     assert(undo.body.tasks.length === 1, 'undo should return the restored task');
+    assert(undo.body.tasks[0].reminders.length === 0, 'undo should remove reminders created by the confirmed proposal');
 
     const undoAgain = await req(base, `/api/schedule-proposals/${proposal.id}/undo`, { method: 'POST', cookie });
     assert(undoAgain.res.status === 409, `second undo should be 409, got ${undoAgain.res.status}`);
@@ -884,6 +915,62 @@ async function main() {
     assert(restoreRule.res.status === 200, `restore rule failed: ${restoreRule.res.status}`);
     assert(restoreRule.body.rule.deletedAt === null, 'restored rule should clear deletedAt');
 
+    const ruleEditImpactTask = await req(base, `/api/goals/${goalId}/tasks`, {
+      method: 'POST',
+      cookie,
+      body: JSON.stringify({ title: 'Rule edit affected work', estimatedMinutes: 45, scheduleTaskType: 'writing' }),
+    });
+    assert(ruleEditImpactTask.res.status === 201, `rule edit impact task create failed: ${ruleEditImpactTask.res.status} ${JSON.stringify(ruleEditImpactTask.body)}`);
+    const ruleEditScheduledTask = await req(base, `/api/tasks/${ruleEditImpactTask.body.task.id}`, {
+      method: 'PATCH',
+      cookie,
+      body: JSON.stringify({
+        startDate: new Date('2030-01-08T15:15:00+08:00').toISOString(),
+        dueDate: new Date('2030-01-08T16:00:00+08:00').toISOString(),
+        plannedStartAt: new Date('2030-01-08T15:15:00+08:00').toISOString(),
+        plannedEndAt: new Date('2030-01-08T16:00:00+08:00').toISOString(),
+        isAllDay: false,
+      }),
+    });
+    assert(ruleEditScheduledTask.res.status === 200, `rule edit task schedule failed: ${ruleEditScheduledTask.res.status} ${JSON.stringify(ruleEditScheduledTask.body)}`);
+    const editedRule = await req(base, `/api/schedule-rules/${ruleId}`, {
+      method: 'PATCH',
+      cookie,
+      body: JSON.stringify({
+        name: 'Afternoon writing guard',
+        type: 'time_boundary',
+        status: 'enabled',
+        priority: 'hard',
+        condition: { startTime: '15:00', endTime: '16:30' },
+        action: { effect: 'block' },
+        scope: {},
+      }),
+    });
+    assert(editedRule.res.status === 200, `rule edit update failed: ${editedRule.res.status} ${JSON.stringify(editedRule.body)}`);
+    const ruleEditReplan = await req(base, `/api/goals/${goalId}/schedule-proposals`, {
+      method: 'POST',
+      cookie,
+      body: JSON.stringify({
+        from: new Date('2030-01-08T00:00:00+08:00').toISOString(),
+        to: new Date('2030-01-15T00:00:00+08:00').toISOString(),
+        mode: 'reschedule',
+        trigger: `rule_update:${ruleId}`,
+      }),
+    });
+    assert(ruleEditReplan.res.status === 201, `rule edit replan failed: ${ruleEditReplan.res.status} ${JSON.stringify(ruleEditReplan.body)}`);
+    assert(
+      ruleEditReplan.body.proposal.conflicts.some(
+        (conflict: any) => conflict.type === 'reschedule_impact' && conflict.taskId === ruleEditImpactTask.body.task.id && conflict.ruleIds.includes(ruleId),
+      ),
+      'rule edit replan should include a rule-linked reschedule impact for the affected task',
+    );
+    assert(
+      ruleEditReplan.body.proposal.changes.some(
+        (change: any) => change.taskId === ruleEditImpactTask.body.task.id && change.oldPlannedStartAt === ruleEditScheduledTask.body.task.plannedStartAt,
+      ),
+      'rule edit replan should propose moving the affected scheduled task',
+    );
+
     const parseNatural = await req(base, '/api/schedule-rules/parse-natural-language', {
       method: 'POST',
       cookie,
@@ -916,10 +1003,18 @@ async function main() {
         status: string;
         confirmed_at: string | null;
       };
+      const reminderCount = db.prepare('SELECT COUNT(*) c FROM task_reminders WHERE task_id = ?').get(deepTask.body.task.id) as { c: number };
+      const ruleEditProposalRow = db.prepare('SELECT status, range_start, range_end FROM schedule_proposals WHERE id = ?').get(ruleEditReplan.body.proposal.id) as
+        | { status: string; range_start: string; range_end: string }
+        | undefined;
       assert(task.start_date === null && task.due_date === null, 'undo should restore empty calendar task dates');
       assert(task.planned_start_at === null && task.planned_end_at === null, 'undo should restore empty planned task dates');
       assert(task.schedule_energy_type === 'high' && task.schedule_task_type === 'writing', 'task scheduling metadata should persist');
       assert(proposalRow.status === 'undone' && proposalRow.confirmed_at, 'proposal row should be undone in DB while retaining confirmation audit time');
+      assert(reminderCount.c === 0, 'undo should delete reminders created by the confirmed proposal');
+      assert(ruleEditProposalRow?.status === 'draft', 'rule edit replan proposal should be persisted as a draft');
+      assert(ruleEditProposalRow.range_start === new Date('2030-01-08T00:00:00+08:00').toISOString(), 'rule edit replan range start should persist');
+      assert(ruleEditProposalRow.range_end === new Date('2030-01-15T00:00:00+08:00').toISOString(), 'rule edit replan range end should persist');
     } finally {
       db.close();
     }

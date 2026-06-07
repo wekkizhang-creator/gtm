@@ -16,6 +16,7 @@
     "test:goal-detail-summary-client": "npm exec -w server -- tsx ../tests/goal-detail-summary-client.test.ts",
     "test:schedule-proposal-impact-client": "npm exec -w server -- tsx ../tests/schedule-proposal-impact-client.test.ts",
     "test:schedule-proposal-manual-adjust-client": "npm exec -w server -- tsx ../tests/schedule-proposal-manual-adjust-client.test.ts",
+    "test:schedule-rule-edit-effect-client": "npm exec -w server -- tsx ../tests/schedule-rule-edit-effect-client.test.ts",
     "test:goal-task-dependencies-client": "npm exec -w server -- tsx ../tests/goal-task-dependencies-client.test.ts",
     "test:goal-task-form-client": "npm exec -w server -- tsx ../tests/goal-task-form-client.test.ts",
     "test:goal-task-status-client": "npm exec -w server -- tsx ../tests/goal-task-status-client.test.ts",

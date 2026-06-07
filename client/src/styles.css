@@ -4871,6 +4871,47 @@ html[data-animations='off'] * {
   margin-bottom: 12px;
 }
 
+.goal-rule-apply-mode {
+  grid-column: 1 / -1;
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 8px;
+}
+
+.goal-rule-apply-mode label {
+  min-height: 42px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--surface);
+  color: var(--muted);
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 10px;
+  font-size: 13px;
+  cursor: pointer;
+}
+
+.goal-rule-apply-mode label.active {
+  border-color: var(--accent);
+  background: var(--accent-soft);
+  color: var(--accent);
+  font-weight: 700;
+}
+
+.goal-rule-apply-mode input {
+  width: 14px;
+  height: 14px;
+  padding: 0;
+  margin: 0;
+  accent-color: var(--accent);
+}
+
+.goal-rule-apply-mode label:has(input:disabled) {
+  cursor: not-allowed;
+  opacity: 0.55;
+}
+
 .goal-rule-natural {
   display: grid;
   grid-template-columns: minmax(220px, 1fr) auto;
@@ -5275,6 +5316,10 @@ html[data-animations='off'] * {
   }
 
   .goal-rule-templates {
+    grid-template-columns: 1fr;
+  }
+
+  .goal-rule-apply-mode {
     grid-template-columns: 1fr;
   }
 
